@@ -1,0 +1,4 @@
+storePassword=cool@123
+keyPassword=cool@123
+keyAlias=upload
+storeFile=/home/cybrosys/Downloads/sales-app-keystore.jks

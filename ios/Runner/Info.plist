@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-
+<plist version="1.0">
+    <dict>
+       <key>CFBundleDevelopmentRegion</key>
+       <string>$(DEVELOPMENT_LANGUAGE)</string>
+       <key>CFBundleDisplayName</key>
+       <string>mobo Sales</string>
+       <key>CFBundleExecutable</key>
+       <string>$(EXECUTABLE_NAME)</string>
+       <key>CFBundleIdentifier</key>
+       <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+       <key>CFBundleInfoDictionaryVersion</key>
+       <string>6.0</string>
+       <key>CFBundleName</key>
+       <string>mobo Sales</string>
+       <key>CFBundlePackageType</key>
+       <string>APPL</string>
+       <key>CFBundleShortVersionString</key>
+       <string>$(FLUTTER_BUILD_NAME)</string>
+       <key>CFBundleSignature</key>
+       <string>????</string>
+       <key>CFBundleVersion</key>
+       <string>$(FLUTTER_BUILD_NUMBER)</string>
+       <key>LSRequiresIPhoneOS</key>
+       <true/>
+       <key>UILaunchStoryboardName</key>
+       <string>LaunchScreen</string>
+       <key>UIMainStoryboardFile</key>
+       <string>Main</string>
+       <key>UISupportedInterfaceOrientations</key>
+       <array>
+          <string>UIInterfaceOrientationPortrait</string>
+          <string>UIInterfaceOrientationLandscapeLeft</string>
+          <string>UIInterfaceOrientationLandscapeRight</string>
+       </array>
+       <key>UISupportedInterfaceOrientations~ipad</key>
+       <array>
+          <string>UIInterfaceOrientationPortrait</string>
+          <string>UIInterfaceOrientationPortraitUpsideDown</string>
+          <string>UIInterfaceOrientationLandscapeLeft</string>
+          <string>UIInterfaceOrientationLandscapeRight</string>
+       </array>
+       <key>CADisableMinimumFrameDurationOnPhone</key>
+       <true/>
+       <key>UIApplicationSupportsIndirectInputEvents</key>
+       <true/>
+       
+       <!-- Essential permissions for sales app functionality -->
+       <key>NSMicrophoneUsageDescription</key>
+       <string>This app needs access to the microphone for voice search functionality.</string>
+       <key>NSCameraUsageDescription</key>
+       <string>This app needs camera access to take photos and scan barcodes/documents.</string>
+       <key>NSPhotoLibraryUsageDescription</key>
+       <string>This app needs photo library access to pick images from your gallery.</string>
+       <key>NSPhotoLibraryAddUsageDescription</key>
+       <string>This app needs permission to save images and documents to your photo library.</string>
+       <key>NSSpeechRecognitionUsageDescription</key>
+       <string>This app uses speech recognition to convert your voice to text for search and input.</string>
+       <key>NSLocationWhenInUseUsageDescription</key>
+       <string>This app uses your location to show maps and location-based information while using the app.</string>
+       <key>NSFaceIDUsageDescription</key>
+       <string>This app uses Face ID for secure authentication.</string>
+       
+       <key>UIStatusBarHidden</key>
+       <false/>
+       
+       <!-- URL Schemes for external app launching -->
+       <key>LSApplicationQueriesSchemes</key>
+       <array>
+           <!-- Email schemes -->
+           <string>mailto</string>
+           <!-- Maps and location schemes -->
+           <string>maps</string>
+           <string>comgooglemaps</string>
+           <!-- Web schemes -->
+           <string>http</string>
+           <string>https</string>
+           <!-- SMS scheme -->
+           <string>sms</string>
+           <!-- Phone call scheme -->
+           <string>tel</string>
+       </array>
+    </dict>
+</plist>

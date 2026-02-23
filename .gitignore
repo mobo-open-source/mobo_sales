@@ -1,0 +1,80 @@
+# Miscellaneous
+key.properties
+*.keystore
+*.jks
+*.class
+*.log
+*.pyc
+*.swp
+*.txt
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+*.zip
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+out/
+gen/
+
+# Visual Studio Code
+.vscode/
+.vsc/
+*.code-workspace
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.flutter-plugins
+.pub-cache/
+.pub/
+/build/
+/coverage/
+pubspec.lock
+Dockerfile
+windows/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+android/local.properties
+android/key.properties
+
+# iOS related
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+ios/Flutter/ephemeral/
+ios/Flutter/AppFrameworkInfo.plist
+DerivedData/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.swp
+*.lock
+*.dat
+
+# SonarQube
+.scannerwork/
+sonar-project.properties
+sonar-flutter-plugin-*.jar
