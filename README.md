@@ -79,7 +79,7 @@ The app may request:
 #### 2. Mobile App Setup
 ```bash
 # Clone the repository
-git clone https://github.com/mobo-suite/mobo_sales.git
+git clone https://github.com/mobo-open-source/mobo_sales.git
 cd mobo_sales
 
 # Install dependencies
@@ -129,5 +129,5 @@ See the [LICENSE](LICENSE) file for the main license and [THIRD_PARTY_LICENSES.m
 
 ##  Maintainers
 **Team Mobo at Cybrosys Technologies**
-- Email: [cybroplay@gmail.com](mailto:cybroplay@gmail.com)
+- Email: [mobo@cybrosys.com](mailto:mobo@cybrosys.com)
 - Website: [cybrosys.com](https://www.cybrosys.com)
