@@ -15,7 +15,8 @@ import 'login_layout.dart'
         LoginButton,
         LoginErrorDisplay,
         LoginUrlTextField,
-        LoginDropdownField;
+        LoginDropdownField,
+        LoginUrlAutocompleteField;
 import '../../widgets/custom_snackbar.dart';
 import 'totp_page.dart';
 
@@ -119,6 +120,23 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
     if (fullUrl.startsWith('https://')) return fullUrl.substring(8);
     if (fullUrl.startsWith('http://')) return fullUrl.substring(7);
     return fullUrl;
+  }
+
+  void _setUrlFromFullUrl(String fullUrl) {
+    final protocol = _extractProtocol(fullUrl);
+    final domain = _extractDomain(fullUrl);
+    setState(() {
+      _selectedProtocol = protocol;
+      _urlController.text = domain;
+      _urlHasError = domain.trim().isEmpty;
+      _dbHasError = false;
+      _errorMessage = null;
+      _shouldValidate = false;
+    });
+    _debounceTimer?.cancel();
+    if (domain.trim().isNotEmpty && _isValidUrl(domain.trim())) {
+      _validateUrlAndFetchDatabases();
+    }
   }
 
   bool _isValidUrl(String url) {
@@ -271,57 +289,48 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
     } catch (e) {
       if (!mounted) return;
       final errStr = e.toString();
-      if (errStr.contains('ACCESS_DENIED_DB_LIST')) {
-        if (!mounted) return;
+      String errorMessage =
+          'Could not connect to server. Please check the URL and try again.';
+
+      if (errStr.contains('timeout') ||
+          errStr.contains('Connection timeout')) {
+        errorMessage =
+            'Connection timeout. Please check your internet connection and try again.';
+      } else if (errStr.contains('404') || errStr.contains('not found')) {
+        errorMessage = 'Server not found. Please verify the URL is correct.';
+      } else if (errStr.contains('connection') ||
+          errStr.contains('network') ||
+          errStr.contains('SocketException')) {
+        errorMessage =
+            'Unable to connect to server. Check URL and network connection.';
+      } else if (errStr.contains('FormatException') ||
+          errStr.contains('Invalid')) {
+        errorMessage =
+            'Invalid server URL format. Please check and try again.';
+      } else if (errStr.contains('ACCESS_DENIED_DB_LIST')) {
+        errorMessage =
+            'Database listing is disabled (list_db=false). Cannot fetch databases automatically.';
+      }
+
+      final baseUrl = _normalizeUrl(trimmedUrl);
+      final defaultDb = await OdooApiService.getDefaultDatabase(baseUrl);
+      if (!mounted) return;
+      if (defaultDb != null && defaultDb.isNotEmpty) {
+        setState(() {
+          _isLoadingDatabases = false;
+          _databases = [defaultDb];
+          _selectedDatabase = defaultDb;
+          _errorMessage = null;
+          _dbInfoMessage = 'Detected default database: $defaultDb';
+        });
+      } else {
         setState(() {
           _isLoadingDatabases = false;
           _databases.clear();
           _selectedDatabase = null;
-          _errorMessage =
-              'Database listing is disabled (list_db=false). Cannot fetch databases automatically.';
+          _errorMessage = errorMessage;
           _dbInfoMessage = null;
         });
-      } else {
-        String errorMessage =
-            'Could not connect to server. Please check the URL and try again.';
-
-        if (errStr.contains('timeout') ||
-            errStr.contains('Connection timeout')) {
-          errorMessage =
-              'Connection timeout. Please check your internet connection and try again.';
-        } else if (errStr.contains('404') || errStr.contains('not found')) {
-          errorMessage = 'Server not found. Please verify the URL is correct.';
-        } else if (errStr.contains('connection') ||
-            errStr.contains('network') ||
-            errStr.contains('SocketException')) {
-          errorMessage =
-              'Unable to connect to server. Check URL and network connection.';
-        } else if (errStr.contains('FormatException') ||
-            errStr.contains('Invalid')) {
-          errorMessage =
-              'Invalid server URL format. Please check and try again.';
-        }
-
-        final baseUrl = _normalizeUrl(trimmedUrl);
-        final defaultDb = await OdooApiService.getDefaultDatabase(baseUrl);
-        if (!mounted) return;
-        if (defaultDb != null && defaultDb.isNotEmpty) {
-          setState(() {
-            _isLoadingDatabases = false;
-            _databases = [defaultDb];
-            _selectedDatabase = defaultDb;
-            _errorMessage = null;
-            _dbInfoMessage = 'Detected default database: $defaultDb';
-          });
-        } else {
-          setState(() {
-            _isLoadingDatabases = false;
-            _databases.clear();
-            _selectedDatabase = null;
-            _errorMessage = errorMessage;
-            _dbInfoMessage = null;
-          });
-        }
       }
     }
   }
@@ -578,43 +587,48 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (_currentStep == AddAccountStep.server) ...[
-              LoginUrlTextField(
+              LoginUrlAutocompleteField(
                 controller: _urlController,
-                hint: 'Server Address',
-                prefixIcon: HugeIcons.strokeRoundedServerStack01,
-                enabled: !_isLoading,
-                hasError: _urlHasError,
-                selectedProtocol: _selectedProtocol,
-                isLoading: _isLoadingDatabases,
-                autovalidateMode: _shouldValidate
-                    ? AutovalidateMode.onUserInteraction
-                    : AutovalidateMode.disabled,
-                validator: (value) {
-                  if (!_shouldValidate) return null;
-                  if (value == null || value.isEmpty) {
-                    return 'Server URL is required';
-                  }
-                  return null;
-                },
-                onProtocolChanged: (protocol) {
-                  setState(() {
-                    _selectedProtocol = protocol;
-                  });
-                  _validateUrlAndFetchDatabases();
-                },
-                onChanged: (value) {
-                  _debounceTimer?.cancel();
-                  setState(() {
-                    _urlHasError = false;
-                    _errorMessage = null;
-                  });
-
-                  _debounceTimer = Timer(const Duration(milliseconds: 700), () {
-                    if (mounted) {
-                      _validateUrlAndFetchDatabases();
+                suggestions: _urlHistory,
+                onSuggestionSelected: (selection) => _setUrlFromFullUrl(selection),
+                child: LoginUrlTextField(
+                  controller: _urlController,
+                  hint: 'Server Address',
+                  prefixIcon: HugeIcons.strokeRoundedServerStack01,
+                  enabled: !_isLoading,
+                  hasError: _urlHasError,
+                  selectedProtocol: _selectedProtocol,
+                  isLoading: _isLoadingDatabases,
+                  autovalidateMode: _shouldValidate
+                      ? AutovalidateMode.onUserInteraction
+                      : AutovalidateMode.disabled,
+                  validator: (value) {
+                    if (!_shouldValidate) return null;
+                    if (value == null || value.isEmpty) {
+                      return 'Server URL is required';
                     }
-                  });
-                },
+                    return null;
+                  },
+                  onProtocolChanged: (protocol) {
+                    setState(() {
+                      _selectedProtocol = protocol;
+                    });
+                    _validateUrlAndFetchDatabases();
+                  },
+                  onChanged: (value) {
+                    _debounceTimer?.cancel();
+                    setState(() {
+                      _urlHasError = false;
+                      _errorMessage = null;
+                    });
+
+                    _debounceTimer = Timer(const Duration(milliseconds: 700), () {
+                      if (mounted) {
+                        _validateUrlAndFetchDatabases();
+                      }
+                    });
+                  },
+                ),
               ),
               const SizedBox(height: 16),
               if (_databases.isNotEmpty || _isLoadingDatabases) ...[
