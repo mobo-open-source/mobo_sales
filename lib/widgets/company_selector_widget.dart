@@ -166,7 +166,7 @@ class CompanySelectorWidget extends StatelessWidget {
   }
 
   void _showDropdownMenu(BuildContext context, CompanyProvider provider) async {
-    provider.initialize();
+    Provider.of<CompanyProvider>(context, listen: false).initialize();
     final screenSize = MediaQuery.of(context).size;
 
     if (screenSize.width < 1000) {
@@ -529,17 +529,9 @@ class _CompanyDropdownContentState extends State<_CompanyDropdownContent> {
                 Expanded(
                   child: ElevatedButton(
                     onPressed: () {
-                      final noActiveChange =
-                          _tempSelectedCompanyId ==
-                          widget.provider.selectedCompanyId;
-                      final noAllowedChange = _setEquals(
-                        _tempAllowedCompanyIds,
-                        widget.provider.selectedAllowedCompanyIds.toSet(),
-                      );
                       final disabled =
                           _applying ||
-                          widget.provider.isSwitching ||
-                          (noActiveChange && noAllowedChange);
+                          widget.provider.isSwitching;
                       if (!disabled) {
                         _onConfirm();
                       }

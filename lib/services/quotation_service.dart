@@ -41,9 +41,11 @@ class QuotationService {
 
       final contextParams = {
         'lang': 'en_US',
-        'tz': 'Asia/Calcutta',
-        'uid': session.userId ?? 2,
-        'allowed_company_ids': [1],
+        'tz': 'UTC',
+        'uid': session.userId ?? 0,
+        'allowed_company_ids': session.allowedCompanyIds.isNotEmpty
+            ? session.allowedCompanyIds
+            : (session.selectedCompanyId != null ? [session.selectedCompanyId!] : []),
         'active_model': 'sale.order',
         'active_id': orderId,
         'active_ids': [orderId],
@@ -56,7 +58,6 @@ class QuotationService {
         'proforma': false,
         'force_email': true,
         'model_description': 'Sales Order',
-        'default_template_id': 11,
         'mark_so_as_sent': true,
         'validate_analytic': true,
         'check_document_layout': true,

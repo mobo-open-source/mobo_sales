@@ -14,10 +14,13 @@ class InvoiceService {
     required VoidCallback closeLoadingDialog,
   }) async {
     try {
+      final session = await OdooSessionManager.getCurrentSession();
       final contextParams = {
         'lang': 'en_US',
         'tz': 'UTC',
-        'allowed_company_ids': [1],
+        'allowed_company_ids': session != null && session.allowedCompanyIds.isNotEmpty
+            ? session.allowedCompanyIds
+            : (session?.selectedCompanyId != null ? [session!.selectedCompanyId!] : []),
         'active_model': 'account.move',
         'active_id': moveId,
         'active_ids': [moveId],
@@ -345,7 +348,7 @@ class InvoiceService {
       if (client == null) return productTaxIds;
 
       final session = await OdooSessionManager.getCurrentSession();
-      int userCompanyId = 1;
+      int userCompanyId = 0;
 
       if (session?.userId != null) {
         final userResult = await OdooSessionManager.safeCallKw({

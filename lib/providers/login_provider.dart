@@ -5,6 +5,7 @@ import 'package:odoo_rpc/odoo_rpc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/session_service.dart';
 import '../services/auth_service.dart';
+import '../services/odoo_api_service.dart';
 import '../screens/login/totp_page.dart';
 
 /// Manages user login form state, database discovery, and authentication flow.
@@ -165,36 +166,36 @@ class LoginProvider with ChangeNotifier {
 
   /// Fetches the list of databases available at the entered server URL.
   Future<void> fetchDatabaseList() async {
-    if (urlController.text.trim().isEmpty) {
-      _resetDatabaseState();
-      errorMessage = 'Please enter a server URL first.';
-      _safeNotifyListeners();
-      return;
-    }
-
-    if (!isValidUrl(urlController.text.trim())) {
-      _resetDatabaseState();
-      errorMessage = 'Please enter a valid server URL.';
-      _safeNotifyListeners();
-      return;
-    }
-
-    final previousDatabase = database;
+    if (urlController.text.isEmpty) return;
 
     isLoadingDatabases = true;
-    urlCheck = false;
-    errorMessage = null;
-    dropdownItems.clear();
     _safeNotifyListeners();
 
-    try {
-      final baseUrl = _normalizeUrl(urlController.text);
+    final baseUrl = _normalizeUrl(urlController.text);
 
+    Future<void> attemptFallback(String defaultError) async {
+      try {
+        final defaultDb = await OdooApiService.getDefaultDatabase(baseUrl);
+        if (defaultDb != null && defaultDb.isNotEmpty) {
+          database = defaultDb;
+          dropdownItems = [defaultDb];
+          urlCheck = true;
+          errorMessage = null;
+        } else {
+          _resetDatabaseState();
+          errorMessage = defaultError;
+        }
+      } catch (_) {
+        _resetDatabaseState();
+        errorMessage = defaultError;
+      }
+    }
+
+    try {
       final dbList = await _authService.fetchDatabaseList(baseUrl);
 
       if (dbList.isEmpty) {
-        errorMessage = 'No databases found on this server.';
-        urlCheck = false;
+        await attemptFallback('No databases found on this server.');
       } else {
         final uniqueDbList = dbList.toSet().toList();
         uniqueDbList.sort((a, b) => a.toString().compareTo(b.toString()));
@@ -204,57 +205,44 @@ class LoginProvider with ChangeNotifier {
         urlCheck = true;
         errorMessage = null;
 
-        if (previousDatabase != null &&
-            uniqueDbList.contains(previousDatabase)) {
-          database = previousDatabase;
+        if (database != null &&
+            uniqueDbList.contains(database)) {
+          database = database;
         } else if (uniqueDbList.isNotEmpty) {
           database = uniqueDbList.first.toString();
         }
       }
     } on SocketException catch (e) {
+      String msg = 'Network error occurred. Please check your internet connection and server URL.';
       if (e.toString().contains('Network is unreachable')) {
-        errorMessage =
-            'No internet connection. Please check your network settings and try again.';
+        msg = 'No internet connection. Please check your network settings and try again.';
       } else if (e.toString().contains('Connection refused')) {
-        errorMessage =
-            'Server is not responding. Please verify the server URL and ensure the server is running.';
-      } else {
-        errorMessage =
-            'Network error occurred. Please check your internet connection and server URL.';
+        msg = 'Server is not responding. Please verify the server URL and ensure the server is running.';
       }
-      _resetDatabaseState();
+      await attemptFallback(msg);
     } on TimeoutException catch (_) {
-      errorMessage =
-          'Connection timed out. The server may be slow or unreachable. Please try again.';
-      _resetDatabaseState();
+      await attemptFallback('Connection timed out. The server may be slow or unreachable. Please try again.');
     } on OdooException catch (e) {
-      errorMessage = _formatOdooError(e);
-      _resetDatabaseState();
+      await attemptFallback(_formatOdooError(e));
     } on FormatException catch (e) {
+      String msg = 'Server sent invalid data format. Please verify this is an Odoo server.';
       if (e.toString().toLowerCase().contains('html')) {
-        errorMessage =
-            'Invalid server response. This may not be an Odoo server or the URL path is incorrect.';
-      } else {
-        errorMessage =
-            'Server sent invalid data format. Please verify this is an Odoo server.';
+        msg = 'Invalid server response. This may not be an Odoo server or the URL path is incorrect.';
       }
-      _resetDatabaseState();
+      await attemptFallback(msg);
     } catch (e) {
       final errorStr = e.toString().toLowerCase();
+      String msg = 'Unable to connect to server. Please verify the server URL is correct.';
       if (errorStr.contains('handshake')) {
-        errorMessage =
-            'SSL connection failed. Try using HTTP instead of HTTPS or contact your administrator.';
+        msg = 'SSL connection failed. Try using HTTP instead of HTTPS or contact your administrator.';
       } else if (errorStr.contains('certificate')) {
-        errorMessage =
-            'SSL certificate error. The server certificate may be invalid or expired.';
+        msg = 'SSL certificate error. The server certificate may be invalid or expired.';
       } else if (errorStr.contains('host')) {
-        errorMessage =
-            'Cannot reach server. Please check the server URL and your internet connection.';
-      } else {
-        errorMessage =
-            'Unable to connect to server. Please verify the server URL is correct.';
+        msg = 'Cannot reach server. Please check the server URL and your internet connection.';
+      } else if (errorStr.contains('access_denied_db_list')) {
+        msg = 'Database listing is disabled (list_db=false). Cannot fetch databases automatically.';
       }
-      _resetDatabaseState();
+      await attemptFallback(msg);
     } finally {
       isLoadingDatabases = false;
       _safeNotifyListeners();
