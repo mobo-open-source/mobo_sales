@@ -160,7 +160,7 @@ class HomeScaffoldState extends State<HomeScaffold> {
                 settings.userProfile != null &&
                     settings.userProfile!['name'] != null
                 ? settings.userProfile!['name'].toString()
-                : '?',
+                : 'User',
             backgroundColor: AppTheme.primaryColor,
             textColor: Colors.white,
             onTap: () {

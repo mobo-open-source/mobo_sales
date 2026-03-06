@@ -410,11 +410,6 @@ class SessionService extends ChangeNotifier {
     }
 
     try {
-      navigatorKey.currentState?.pushAndRemoveUntil(
-        MaterialPageRoute(builder: (context) => const HomeScaffold()),
-        (route) => false,
-      );
-
       await Future.delayed(Duration.zero);
 
       await _clearAllProviderData();

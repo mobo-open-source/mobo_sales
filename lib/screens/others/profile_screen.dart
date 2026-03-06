@@ -182,9 +182,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void _onSessionChanged() {
     if (!mounted) return;
 
-    if (_sessionService != null && _sessionService!.isRefreshing) {
-      Navigator.of(context).pop();
-    }
+    if (_sessionService != null && _sessionService!.isRefreshing) {}
   }
 
   @override
@@ -1666,7 +1664,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       radius: 34,
       fallbackText: _userData != null && _userData!['name'] != null
           ? _userData!['name'].toString()
-          : '?',
+          : 'User',
       backgroundColor: AppTheme.primaryColor,
       textColor: Colors.white,
     );

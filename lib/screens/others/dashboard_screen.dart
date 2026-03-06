@@ -372,9 +372,8 @@ class _DashboardScreenState extends State<DashboardScreen>
         }
       } catch (_) {}
     }
-
-    if (nameToUse == null || nameToUse.trim().isEmpty || nameToUse == 'User') {
-      return '${_getGreeting()}!';
+    if (nameToUse == null || nameToUse.trim().isEmpty) {
+      nameToUse = 'User';
     }
 
     final firstName = nameToUse.split(' ')[0];

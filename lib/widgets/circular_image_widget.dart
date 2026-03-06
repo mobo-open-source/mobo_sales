@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
-/// A circular avatar widget that can display a base64-encoded image or 
+/// A circular avatar widget that can display a base64-encoded image or
 /// fallback text initials. Handles both raster and SVG formats.
 class CircularImageWidget extends StatelessWidget {
   final String? base64Image;

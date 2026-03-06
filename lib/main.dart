@@ -23,6 +23,7 @@ import 'providers/currency_provider.dart';
 import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'auth/auth_check.dart';
 import 'screens/splash/splash_screen.dart';
+import 'services/review_service.dart';
 export 'package:flutter/material.dart' show navigatorKey;
 export 'package:flutter/material.dart' show GlobalKey, ScaffoldMessengerState;
 
@@ -119,6 +120,18 @@ class AppEntryPointState extends State<AppEntryPoint> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _initializeApp();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        // Use a slightly longer delay to ensure the UI and navigator are fully ready
+        Future.delayed(const Duration(seconds: 3), () {
+          ReviewService().trackAppOpen();
+
+          // Use the stable navigator context instead of the local one which might unmount
+          final targetContext = navigatorKey.currentContext;
+          if (targetContext != null && targetContext.mounted) {
+            ReviewService().checkAndShowRating(targetContext);
+          }
+        });
+      });
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _sessionService = context.read<SessionService>();

@@ -26,6 +26,7 @@ import '../../utils/date_picker_utils.dart';
 import '../../widgets/customer_typeahead.dart';
 import '../../widgets/product_typeahead.dart';
 import '../../widgets/custom_dropdown.dart';
+import '../../services/review_service.dart';
 
 class CreateQuoteScreen extends StatefulWidget {
   final Contact? customer;
@@ -1604,15 +1605,20 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                   'fields': ['name'],
                 },
               });
-              if (quotationData.isNotEmpty &&
-                  quotationData[0]['name'] != null) {
-                quotationName = quotationData[0]['name'].toString();
+              if (quotationData != null &&
+                  quotationData is List &&
+                  quotationData.isNotEmpty) {
+                quotationName =
+                    quotationData[0]['name']?.toString() ?? 'Quotation';
               }
             } catch (e) {}
+
+            ReviewService().trackSignificantEvent();
 
             await showQuotationCreatedConfettiDialog(context, quotationName);
 
             if (mounted) {
+              ReviewService().checkAndShowRating(context);
               Navigator.pop(context, true);
             }
           }

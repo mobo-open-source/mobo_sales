@@ -401,8 +401,6 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
           context,
           'Account added and switched successfully',
         );
-
-        Navigator.of(context).pushNamedAndRemoveUntil('/app', (route) => false);
       });
     } catch (e) {
       final errorStr = e.toString().toLowerCase();

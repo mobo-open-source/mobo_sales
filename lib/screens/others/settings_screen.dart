@@ -228,7 +228,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-
   Future<void> _performLogout(BuildContext context) async {
     BuildContext? dialogContext;
 

@@ -174,6 +174,7 @@ class Contact {
           : null,
     );
   }
+
   /// Returns `true` if this contact has valid non-zero latitude and longitude.
   bool hasValidCoordinates() {
     return latitude != null &&

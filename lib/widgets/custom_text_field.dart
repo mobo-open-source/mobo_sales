@@ -3,7 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../utils/app_theme.dart';
 
-/// A customizable [TextFormField] wrapper with a label above the field, 
+/// A customizable [TextFormField] wrapper with a label above the field,
 /// used extensively throughout the Sales forms.
 class CustomTextField extends StatelessWidget {
   final TextEditingController controller;
