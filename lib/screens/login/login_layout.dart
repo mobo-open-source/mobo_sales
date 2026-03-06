@@ -744,3 +744,245 @@ class LoginButton extends StatelessWidget {
     );
   }
 }
+
+class LoginUrlAutocompleteField extends StatefulWidget {
+  final TextEditingController controller;
+  final List<String> suggestions;
+  final Function(String) onSuggestionSelected;
+  final Widget child;
+
+  const LoginUrlAutocompleteField({
+    super.key,
+    required this.controller,
+    required this.suggestions,
+    required this.onSuggestionSelected,
+    required this.child,
+  });
+
+  @override
+  State<LoginUrlAutocompleteField> createState() =>
+      _LoginUrlAutocompleteFieldState();
+}
+
+class _LoginUrlAutocompleteFieldState extends State<LoginUrlAutocompleteField> {
+  bool _showSuggestions = false;
+  List<String> _filteredSuggestions = [];
+  late FocusNode _focusNode;
+  OverlayEntry? _overlayEntry;
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode = FocusNode();
+    _focusNode.addListener(_onFocusChanged);
+    widget.controller.addListener(_onTextChanged);
+  }
+
+  @override
+  void dispose() {
+    _focusNode.removeListener(_onFocusChanged);
+    widget.controller.removeListener(_onTextChanged);
+    _focusNode.dispose();
+    _removeOverlay();
+    super.dispose();
+  }
+
+  void _onFocusChanged() {
+    if (_focusNode.hasFocus) {
+      _updateSuggestions();
+      if (_filteredSuggestions.isNotEmpty) {
+        _showSuggestionsOverlay();
+      }
+    } else {
+      _hideSuggestions();
+    }
+  }
+
+  void _onTextChanged() {
+    if (_focusNode.hasFocus) {
+      _updateSuggestions();
+      if (_overlayEntry != null) {
+        if (_showSuggestions && _filteredSuggestions.isNotEmpty) {
+          _overlayEntry!.markNeedsBuild();
+        } else {
+          _removeOverlay();
+        }
+      }
+    }
+  }
+
+  void _updateSuggestions() {
+    final text = widget.controller.text.toLowerCase().trim();
+
+    if (text.isEmpty) {
+      _filteredSuggestions = List.from(widget.suggestions);
+    } else {
+      _filteredSuggestions = widget.suggestions.where((suggestion) {
+        final suggestionLower = suggestion.toLowerCase();
+
+        if (text == 'h') {
+          return suggestionLower.startsWith('https://');
+        } else if (text == 'ht') {
+          return suggestionLower.startsWith('http://') ||
+              suggestionLower.startsWith('https://');
+        } else if (text == 'htt') {
+          return suggestionLower.startsWith('http://') ||
+              suggestionLower.startsWith('https://');
+        } else if (text == 'http') {
+          return suggestionLower.startsWith('http://') ||
+              suggestionLower.startsWith('https://');
+        } else if (text == 'https') {
+          return suggestionLower.startsWith('https://');
+        } else if (text.startsWith('http://') || text.startsWith('https://')) {
+          return suggestionLower.startsWith(text);
+        }
+
+        final textDomain = _extractDomainFromUrl(text);
+        final suggestionDomain = _extractDomainFromUrl(suggestionLower);
+
+        final matches = suggestionDomain.startsWith(textDomain);
+
+        return matches;
+      }).toList();
+    }
+
+    setState(() {
+      _showSuggestions = _filteredSuggestions.isNotEmpty;
+    });
+
+    if (_overlayEntry != null) {
+      if (_filteredSuggestions.isEmpty) {
+        _removeOverlay();
+      } else {
+        _overlayEntry!.markNeedsBuild();
+      }
+    } else if (_filteredSuggestions.isNotEmpty) {
+      _showSuggestionsOverlay();
+    }
+  }
+
+  String _extractDomainFromUrl(String url) {
+    if (url.startsWith('https://')) {
+      return url.substring(8);
+    } else if (url.startsWith('http://')) {
+      return url.substring(7);
+    }
+    return url;
+  }
+
+  void _showSuggestionsOverlay() {
+    if (_filteredSuggestions.isEmpty) {
+      return;
+    }
+
+    if (_overlayEntry != null) return;
+
+    final renderBox = context.findRenderObject() as RenderBox?;
+    final fieldWidth =
+        renderBox?.size.width ?? (MediaQuery.of(context).size.width - 48);
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final backgroundColor = isDark ? const Color(0xFF2D2D2D) : Colors.white;
+    final textColor = isDark ? Colors.white : Colors.black87;
+    final hoverColor = isDark
+        ? Colors.white.withOpacity(0.1)
+        : Colors.black.withOpacity(0.05);
+
+    _overlayEntry = OverlayEntry(
+      builder: (overlayContext) => Positioned(
+        width: fieldWidth,
+        child: CompositedTransformFollower(
+          link: _layerLink,
+          showWhenUnlinked: false,
+          offset: const Offset(0, 60),
+          child: Material(
+            elevation: 12.0,
+            color: backgroundColor,
+            borderRadius: BorderRadius.circular(12),
+            shadowColor: Colors.black.withOpacity(0.2),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: isDark
+                      ? Colors.white.withOpacity(0.1)
+                      : Colors.black.withOpacity(0.1),
+                  width: 1,
+                ),
+              ),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 240),
+                child: ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  shrinkWrap: true,
+                  itemCount: _filteredSuggestions.length,
+                  itemBuilder: (context, index) {
+                    final suggestion = _filteredSuggestions[index];
+                    return InkWell(
+                      onTap: () {
+                        widget.onSuggestionSelected(suggestion);
+                        _hideSuggestions();
+                        _focusNode.unfocus();
+                      },
+                      hoverColor: hoverColor,
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 2,
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 14,
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                suggestion,
+                                style: GoogleFonts.manrope(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                  color: textColor,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    Overlay.of(context).insert(_overlayEntry!);
+  }
+
+  void _hideSuggestions() {
+    _removeOverlay();
+    setState(() {
+      _showSuggestions = false;
+    });
+  }
+
+  void _removeOverlay() {
+    _overlayEntry?.remove();
+    _overlayEntry = null;
+  }
+
+  final LayerLink _layerLink = LayerLink();
+
+  @override
+  Widget build(BuildContext context) {
+    return CompositedTransformTarget(
+      link: _layerLink,
+      child: Focus(focusNode: _focusNode, child: widget.child),
+    );
+  }
+}
