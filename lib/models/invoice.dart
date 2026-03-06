@@ -329,6 +329,7 @@ class Invoice {
           : null,
     );
   }
+
   /// Serialises this invoice to a JSON-compatible map.
   Map<String, dynamic> toJson() {
     return {

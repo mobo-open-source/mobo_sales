@@ -1678,7 +1678,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         radius: 60,
         fallbackText: _userData != null && _userData!['name'] != null
             ? _userData!['name'].toString()
-            : '?',
+            : 'User',
         backgroundColor: AppTheme.primaryColor,
         textColor: Colors.white,
       );

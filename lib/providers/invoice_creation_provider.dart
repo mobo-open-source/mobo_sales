@@ -13,6 +13,7 @@ import 'package:mobo_sales/services/customer_service.dart';
 import 'package:mobo_sales/services/product_service.dart';
 import 'package:mobo_sales/services/invoice_service.dart';
 import '../services/odoo_error_handler.dart';
+import '../services/review_service.dart';
 
 class CreateInvoiceProvider with ChangeNotifier {
   bool _isLoading = false;
@@ -1131,6 +1132,11 @@ class CreateInvoiceProvider with ChangeNotifier {
           await _invoiceService.getInvoiceName(invoiceId) ?? 'Invoice';
       _lastCreatedInvoiceId = invoiceId;
 
+      ReviewService().trackSignificantEvent();
+      if (context.mounted) {
+        ReviewService().checkAndShowRating(context);
+      }
+
       clearSelectedSaleOrder();
       await fetchSaleOrders();
     } catch (e) {
@@ -1184,6 +1190,11 @@ class CreateInvoiceProvider with ChangeNotifier {
       _lastCreatedInvoiceName =
           await _invoiceService.getInvoiceName(invoiceId) ?? 'Invoice';
       _lastCreatedInvoiceId = invoiceId;
+
+      ReviewService().trackSignificantEvent();
+      if (context.mounted) {
+        ReviewService().checkAndShowRating(context);
+      }
 
       clearSelectedSaleOrder();
       await fetchSaleOrders();
@@ -1250,6 +1261,11 @@ class CreateInvoiceProvider with ChangeNotifier {
       _lastCreatedInvoiceName =
           await _invoiceService.getInvoiceName(invoiceId) ?? 'Invoice';
       _lastCreatedInvoiceId = invoiceId;
+
+      ReviewService().trackSignificantEvent();
+      if (context.mounted) {
+        ReviewService().checkAndShowRating(context);
+      }
 
       clearSelectedSaleOrder();
       await fetchSaleOrders();
