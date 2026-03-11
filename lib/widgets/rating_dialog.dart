@@ -23,14 +23,12 @@ class CustomRatingDialog extends StatefulWidget {
       barrierDismissible: false,
       builder: (context) => CustomRatingDialog(
         onGoodReview: (rating, comment) async {
-          Navigator.pop(context);
-          // Set "Never Ask Again" so they aren't prompted again in 30 days
+          if (context.mounted) Navigator.pop(context);
           await ReviewService().neverAskAgain();
           ReviewService().forceRequestReview();
         },
         onBadReview: (rating, comment) async {
           if (context.mounted) Navigator.pop(context);
-          // Trigger 6-month cooldown instead of permanent disable
           await ReviewService().markFeedbackGiven();
           ReviewService().sendEmailFeedback(rating, comment);
         },
@@ -246,7 +244,8 @@ class _CustomRatingDialogState extends State<CustomRatingDialog> {
                     ),
                   ),
                   TextButton(
-                    onPressed: () {
+                    onPressed: () async {
+                      await ReviewService().postponeReview();
                       if (mounted) Navigator.pop(context);
                     },
                     child: Text(

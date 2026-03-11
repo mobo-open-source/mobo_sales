@@ -3,7 +3,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../main.dart';
 import '../widgets/rating_dialog.dart';
-import '../widgets/custom_snackbar.dart';
 import 'package:flutter/material.dart';
 
 class ReviewService {
@@ -104,12 +103,13 @@ class ReviewService {
               .inDays;
           int waitDays = (prefs.getBool(_keyFeedbackGiven) ?? false) ? 180 : 30;
 
-          if (daysSinceLastRequest < waitDays) return;
+          if (daysSinceLastRequest < waitDays) {
+            return;
+          }
         }
 
         if (context != null && context.mounted) {
           _wasRequestedThisRun = true;
-          await prefs.setBool(_keyFeedbackGiven, false);
           await prefs.setInt(
             _keyLastRequestDate,
             DateTime.now().millisecondsSinceEpoch,
@@ -126,21 +126,20 @@ class ReviewService {
     await _checkAndRequestReview(prefs, context);
   }
 
-  /// Force a review request. If the native dialog is suppressed by Google Play
+  /// Force a review request. If the native dialog is suppressed by the store
   /// (due to quotas), it will fall back to opening the Store Listing directly.
   Future<void> forceRequestReview() async {
-    // Show a small snackbar so the user knows the code is working
-    if (navigatorKey.currentContext != null) {
-      CustomSnackbar.showInfo(
-        navigatorKey.currentContext!,
-        'Requesting Google Play review...',
-      );
-    }
+    scaffoldMessengerKey.currentState?.showSnackBar(
+      SnackBar(
+        content: const Text('🔄 Requesting Store review...'),
+        duration: const Duration(seconds: 2),
+        backgroundColor: Colors.blue[700],
+      ),
+    );
 
     try {
       if (await _inAppReview.isAvailable()) {
         _wasRequestedThisRun = true;
-        // Increase delay to 2.5 seconds to ensure stable activity transition
         await Future.delayed(const Duration(milliseconds: 2500));
         await _inAppReview.requestReview();
       } else {
@@ -191,6 +190,15 @@ class ReviewService {
   Future<void> neverAskAgain() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyNeverAskAgain, true);
+  }
+
+  /// Postpone review until next month (30 days)
+  Future<void> postponeReview() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(
+      _keyLastRequestDate,
+      DateTime.now().millisecondsSinceEpoch,
+    );
   }
 
   /// Mark that user gave feedback (1-3 stars) to trigger 6-month cooldown
