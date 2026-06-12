@@ -257,8 +257,9 @@ class StockCheckProvider with ChangeNotifier {
       final locationUsageMap = <String, String>{};
       final internalLocations = <String>[];
       for (var loc in locationResult) {
-        final locationName = loc['complete_name'] as String;
-        final usage = loc['usage'] as String;
+        final locationName =
+            loc['complete_name'] is String ? loc['complete_name'] as String : '';
+        final usage = loc['usage'] is String ? loc['usage'] as String : '';
         locationUsageMap[locationName] = usage;
         if (usage == 'internal') {
           internalLocations.add(locationName);

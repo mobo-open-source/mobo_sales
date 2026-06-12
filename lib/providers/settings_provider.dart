@@ -322,8 +322,9 @@ class SettingsProvider extends ChangeNotifier {
           if (companyInfo != null) {
             _companyInfo = companyInfo;
 
-            if (_companyInfo!['currency_id'] != null) {
-              _selectedCurrency = _companyInfo!['currency_id'][1];
+            final currencyId = _companyInfo!['currency_id'];
+            if (currencyId is List && currencyId.length > 1) {
+              _selectedCurrency = currencyId[1];
             }
           }
         }
