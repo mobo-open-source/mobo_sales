@@ -205,15 +205,42 @@ class OdooSessionModel {
   }
 }
 
+/// HTTP client wrapper that enforces an overall timeout on every request,
+/// bounding the wait for the server's response (which `connectionTimeout`
+/// alone does not) so a stalled response can never hang the UI indefinitely.
+class _TimeoutHttpClient extends http.BaseClient {
+  _TimeoutHttpClient(this._inner, this._timeout);
+
+  final http.Client _inner;
+  final Duration _timeout;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    return _inner.send(request).timeout(_timeout);
+  }
+
+  @override
+  void close() => _inner.close();
+}
+
 /// Manages the low-level Odoo RPC client, session caching, and authentication.
 class OdooSessionManager {
   static final http.BaseClient ioClient = _getHttpClient();
 
+  /// Maximum time to wait for a server response before failing with a
+  /// [TimeoutException]. Kept generous because creating a `sale.order` is a
+  /// heavy server-side operation, but bounded so the UI never hangs forever.
+  static const Duration _requestTimeout = Duration(seconds: 60);
+
+  /// Maximum time to wait while establishing the TCP connection.
+  static const Duration _connectionTimeout = Duration(seconds: 30);
+
   static http.BaseClient _getHttpClient() {
     final HttpClient client = HttpClient()
+      ..connectionTimeout = _connectionTimeout
       ..badCertificateCallback =
           ((X509Certificate cert, String host, int port) => true);
-    return IOClient(client);
+    return _TimeoutHttpClient(IOClient(client), _requestTimeout);
   }
 
   static const String USER_AGENT =

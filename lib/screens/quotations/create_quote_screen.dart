@@ -3801,9 +3801,17 @@ class _QuoteQuantityInputState extends State<_QuoteQuantityInput> {
   void initState() {
     super.initState();
     _controller = TextEditingController(
-      text: widget.initialValue.toStringAsFixed(0),
+      text: _formatQuantity(widget.initialValue),
     );
     _controller.addListener(_onQuantityChanged);
+  }
+
+  /// Renders whole numbers without decimals (e.g. `1`) while preserving
+  /// fractional quantities (e.g. `2.5`) so unit-of-measure decimals aren't lost.
+  String _formatQuantity(double value) {
+    return value == value.roundToDouble()
+        ? value.toStringAsFixed(0)
+        : value.toString();
   }
 
   @override
