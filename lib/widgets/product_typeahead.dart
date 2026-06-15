@@ -114,7 +114,10 @@ class ProductTypeAhead extends StatelessWidget {
               if (client == null) return [];
 
               final limit = pattern.isEmpty ? 6 : 100;
-              final results = await client.callKw({
+              // Use safeCallKw (not the raw client) so the request carries the
+              // active company context and refreshes an expired session, instead
+              // of silently returning an empty list when the session has expired.
+              final results = await OdooSessionManager.safeCallKw({
                 'model': 'product.product',
                 'method': 'search_read',
                 'args': [

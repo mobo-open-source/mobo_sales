@@ -133,8 +133,12 @@ class CustomerTypeAhead extends StatelessWidget {
                 ],
               ];
 
+              // Use safeCallKw (not the raw client) so the request carries the
+              // active company context and refreshes an expired session — the
+              // same path the (working) customer list page uses. The raw client
+              // call silently returned an empty list once the session expired.
               Future<List<dynamic>> runSearch(List<dynamic> domain) async {
-                final res = await client.callKw({
+                final res = await OdooSessionManager.safeCallKw({
                   'model': 'res.partner',
                   'method': 'search_read',
                   'args': [domain],
