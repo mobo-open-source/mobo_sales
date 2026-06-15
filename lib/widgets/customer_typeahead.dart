@@ -4,7 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:hugeicons/hugeicons.dart';
 import 'dart:convert';
 import '../models/contact.dart';
-import '../services/odoo_session_manager.dart';
+import '../services/customer_service.dart';
 import '../utils/app_theme.dart';
 
 class CustomerTypeAhead extends StatelessWidget {
@@ -118,63 +118,15 @@ class CustomerTypeAhead extends StatelessWidget {
             );
           },
           suggestionsCallback: (pattern) async {
-            try {
-              final client = await OdooSessionManager.getClient();
-              if (client == null) return [];
-
-              final limit = pattern.isEmpty ? 20 : 100;
-
-              final searchFilter = <dynamic>[
-                ['active', '=', true],
-                if (pattern.isNotEmpty) ...[
-                  '|',
-                  ['name', 'ilike', pattern],
-                  ['email', 'ilike', pattern],
-                ],
-              ];
-
-              // Use safeCallKw (not the raw client) so the request carries the
-              // active company context and refreshes an expired session — the
-              // same path the (working) customer list page uses. The raw client
-              // call silently returned an empty list once the session expired.
-              Future<List<dynamic>> runSearch(List<dynamic> domain) async {
-                final res = await OdooSessionManager.safeCallKw({
-                  'model': 'res.partner',
-                  'method': 'search_read',
-                  'args': [domain],
-                  'kwargs': {
-                    'fields': [
-                      'id',
-                      'name',
-                      'email',
-                      'phone',
-                      'mobile',
-                      'image_128',
-                      'is_company',
-                    ],
-                    'limit': limit,
-                  },
-                });
-                return res is List ? res : <dynamic>[];
-              }
-
-              // Prefer partners explicitly marked as customers.
-              var results = await runSearch([
-                ['customer_rank', '>', 0],
-                ...searchFilter,
-              ]);
-
-              // Fall back to all active partners if none are marked yet:
-              // Odoo only sets customer_rank once a partner has transacted, so
-              // a strict filter can wrongly return an empty customer list.
-              if (results.isEmpty) {
-                results = await runSearch(searchFilter);
-              }
-
-              return results.map((data) => Contact.fromJson(data)).toList();
-            } catch (e) {
-              return [];
-            }
+            // Reuse the exact query the (working) customer list page uses
+            // instead of a bespoke one. Earlier the typeahead's own query
+            // (customer_rank filter / image_128 / mobile fields) failed with a
+            // generic "Odoo server error" while this proven path kept working.
+            final query = pattern.trim();
+            return CustomerService.instance.fetchAllCustomers(
+              searchQuery: query.isEmpty ? null : query,
+              limit: query.isEmpty ? 20 : 100,
+            );
           },
           itemBuilder: (context, customer) {
             return ListTile(
@@ -216,6 +168,15 @@ class CustomerTypeAhead extends StatelessWidget {
             padding: const EdgeInsets.all(16.0),
             child: Text(
               'No customers found',
+              style: GoogleFonts.manrope(
+                color: isDark ? Colors.white60 : Colors.grey[600],
+              ),
+            ),
+          ),
+          errorBuilder: (context, error) => Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Text(
+              'Could not load customers. Please check your connection and try again.',
               style: GoogleFonts.manrope(
                 color: isDark ? Colors.white60 : Colors.grey[600],
               ),
