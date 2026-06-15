@@ -636,15 +636,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
                       fontWeight: FontWeight.w400,
                     ),
                   )
-                else if (invoiceProvider.errorMessage.isNotEmpty)
-                  Text(
-                    invoiceProvider.errorMessage,
-                    style: TextStyle(
-                      color: Colors.red,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w400,
-                    ),
-                  )
                 else if (invoiceProvider.selectedCustomer != null)
                   _buildSelectedCustomerTile(context, invoiceProvider)
                 else
