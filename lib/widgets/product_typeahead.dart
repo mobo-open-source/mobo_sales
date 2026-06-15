@@ -41,6 +41,11 @@ class ProductTypeAhead extends StatelessWidget {
         const SizedBox(height: 8),
         TypeAheadField<Product>(
           controller: controller,
+          // Flip the suggestions box upward when there isn't enough room below
+          // (otherwise fields low on the screen open their options off-screen,
+          // hidden behind the keyboard / bottom bar).
+          autoFlipDirection: true,
+          constraints: const BoxConstraints(maxHeight: 320),
           builder: (context, controller, focusNode) {
             return TextFormField(
               controller: controller,

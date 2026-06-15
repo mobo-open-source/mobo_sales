@@ -46,6 +46,13 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
   Contact? _selectedCustomer;
   final _productSearchController = TextEditingController();
   final List<Map<String, dynamic>> _quoteLines = [];
+
+  /// Monotonic id assigned to every quote line so each line widget gets a
+  /// stable [ValueKey]. Without it, inserting a new line at the top makes
+  /// Flutter reuse the previous line's widget state (e.g. its quantity input),
+  /// which caused newly added products to inherit the prior line's quantity.
+  int _quoteLineUidSeq = 0;
+
   DateTime? _validityDate;
   DateTime? _initialValidityDate;
   Timer? _debounce;
@@ -391,6 +398,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
               }
 
               final quoteLine = {
+                'line_uid': _quoteLineUidSeq++,
                 'product_id': productIdInt,
                 'product_name': productName ?? '',
                 'name': line['name'] ?? '',
@@ -3068,6 +3076,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                               };
 
                               _quoteLines.insert(0, {
+                                'line_uid': _quoteLineUidSeq++,
                                 'product_id': productId,
                                 'product_name': productName,
                                 'uom_id': product.uomId ?? 1,
@@ -3149,6 +3158,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                                     widget.quotationToEdit != null &&
                                     widget.quotationToEdit!['state'] == 'sale';
                                 return _QuoteLineItem(
+                                  key: ValueKey(line['line_uid']),
                                   line: line,
                                   index: index,
                                   isLast: index == _quoteLines.length - 1,
@@ -3589,6 +3599,7 @@ class _QuoteLineItem extends StatefulWidget {
   final Function(double, double) onUpdate;
 
   const _QuoteLineItem({
+    super.key,
     required this.line,
     required this.index,
     required this.isLast,
