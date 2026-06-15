@@ -43,6 +43,11 @@ class CustomerTypeAhead extends StatelessWidget {
         const SizedBox(height: 8),
         TypeAheadField<Contact>(
           controller: controller,
+          // Flip the suggestions box upward when there isn't enough room below
+          // (otherwise fields low on the screen open their options off-screen,
+          // hidden behind the keyboard / bottom bar).
+          autoFlipDirection: true,
+          constraints: const BoxConstraints(maxHeight: 320),
           builder: (context, controller, focusNode) {
             return TextFormField(
               controller: controller,
@@ -117,39 +122,52 @@ class CustomerTypeAhead extends StatelessWidget {
               final client = await OdooSessionManager.getClient();
               if (client == null) return [];
 
-              final limit = pattern.isEmpty ? 6 : 100;
-              final results = await client.callKw({
-                'model': 'res.partner',
-                'method': 'search_read',
-                'args': [
-                  [
-                    ['customer_rank', '>', 0],
-                    ['active', '=', true],
-                    if (pattern.isNotEmpty) ...[
-                      '|',
-                      ['name', 'ilike', pattern],
-                      ['email', 'ilike', pattern],
-                    ],
-                  ],
-                ],
-                'kwargs': {
-                  'fields': [
-                    'id',
-                    'name',
-                    'email',
-                    'phone',
-                    'mobile',
-                    'image_128',
-                    'is_company',
-                  ],
-                  'limit': limit,
-                },
-              });
+              final limit = pattern.isEmpty ? 20 : 100;
 
-              if (results is List) {
-                return results.map((data) => Contact.fromJson(data)).toList();
+              final searchFilter = <dynamic>[
+                ['active', '=', true],
+                if (pattern.isNotEmpty) ...[
+                  '|',
+                  ['name', 'ilike', pattern],
+                  ['email', 'ilike', pattern],
+                ],
+              ];
+
+              Future<List<dynamic>> runSearch(List<dynamic> domain) async {
+                final res = await client.callKw({
+                  'model': 'res.partner',
+                  'method': 'search_read',
+                  'args': [domain],
+                  'kwargs': {
+                    'fields': [
+                      'id',
+                      'name',
+                      'email',
+                      'phone',
+                      'mobile',
+                      'image_128',
+                      'is_company',
+                    ],
+                    'limit': limit,
+                  },
+                });
+                return res is List ? res : <dynamic>[];
               }
-              return [];
+
+              // Prefer partners explicitly marked as customers.
+              var results = await runSearch([
+                ['customer_rank', '>', 0],
+                ...searchFilter,
+              ]);
+
+              // Fall back to all active partners if none are marked yet:
+              // Odoo only sets customer_rank once a partner has transacted, so
+              // a strict filter can wrongly return an empty customer list.
+              if (results.isEmpty) {
+                results = await runSearch(searchFilter);
+              }
+
+              return results.map((data) => Contact.fromJson(data)).toList();
             } catch (e) {
               return [];
             }
