@@ -969,7 +969,11 @@ class OdooSessionManager {
           } catch (_) {}
         }
       }
-      throw Exception(message);
+      // Surface the detailed server message (Odoo nests the real cause under
+      // error.data.message); the top-level message is the generic
+      // "Odoo Server Error", which hides what actually went wrong.
+      final dataMsg = data['error']['data']?['message']?.toString() ?? '';
+      throw Exception('$message${dataMsg.isNotEmpty ? ': $dataMsg' : ''}');
     }
     return data['result'];
   }
