@@ -84,7 +84,10 @@ class CustomerService {
     }
   }
 
-  Future<List<Contact>> fetchAllCustomers({String? searchQuery}) async {
+  Future<List<Contact>> fetchAllCustomers({
+    String? searchQuery,
+    int? limit,
+  }) async {
     try {
       final client = await OdooSessionManager.getClient();
       if (client == null) {
@@ -108,6 +111,7 @@ class CustomerService {
         'method': 'search_read',
         'args': [domain],
         'kwargs': {
+          if (limit != null) 'limit': limit,
           'fields': [
             'id',
             'name',
