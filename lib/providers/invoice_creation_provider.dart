@@ -950,8 +950,6 @@ class CreateInvoiceProvider with ChangeNotifier {
         'default_code',
         'taxes_id',
         'categ_id',
-        'product_tmpl_id',
-        'product_template_attribute_value_ids',
         'product_variant_count',
         'type',
         'image_1920',

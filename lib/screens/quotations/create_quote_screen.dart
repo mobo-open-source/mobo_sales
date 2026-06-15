@@ -1846,176 +1846,150 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
   Widget _buildSelectedCustomerCard() {
     if (_selectedCustomer == null) return const SizedBox.shrink();
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final customer = _selectedCustomer!;
 
-    return Container(
-      margin: const EdgeInsets.only(top: 8),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[800] : Colors.blue.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: isDark ? Colors.grey[600]! : Colors.blue.shade200,
-        ),
-      ),
-      child: Row(
-        children: [
-          Container(
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
-                  blurRadius: 4,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: CircleAvatar(
-              radius: 24,
-              backgroundColor: Theme.of(context).brightness == Brightness.dark
-                  ? Colors.grey[100]
-                  : Colors.grey[200],
-              child: CircularImageWidget(
-                base64Image: _selectedCustomer!.imageUrl,
-                radius: 24,
-                fallbackText: _selectedCustomer!.name,
-                backgroundColor: isDark ? Colors.grey[100]! : Colors.grey[200]!,
-                textColor: isDark ? Colors.black87 : Colors.black87,
-              ),
-            ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    return Card(
+      margin: const EdgeInsets.only(top: 0),
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      color: isDark ? Colors.grey[800] : Colors.white,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        _selectedCustomer!.name,
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                          color: Theme.of(context).brightness == Brightness.dark
-                              ? Colors.white
-                              : Colors.black87,
-                        ),
-                      ),
-                    ),
-                    if (_selectedCustomer!.isCompany == true)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.orange.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: Colors.orange.withOpacity(0.3),
-                          ),
-                        ),
-                        child: Text(
-                          'Company',
-                          style: TextStyle(
-                            color: Colors.orange[700],
-                            fontSize: 10,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                  ],
+                CircleAvatar(
+                  radius: 20,
+                  backgroundColor: isDark ? Colors.grey[100] : Colors.grey[200],
+                  child: customer.imageUrl != null &&
+                          customer.imageUrl!.isNotEmpty
+                      ? ClipOval(
+                          child: customer.imageUrl!.startsWith('http')
+                              ? Image.network(
+                                  customer.imageUrl!,
+                                  width: 40,
+                                  height: 40,
+                                  fit: BoxFit.cover,
+                                  errorBuilder:
+                                      (context, error, stackTrace) =>
+                                          _buildAvatarFallback(customer),
+                                )
+                              : _buildBase64Avatar(customer),
+                        )
+                      : _buildAvatarFallback(customer),
                 ),
-                if (_isValidField(_selectedCustomer!.function))
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Text(
-                      _selectedCustomer!.function!,
-                      style: TextStyle(
-                        color: Theme.of(context).brightness == Brightness.dark
-                            ? Colors.grey[400]
-                            : Colors.grey[600],
-                        fontSize: 12,
-                        fontStyle: FontStyle.italic,
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              customer.name,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 16,
+                                color: isDark
+                                    ? Colors.white
+                                    : Colors.black87,
+                              ),
+                            ),
+                          ),
+                          if (customer.isCompany == true)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: isDark
+                                    ? Colors.white.withOpacity(.1)
+                                    : Theme.of(context)
+                                        .primaryColor
+                                        .withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                'Company',
+                                style: TextStyle(
+                                  color: isDark
+                                      ? Colors.white
+                                      : Theme.of(context).primaryColor,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
-                    ),
+                      if (_buildAddressString(customer).isNotEmpty)
+                        Text(
+                          _buildAddressString(customer),
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isDark
+                                ? Colors.grey[400]
+                                : Colors.grey[600],
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                    ],
                   ),
-                const SizedBox(height: 8),
-                if (_isValidField(_selectedCustomer!.email))
-                  _buildContactInfo(
+                ),
+                IconButton(
+                  icon: const Icon(HugeIcons.strokeRoundedCancel01),
+                  onPressed: () {
+                    setState(() {
+                      _selectedCustomer = null;
+                      _customerSearchController.clear();
+                      _selectedPaymentTerm = null;
+                      _selectedPricelist = null;
+                      _isLoadingPaymentTermsShimmer = false;
+                      _isLoadingPricelistsShimmer = false;
+                    });
+                    if (_quoteLines.isNotEmpty) {
+                      _scheduleTaxRecalc();
+                    }
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              children: [
+                if (_isValidField(customer.email))
+                  _buildInfoChip(
                     HugeIcons.strokeRoundedMail01,
-                    _selectedCustomer!.email!,
+                    customer.email!,
+                    isDark,
                   ),
-                if (_isValidField(_selectedCustomer!.phone))
-                  _buildContactInfo(
+                if (_isValidField(customer.phone))
+                  _buildInfoChip(
                     HugeIcons.strokeRoundedCall,
-                    _selectedCustomer!.phone!,
+                    customer.phone!,
+                    isDark,
                   ),
-                if (_isValidField(_selectedCustomer!.mobile))
-                  _buildContactInfo(
+                if (_isValidField(customer.mobile))
+                  _buildInfoChip(
                     HugeIcons.strokeRoundedSmartPhone01,
-                    _selectedCustomer!.mobile!,
+                    customer.mobile!,
+                    isDark,
                   ),
-                if (_isValidField(_selectedCustomer!.website))
-                  _buildContactInfo(
-                    HugeIcons.strokeRoundedGlobe,
-                    _selectedCustomer!.website!,
-                  ),
-                if (_buildAddressString(_selectedCustomer!).isNotEmpty)
-                  _buildContactInfo(
-                    HugeIcons.strokeRoundedLocation01,
-                    _buildAddressString(_selectedCustomer!),
-                  ),
-                if (_isValidField(_selectedCustomer!.vat))
-                  _buildContactInfo(
-                    HugeIcons.strokeRoundedTaxes,
-                    'VAT: ${_selectedCustomer!.vat!}',
-                  ),
-                if (_isValidField(_selectedCustomer!.industry))
-                  _buildContactInfo(
-                    HugeIcons.strokeRoundedBuilding06,
-                    _selectedCustomer!.industry!,
-                  ),
-                if (_isValidField(_selectedCustomer!.customerRank))
-                  _buildContactInfo(
-                    HugeIcons.strokeRoundedStar,
-                    'Rank: ${_selectedCustomer!.customerRank!}',
-                  ),
-                if (_isValidField(_selectedCustomer!.salesperson))
-                  _buildContactInfo(
-                    HugeIcons.strokeRoundedUserAccount,
-                    'Sales: ${_selectedCustomer!.salesperson!}',
-                  ),
-                if (_isValidField(_selectedCustomer!.paymentTerms))
-                  _buildContactInfo(
-                    HugeIcons.strokeRoundedCreditCard,
-                    'Payment: ${_selectedCustomer!.paymentTerms!}',
-                  ),
-                if (_isValidField(_selectedCustomer!.creditLimit))
-                  _buildContactInfo(
-                    HugeIcons.strokeRoundedWallet01,
-                    'Credit Limit: ${_selectedCustomer!.creditLimit!}',
-                  ),
-                if (_isValidField(_selectedCustomer!.currency))
-                  _buildContactInfo(
-                    HugeIcons.strokeRoundedDollar01,
-                    'Currency: ${_selectedCustomer!.currency!}',
-                  ),
-                if (_isValidField(_selectedCustomer!.lang))
-                  _buildContactInfo(
-                    HugeIcons.strokeRoundedTranslate,
-                    'Language: ${_selectedCustomer!.lang!}',
-                  ),
-                if (_isValidField(_selectedCustomer!.timezone))
-                  _buildContactInfo(
-                    HugeIcons.strokeRoundedClock01,
-                    'Timezone: ${_selectedCustomer!.timezone!}',
+                if (_isValidField(customer.vat))
+                  _buildInfoChip(
+                    HugeIcons.strokeRoundedLegalDocument01,
+                    customer.vat!,
+                    isDark,
                   ),
               ],
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -2864,8 +2838,6 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                   children: [
                     _buildProfessionalCard(
                       title: 'Customer Information',
-                      icon: HugeIcons.strokeRoundedUser,
-
                       children: [
                         if (_selectedCustomer != null)
                           _buildSelectedCustomerCard()
@@ -2901,13 +2873,10 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                                 ? 'Please select a customer'
                                 : null,
                           ),
-                        _buildSelectedCustomerCard(),
                       ],
                     ),
                     _buildProfessionalCard(
                       title: 'Quote Details',
-                      icon: HugeIcons.strokeRoundedFile02,
-
                       children: [
                         CustomDateSelector(
                           onTap: _selectValidityDate,
@@ -3047,8 +3016,6 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                     ),
                     _buildProfessionalCard(
                       title: 'Products',
-                      icon: HugeIcons.strokeRoundedShoppingBasket01,
-
                       children: [
                         ProductTypeAhead(
                           controller: _productSearchController,
