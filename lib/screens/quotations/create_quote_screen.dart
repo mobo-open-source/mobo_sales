@@ -18,6 +18,7 @@ import '../../models/contact.dart';
 import '../../providers/contact_provider.dart';
 import '../../providers/currency_provider.dart';
 import '../../services/odoo_session_manager.dart';
+import '../../services/odoo_error_handler.dart';
 import '../../widgets/confetti_dialogs.dart';
 import '../../utils/data_loss_warning_mixin.dart';
 import '../../widgets/custom_text_field.dart';
@@ -1635,9 +1636,20 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
         }
       }
     } catch (e) {
-      _showErrorSnackBar(
-        'Failed to ${widget.quotationToEdit != null ? "update" : "create"} quote: ${e.toString()}',
-      );
+      final action = widget.quotationToEdit != null ? 'update' : 'create';
+      if (e is TimeoutException) {
+        _showErrorSnackBar(
+          'The server took too long to $action the quotation (over 60 seconds). '
+          'It may still have been saved — please check your quotations list before trying again.',
+        );
+      } else {
+        _showErrorSnackBar(
+          OdooErrorHandler.toUserMessage(
+            e,
+            defaultMessage: 'Failed to $action the quotation. Please try again.',
+          ),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {

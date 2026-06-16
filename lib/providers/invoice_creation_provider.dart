@@ -1050,7 +1050,7 @@ class CreateInvoiceProvider with ChangeNotifier {
           invoiceType,
           downPaymentPercentage,
           downPaymentAmount,
-        );
+        ).timeout(const Duration(seconds: 60));
       } else {
         if (_invoiceLines.isEmpty) {
           throw Exception('No invoice lines provided');
@@ -1068,13 +1068,20 @@ class CreateInvoiceProvider with ChangeNotifier {
         }
 
         if (_selectedSaleOrder != null) {
-          await _createInvoiceFromSaleOrder(context);
+          await _createInvoiceFromSaleOrder(
+            context,
+          ).timeout(const Duration(seconds: 60));
         } else {
-          await _createDirectInvoice(context);
+          await _createDirectInvoice(
+            context,
+          ).timeout(const Duration(seconds: 60));
         }
       }
     } catch (e) {
-      _errorMessage = OdooErrorHandler.toUserMessage(e);
+      _errorMessage = e is TimeoutException
+          ? 'The server took too long to create the invoice (over 60 seconds). '
+                'It may still have been created — please check your invoices before trying again.'
+          : OdooErrorHandler.toUserMessage(e);
     } finally {
       _isCreatingInvoice = false;
       _isLoading = false;
