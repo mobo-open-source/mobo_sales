@@ -1562,7 +1562,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
             'method': 'create',
             'args': [quoteData],
             'kwargs': {},
-          });
+          }).timeout(const Duration(seconds: 60));
         } catch (createError) {
           if (createError.toString().contains('product_uom') ||
               createError.toString().contains('Invalid field')) {
@@ -1591,7 +1591,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
               'method': 'create',
               'args': [quoteData],
               'kwargs': {},
-            });
+            }).timeout(const Duration(seconds: 60));
           } else {
             rethrow;
           }
