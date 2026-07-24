@@ -1394,20 +1394,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
 
     await Future.delayed(const Duration(milliseconds: 900));
-    await SessionService.instance.logout();
+    await SessionService.instance.logout(showNotice: false);
 
     if (dialogContext != null && dialogContext!.mounted) {
       Navigator.of(dialogContext!).pop();
     }
 
     if (context.mounted) {
-      Navigator.pushAndRemoveUntil(
+      Navigator.of(
         context,
-
-        MaterialPageRoute(builder: (context) => const AppEntryPoint()),
-        (route) => false,
-      );
-      CustomSnackbar.showSuccess(context, 'Logged out successfully');
+      ).pushNamedAndRemoveUntil('/login', (route) => false);
+    }
+    final rootContext = navigatorKey.currentContext;
+    if (rootContext != null && rootContext.mounted) {
+      CustomSnackbar.showSuccess(rootContext, 'Logged out successfully');
     }
   }
 
