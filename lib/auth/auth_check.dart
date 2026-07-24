@@ -15,6 +15,22 @@ class AuthCheck extends StatefulWidget {
 }
 
 class _AuthCheckState extends State<AuthCheck> {
+  late final Future<Map<String, dynamic>> _authFuture = _checkAuthStatus();
+  bool _navigated = false;
+
+  /// Clears the entire stack and lands on [routeName], at most once.
+  void _redirectTo(String routeName) {
+    if (_navigated) return;
+    _navigated = true;
+    Future.microtask(() {
+      if (mounted) {
+        Navigator.of(
+          context,
+        ).pushNamedAndRemoveUntil(routeName, (route) => false);
+      }
+    });
+  }
+
   Future<Map<String, dynamic>> _checkAuthStatus() async {
     final prefs = await SharedPreferences.getInstance();
     final isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
@@ -46,16 +62,12 @@ class _AuthCheckState extends State<AuthCheck> {
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<Map<String, dynamic>>(
-      future: _checkAuthStatus(),
+      future: _authFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return _buildLoadingScreen(context);
         } else if (snapshot.hasError || snapshot.data == null) {
-          Future.microtask(() {
-            if (context.mounted) {
-              Navigator.pushReplacementNamed(context, '/get_started');
-            }
-          });
+          _redirectTo('/get_started');
           return _buildLoadingScreen(context);
         }
 
@@ -69,45 +81,37 @@ class _AuthCheckState extends State<AuthCheck> {
             widget.skipBiometric || biometricContext.shouldSkipBiometric;
 
         if (biometricEnabled && isLoggedIn && !shouldSkipBiometric) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (context.mounted) {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => AppLockScreen(
-                    onAuthenticationSuccess: () {
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const HomeScaffold(),
-                        ),
-                      );
-                    },
+          if (!_navigated) {
+            _navigated = true;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => AppLockScreen(
+                      onAuthenticationSuccess: () {
+                        Navigator.pushReplacement(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const HomeScaffold(),
+                          ),
+                        );
+                      },
+                    ),
                   ),
-                ),
-              );
-            }
-          });
+                  (route) => false,
+                );
+              }
+            });
+          }
           return _buildLoadingScreen(context);
         } else if (isLoggedIn) {
           return const HomeScaffold();
         } else if (!hasSeenGetStarted) {
-          Future.microtask(() {
-            if (context.mounted) {
-              Navigator.pushReplacementNamed(context, '/get_started');
-            }
-          });
+          _redirectTo('/get_started');
           return _buildLoadingScreen(context);
         } else {
-          Future.microtask(() {
-            if (context.mounted) {
-              if (hasCredentials) {
-                Navigator.pushReplacementNamed(context, '/login');
-              } else {
-                Navigator.pushReplacementNamed(context, '/server_setup');
-              }
-            }
-          });
+          _redirectTo(hasCredentials ? '/login' : '/server_setup');
           return _buildLoadingScreen(context);
         }
       },

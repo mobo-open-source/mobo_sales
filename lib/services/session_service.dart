@@ -157,7 +157,9 @@ class SessionService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> logout() async {
+  /// [showNotice] shows the "Logged out" snackbar; pass false when the
+  /// caller presents its own logout feedback (e.g. settings/profile screens).
+  Future<void> logout({bool showNotice = true}) async {
     _isLoggingOut = true;
     notifyListeners();
     try {
@@ -173,7 +175,9 @@ class SessionService extends ChangeNotifier {
       _isLoggingOut = false;
       notifyListeners();
 
-      _showLoggedOutNoticeSafely();
+      if (showNotice) {
+        _showLoggedOutNoticeSafely();
+      }
     }
   }
 
