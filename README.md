@@ -37,7 +37,7 @@ Mobo Sales for Odoo is a powerful mobile application designed to extend Odoo Sal
 
 ##  App Demo
 
-[![Mobo Sales Demo](https://img.youtube.com/vi/CAf-KK6uCB8/0.jpg)](https://www.youtube.com/watch?v=CAf-KK6uCB8)
+[![Mobo Sales Demo](https://img.youtube.com/vi/CAf-KK6uCB8/maxresdefault.jpg)](https://www.youtube.com/watch?v=CAf-KK6uCB8)
 
 *Click the image above to watch the Mobo Sales demo on YouTube.*
 

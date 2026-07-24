@@ -36,6 +36,11 @@
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>This app needs camera access to take photos and scan barcodes/documents.</string>
 	<key>NSFaceIDUsageDescription</key>

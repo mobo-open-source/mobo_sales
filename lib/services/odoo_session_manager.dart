@@ -5,6 +5,7 @@ import 'package:odoo_rpc/odoo_rpc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart' as webview;
 
 /// Value object that holds all data for an active Odoo user session.
 class OdooSessionModel {
@@ -426,6 +427,12 @@ class OdooSessionManager {
     for (final k in keysToRemove) {
       await prefs.remove(k);
     }
+
+    try {
+      await webview.CookieManager.instance().deleteAllCookies().timeout(
+        const Duration(seconds: 3),
+      );
+    } catch (e) {}
 
     clearClientCache();
     _cachedSession = null;
