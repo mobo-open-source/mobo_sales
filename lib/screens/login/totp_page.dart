@@ -44,6 +44,22 @@ class _TotpPageState extends State<TotpPage> {
   bool _isSessionExtracted = false;
   bool _loginSuccess = false;
 
+  /// Whether [url] is a signed-in Odoo page.
+  ///
+  /// Classified on the parsed [Uri.path], never the raw URL string. A
+  /// substring test such as `url.contains('/odoo')` also matches the `//odoo`
+  /// inside a host like `https://odoo.customer.com`, which makes every page on
+  /// that server — including the login page — look like a completed sign-in.
+  static bool _isSignedInUrl(String url) {
+    final path = Uri.tryParse(url)?.path ?? '';
+    if (path.contains('/login') || path.contains('/totp')) return false;
+    return path == '/web' ||
+        path.startsWith('/web/') ||
+        path == '/odoo' ||
+        path.startsWith('/odoo/') ||
+        path.startsWith('/website');
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -134,13 +150,7 @@ class _TotpPageState extends State<TotpPage> {
                     return;
                   }
 
-                  if ((urlStr.contains('/web') ||
-                          urlStr.contains('/odoo/discuss') ||
-                          urlStr.contains('/odoo') ||
-                          urlStr.contains('/odoo/apps') ||
-                          urlStr.contains('/website')) &&
-                      !urlStr.contains('/login') &&
-                      !urlStr.contains('/totp')) {
+                  if (_isSignedInUrl(urlStr)) {
                     final sessionInfo = await controller.evaluateJavascript(
                       source: """
                       (function () {
@@ -593,11 +603,7 @@ class _TotpPageState extends State<TotpPage> {
       );
 
       bool success = false;
-      if (domSuccess == true ||
-          urlStr.contains('/web?') ||
-          urlStr.contains('/odoo/discuss?') ||
-          urlStr.contains('/odoo') ||
-          urlStr.contains('/odoo/apps?')) {
+      if (domSuccess == true || _isSignedInUrl(urlStr)) {
         success = await _saveSessionData(sessionInfo: sessionInfo);
       }
 
@@ -610,12 +616,7 @@ class _TotpPageState extends State<TotpPage> {
         final isSuccess =
             sessionCookie.value.isNotEmpty &&
             sessionCookie.value.length > 20 &&
-            ((urlStr.contains('/web') ||
-                    (urlStr.contains('/odoo/discuss')) ||
-                    (urlStr.contains('/odoo')) ||
-                    (urlStr.contains('/odoo/apps'))) &&
-                !urlStr.contains('/login') &&
-                !urlStr.contains('/totp'));
+            _isSignedInUrl(urlStr);
 
         if (!isSuccess) {
           if (mounted) {
