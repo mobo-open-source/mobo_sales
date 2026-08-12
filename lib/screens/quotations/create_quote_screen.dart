@@ -1558,12 +1558,14 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
 
         int? quoteId;
         try {
-          quoteId = await client.callKw({
-            'model': 'sale.order',
-            'method': 'create',
-            'args': [quoteData],
-            'kwargs': {},
-          }).timeout(const Duration(seconds: 60));
+          quoteId = await client
+              .callKw({
+                'model': 'sale.order',
+                'method': 'create',
+                'args': [quoteData],
+                'kwargs': {},
+              })
+              .timeout(const Duration(seconds: 60));
         } catch (createError) {
           if (createError.toString().contains('product_uom') ||
               createError.toString().contains('Invalid field')) {
@@ -1587,12 +1589,14 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
 
             quoteData['order_line'] = fallbackOrderLines;
 
-            quoteId = await client.callKw({
-              'model': 'sale.order',
-              'method': 'create',
-              'args': [quoteData],
-              'kwargs': {},
-            }).timeout(const Duration(seconds: 60));
+            quoteId = await client
+                .callKw({
+                  'model': 'sale.order',
+                  'method': 'create',
+                  'args': [quoteData],
+                  'kwargs': {},
+                })
+                .timeout(const Duration(seconds: 60));
           } else {
             rethrow;
           }
@@ -1646,7 +1650,8 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
         _showErrorSnackBar(
           OdooErrorHandler.toUserMessage(
             e,
-            defaultMessage: 'Failed to $action the quotation. Please try again.',
+            defaultMessage:
+                'Failed to $action the quotation. Please try again.',
           ),
         );
       }
@@ -1875,8 +1880,8 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                 CircleAvatar(
                   radius: 20,
                   backgroundColor: isDark ? Colors.grey[100] : Colors.grey[200],
-                  child: customer.imageUrl != null &&
-                          customer.imageUrl!.isNotEmpty
+                  child:
+                      customer.imageUrl != null && customer.imageUrl!.isNotEmpty
                       ? ClipOval(
                           child: customer.imageUrl!.startsWith('http')
                               ? Image.network(
@@ -1884,9 +1889,8 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                                   width: 40,
                                   height: 40,
                                   fit: BoxFit.cover,
-                                  errorBuilder:
-                                      (context, error, stackTrace) =>
-                                          _buildAvatarFallback(customer),
+                                  errorBuilder: (context, error, stackTrace) =>
+                                      _buildAvatarFallback(customer),
                                 )
                               : _buildBase64Avatar(customer),
                         )
@@ -1905,9 +1909,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                               style: TextStyle(
                                 fontWeight: FontWeight.w600,
                                 fontSize: 16,
-                                color: isDark
-                                    ? Colors.white
-                                    : Colors.black87,
+                                color: isDark ? Colors.white : Colors.black87,
                               ),
                             ),
                           ),
@@ -1920,9 +1922,9 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                               decoration: BoxDecoration(
                                 color: isDark
                                     ? Colors.white.withOpacity(.1)
-                                    : Theme.of(context)
-                                        .primaryColor
-                                        .withOpacity(0.1),
+                                    : Theme.of(
+                                        context,
+                                      ).primaryColor.withOpacity(0.1),
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: Text(
@@ -1943,9 +1945,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                           _buildAddressString(customer),
                           style: TextStyle(
                             fontSize: 12,
-                            color: isDark
-                                ? Colors.grey[400]
-                                : Colors.grey[600],
+                            color: isDark ? Colors.grey[400] : Colors.grey[600],
                           ),
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
@@ -2839,649 +2839,683 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
           ),
         ),
       ),
-      body: _isInitialLoad
-          ? _buildCreateQuoteShimmer()
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildProfessionalCard(
-                      title: 'Customer Information',
-                      children: [
-                        if (_selectedCustomer != null)
-                          _buildSelectedCustomerCard()
-                        else
-                          CustomerTypeAhead(
-                            controller: _customerSearchController,
-                            labelText: 'Customer',
-                            isDark: isDark,
-                            onCustomerSelected: (customer) {
-                              setState(() {
-                                _selectedCustomer = customer;
-                                _customerSearchController.text = customer.name;
-                              });
-                              _loadCustomerDefaults(customer);
-                              if (_quoteLines.isNotEmpty) {
-                                _scheduleTaxRecalc();
-                              }
-                            },
-                            onClear: () {
-                              setState(() {
-                                _selectedCustomer = null;
-                                _customerSearchController.clear();
-                                _selectedPaymentTerm = null;
-                                _selectedPricelist = null;
-                                _isLoadingPaymentTermsShimmer = false;
-                                _isLoadingPricelistsShimmer = false;
-                              });
-                              if (_quoteLines.isNotEmpty) {
-                                _scheduleTaxRecalc();
-                              }
-                            },
-                            validator: (value) => _selectedCustomer == null
-                                ? 'Please select a customer'
-                                : null,
-                          ),
-                      ],
-                    ),
-                    _buildProfessionalCard(
-                      title: 'Quote Details',
-                      children: [
-                        CustomDateSelector(
-                          onTap: _selectValidityDate,
-                          selectedDate:
-                              _validityDate ??
-                              DateTime.now().add(const Duration(days: 30)),
-                          labelText: 'Validity Date',
-                          isDark: isDark,
-                          showBorder: true,
-                        ),
-                        const SizedBox(height: 20),
-                        CustomTextField(
-                          controller: _notesController,
-                          labelText: 'Notes (Optional)',
-                          isDark: isDark,
-                          maxLines: 3,
-                          validator: (value) => null,
-                        ),
-                        const SizedBox(height: 20),
-                        _isLoadingPaymentTermsShimmer
-                            ? _buildShimmerDropdown('Loading payment terms...')
-                            : CustomDropdownField(
-                                value: _selectedPaymentTerm?['id']?.toString(),
-                                labelText: 'Payment Terms',
-                                hintText: 'Select payment terms (optional)',
-                                isDark: isDark,
-                                items: [
-                                  const DropdownMenuItem<String>(
-                                    value: null,
-                                    child: Text('Select Payment Terms'),
-                                  ),
-
-                                  ...(() {
-                                    final items = _paymentTerms.map((term) {
-                                      return DropdownMenuItem<String>(
-                                        value: term['id']?.toString(),
-                                        child: Text(
-                                          term['name'] ?? 'Unknown',
-                                          overflow: TextOverflow.ellipsis,
-                                          maxLines: 1,
-                                        ),
-                                      );
-                                    }).toList();
-                                    final deduped = items
-                                        .fold<
-                                          Map<String, DropdownMenuItem<String>>
-                                        >({}, (map, item) {
-                                          if (item.value != null &&
-                                              !map.containsKey(item.value)) {
-                                            map[item.value!] = item;
-                                          }
-                                          return map;
-                                        });
-                                    return deduped.values.toList();
-                                  })(),
-                                ],
-                                onChanged: (value) {
-                                  if (value == null) {
-                                    setState(() {
-                                      _selectedPaymentTerm = null;
-                                    });
-                                  } else {
-                                    final term = _paymentTerms.firstWhere(
-                                      (t) => t['id']?.toString() == value,
-                                      orElse: () => <String, dynamic>{},
-                                    );
-                                    setState(() {
-                                      _selectedPaymentTerm = term.isNotEmpty
-                                          ? term
-                                          : null;
-                                    });
-                                  }
-                                },
-                                validator: (value) => null,
-                              ),
-                        const SizedBox(height: 20),
-                        _isLoadingPricelistsShimmer
-                            ? _buildShimmerDropdown('Loading pricelists...')
-                            : CustomDropdownField(
-                                value: _selectedPricelist?['id']?.toString(),
-                                labelText: 'Pricelist',
-                                hintText: 'Select pricelist (optional)',
-                                isDark: isDark,
-                                items: [
-                                  const DropdownMenuItem<String>(
-                                    value: null,
-                                    child: Text('Select Pricelist'),
-                                  ),
-
-                                  ...(() {
-                                    final items = _pricelists.map((pricelist) {
-                                      return DropdownMenuItem<String>(
-                                        value: pricelist['id']?.toString(),
-                                        child: Text(
-                                          pricelist['display_name'] ??
-                                              pricelist['name'] ??
-                                              'Unknown',
-                                          overflow: TextOverflow.ellipsis,
-                                          maxLines: 1,
-                                        ),
-                                      );
-                                    }).toList();
-                                    final deduped = items
-                                        .fold<
-                                          Map<String, DropdownMenuItem<String>>
-                                        >({}, (map, item) {
-                                          if (item.value != null &&
-                                              !map.containsKey(item.value)) {
-                                            map[item.value!] = item;
-                                          }
-                                          return map;
-                                        });
-                                    return deduped.values.toList();
-                                  })(),
-                                ],
-                                onChanged: (value) {
-                                  if (value == null) {
-                                    setState(() {
-                                      _selectedPricelist = null;
-                                    });
-                                  } else {
-                                    final pricelist = _pricelists.firstWhere(
-                                      (p) => p['id']?.toString() == value,
-                                      orElse: () => <String, dynamic>{},
-                                    );
-                                    setState(() {
-                                      _selectedPricelist = pricelist.isNotEmpty
-                                          ? pricelist
-                                          : null;
-                                    });
-                                  }
-                                },
-                                validator: (value) => null,
-                              ),
-                        const SizedBox(height: 20),
-                      ],
-                    ),
-                    _buildProfessionalCard(
-                      title: 'Products',
-                      children: [
-                        ProductTypeAhead(
-                          controller: _productSearchController,
-                          labelText: 'Search Product to Add',
-                          isDark: isDark,
-                          onProductSelected: (product) {
-                            setState(() {
-                              _isAddingLine = true;
-                              final productId = int.tryParse(product.id) ?? 0;
-                              final productName = product.name;
-                              final unitPrice = product.listPrice;
-                              final quantity = 1.0;
-                              final subtotal = quantity * unitPrice;
-
-                              final productMap = {
-                                'id': product.id,
-                                'name': product.name,
-                                'list_price': product.listPrice,
-                                'qty_available': product.qtyAvailable,
-                                'default_code': product.defaultCode,
-                                'barcode': product.barcode,
-                                'image_url': product.imageUrl,
-                                'uom_id': product.uomId,
-                                'tax_id': product.taxesIds,
-                              };
-
-                              _quoteLines.insert(0, {
-                                'line_uid': _quoteLineUidSeq++,
-                                'product_id': productId,
-                                'product_name': productName,
-                                'uom_id': product.uomId ?? 1,
-                                'quantity': quantity,
-                                'unit_price': unitPrice,
-                                'subtotal': subtotal,
-                                'product_data': productMap,
-                                'discount': 0.0,
-                                'tax_id': product.taxesIds,
-                              });
-                              _productSearchController.clear();
-                            });
-
-                            _debouncedTaxRecalc?.cancel();
-                            _calculateTaxAmount().whenComplete(() {
-                              if (mounted) {
+      body: SafeArea(
+        top: false,
+        left: false,
+        right: false,
+        child: _isInitialLoad
+            ? _buildCreateQuoteShimmer()
+            : SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildProfessionalCard(
+                        title: 'Customer Information',
+                        children: [
+                          if (_selectedCustomer != null)
+                            _buildSelectedCustomerCard()
+                          else
+                            CustomerTypeAhead(
+                              controller: _customerSearchController,
+                              labelText: 'Customer',
+                              isDark: isDark,
+                              onCustomerSelected: (customer) {
                                 setState(() {
-                                  _isAddingLine = false;
+                                  _selectedCustomer = customer;
+                                  _customerSearchController.text =
+                                      customer.name;
                                 });
-                              }
-                            });
-                          },
-                        ),
-                        const SizedBox(height: 20),
-                        if (_quoteLines.isEmpty)
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(32),
-                            decoration: BoxDecoration(
-                              color: isDark
-                                  ? Colors.grey[800]
-                                  : Colors.grey[100],
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: isDark
-                                    ? Colors.grey[700]!
-                                    : Colors.grey[200]!,
-                              ),
+                                _loadCustomerDefaults(customer);
+                                if (_quoteLines.isNotEmpty) {
+                                  _scheduleTaxRecalc();
+                                }
+                              },
+                              onClear: () {
+                                setState(() {
+                                  _selectedCustomer = null;
+                                  _customerSearchController.clear();
+                                  _selectedPaymentTerm = null;
+                                  _selectedPricelist = null;
+                                  _isLoadingPaymentTermsShimmer = false;
+                                  _isLoadingPricelistsShimmer = false;
+                                });
+                                if (_quoteLines.isNotEmpty) {
+                                  _scheduleTaxRecalc();
+                                }
+                              },
+                              validator: (value) => _selectedCustomer == null
+                                  ? 'Please select a customer'
+                                  : null,
                             ),
-                            child: Column(
-                              children: [
-                                Icon(
-                                  HugeIcons.strokeRoundedShoppingBasket01,
-                                  size: 48,
-                                  color: isDark
-                                      ? Colors.grey[600]
-                                      : Colors.grey[400],
-                                ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  'No products added yet',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w500,
-                                    color: isDark
-                                        ? Colors.grey[400]
-                                        : Colors.grey[600],
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  'Tap "Add Product" to get started',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    color: isDark
-                                        ? Colors.grey[500]
-                                        : Colors.grey[500],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          )
-                        else
-                          Column(
-                            children: [
-                              ...List.generate(_quoteLines.length, (index) {
-                                final line = _quoteLines[index];
-                                final isConfirmedOrder =
-                                    widget.quotationToEdit != null &&
-                                    widget.quotationToEdit!['state'] == 'sale';
-                                return _QuoteLineItem(
-                                  key: ValueKey(line['line_uid']),
-                                  line: line,
-                                  index: index,
-                                  isLast: index == _quoteLines.length - 1,
+                        ],
+                      ),
+                      _buildProfessionalCard(
+                        title: 'Quote Details',
+                        children: [
+                          CustomDateSelector(
+                            onTap: _selectValidityDate,
+                            selectedDate:
+                                _validityDate ??
+                                DateTime.now().add(const Duration(days: 30)),
+                            labelText: 'Validity Date',
+                            isDark: isDark,
+                            showBorder: true,
+                          ),
+                          const SizedBox(height: 20),
+                          CustomTextField(
+                            controller: _notesController,
+                            labelText: 'Notes (Optional)',
+                            isDark: isDark,
+                            maxLines: 3,
+                            validator: (value) => null,
+                          ),
+                          const SizedBox(height: 20),
+                          _isLoadingPaymentTermsShimmer
+                              ? _buildShimmerDropdown(
+                                  'Loading payment terms...',
+                                )
+                              : CustomDropdownField(
+                                  value: _selectedPaymentTerm?['id']
+                                      ?.toString(),
+                                  labelText: 'Payment Terms',
+                                  hintText: 'Select payment terms (optional)',
                                   isDark: isDark,
-                                  isConfirmedOrder: isConfirmedOrder,
-                                  onEdit: () => _editLine(index),
-                                  onDelete: () => _removeLine(index),
-                                  onUpdate: (quantity, unitPrice) =>
-                                      _updateLine(index, quantity, unitPrice),
-                                );
-                              }),
-                              if (_isAddingLine) ...[
-                                const SizedBox(height: 8),
-                                Card(
-                                  margin: const EdgeInsets.only(bottom: 8),
-                                  elevation: 0,
-                                  color: isDark
-                                      ? Colors.grey[850]
-                                      : Colors.white,
-                                  child: const Padding(
-                                    padding: EdgeInsets.all(16),
-                                    child: Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        SizedBox(
-                                          width: 18,
-                                          height: 18,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
+                                  items: [
+                                    const DropdownMenuItem<String>(
+                                      value: null,
+                                      child: Text('Select Payment Terms'),
+                                    ),
+
+                                    ...(() {
+                                      final items = _paymentTerms.map((term) {
+                                        return DropdownMenuItem<String>(
+                                          value: term['id']?.toString(),
+                                          child: Text(
+                                            term['name'] ?? 'Unknown',
+                                            overflow: TextOverflow.ellipsis,
+                                            maxLines: 1,
                                           ),
+                                        );
+                                      }).toList();
+                                      final deduped = items
+                                          .fold<
+                                            Map<
+                                              String,
+                                              DropdownMenuItem<String>
+                                            >
+                                          >({}, (map, item) {
+                                            if (item.value != null &&
+                                                !map.containsKey(item.value)) {
+                                              map[item.value!] = item;
+                                            }
+                                            return map;
+                                          });
+                                      return deduped.values.toList();
+                                    })(),
+                                  ],
+                                  onChanged: (value) {
+                                    if (value == null) {
+                                      setState(() {
+                                        _selectedPaymentTerm = null;
+                                      });
+                                    } else {
+                                      final term = _paymentTerms.firstWhere(
+                                        (t) => t['id']?.toString() == value,
+                                        orElse: () => <String, dynamic>{},
+                                      );
+                                      setState(() {
+                                        _selectedPaymentTerm = term.isNotEmpty
+                                            ? term
+                                            : null;
+                                      });
+                                    }
+                                  },
+                                  validator: (value) => null,
+                                ),
+                          const SizedBox(height: 20),
+                          _isLoadingPricelistsShimmer
+                              ? _buildShimmerDropdown('Loading pricelists...')
+                              : CustomDropdownField(
+                                  value: _selectedPricelist?['id']?.toString(),
+                                  labelText: 'Pricelist',
+                                  hintText: 'Select pricelist (optional)',
+                                  isDark: isDark,
+                                  items: [
+                                    const DropdownMenuItem<String>(
+                                      value: null,
+                                      child: Text('Select Pricelist'),
+                                    ),
+
+                                    ...(() {
+                                      final items = _pricelists.map((
+                                        pricelist,
+                                      ) {
+                                        return DropdownMenuItem<String>(
+                                          value: pricelist['id']?.toString(),
+                                          child: Text(
+                                            pricelist['display_name'] ??
+                                                pricelist['name'] ??
+                                                'Unknown',
+                                            overflow: TextOverflow.ellipsis,
+                                            maxLines: 1,
+                                          ),
+                                        );
+                                      }).toList();
+                                      final deduped = items
+                                          .fold<
+                                            Map<
+                                              String,
+                                              DropdownMenuItem<String>
+                                            >
+                                          >({}, (map, item) {
+                                            if (item.value != null &&
+                                                !map.containsKey(item.value)) {
+                                              map[item.value!] = item;
+                                            }
+                                            return map;
+                                          });
+                                      return deduped.values.toList();
+                                    })(),
+                                  ],
+                                  onChanged: (value) {
+                                    if (value == null) {
+                                      setState(() {
+                                        _selectedPricelist = null;
+                                      });
+                                    } else {
+                                      final pricelist = _pricelists.firstWhere(
+                                        (p) => p['id']?.toString() == value,
+                                        orElse: () => <String, dynamic>{},
+                                      );
+                                      setState(() {
+                                        _selectedPricelist =
+                                            pricelist.isNotEmpty
+                                            ? pricelist
+                                            : null;
+                                      });
+                                    }
+                                  },
+                                  validator: (value) => null,
+                                ),
+                          const SizedBox(height: 20),
+                        ],
+                      ),
+                      _buildProfessionalCard(
+                        title: 'Products',
+                        children: [
+                          ProductTypeAhead(
+                            controller: _productSearchController,
+                            labelText: 'Search Product to Add',
+                            isDark: isDark,
+                            onProductSelected: (product) {
+                              setState(() {
+                                _isAddingLine = true;
+                                final productId = int.tryParse(product.id) ?? 0;
+                                final productName = product.name;
+                                final unitPrice = product.listPrice;
+                                final quantity = 1.0;
+                                final subtotal = quantity * unitPrice;
+
+                                final productMap = {
+                                  'id': product.id,
+                                  'name': product.name,
+                                  'list_price': product.listPrice,
+                                  'qty_available': product.qtyAvailable,
+                                  'default_code': product.defaultCode,
+                                  'barcode': product.barcode,
+                                  'image_url': product.imageUrl,
+                                  'uom_id': product.uomId,
+                                  'tax_id': product.taxesIds,
+                                };
+
+                                _quoteLines.insert(0, {
+                                  'line_uid': _quoteLineUidSeq++,
+                                  'product_id': productId,
+                                  'product_name': productName,
+                                  'uom_id': product.uomId ?? 1,
+                                  'quantity': quantity,
+                                  'unit_price': unitPrice,
+                                  'subtotal': subtotal,
+                                  'product_data': productMap,
+                                  'discount': 0.0,
+                                  'tax_id': product.taxesIds,
+                                });
+                                _productSearchController.clear();
+                              });
+
+                              _debouncedTaxRecalc?.cancel();
+                              _calculateTaxAmount().whenComplete(() {
+                                if (mounted) {
+                                  setState(() {
+                                    _isAddingLine = false;
+                                  });
+                                }
+                              });
+                            },
+                          ),
+                          const SizedBox(height: 20),
+                          if (_quoteLines.isEmpty)
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(32),
+                              decoration: BoxDecoration(
+                                color: isDark
+                                    ? Colors.grey[800]
+                                    : Colors.grey[100],
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: isDark
+                                      ? Colors.grey[700]!
+                                      : Colors.grey[200]!,
+                                ),
+                              ),
+                              child: Column(
+                                children: [
+                                  Icon(
+                                    HugeIcons.strokeRoundedShoppingBasket01,
+                                    size: 48,
+                                    color: isDark
+                                        ? Colors.grey[600]
+                                        : Colors.grey[400],
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    'No products added yet',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w500,
+                                      color: isDark
+                                          ? Colors.grey[400]
+                                          : Colors.grey[600],
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Tap "Add Product" to get started',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: isDark
+                                          ? Colors.grey[500]
+                                          : Colors.grey[500],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                          else
+                            Column(
+                              children: [
+                                ...List.generate(_quoteLines.length, (index) {
+                                  final line = _quoteLines[index];
+                                  final isConfirmedOrder =
+                                      widget.quotationToEdit != null &&
+                                      widget.quotationToEdit!['state'] ==
+                                          'sale';
+                                  return _QuoteLineItem(
+                                    key: ValueKey(line['line_uid']),
+                                    line: line,
+                                    index: index,
+                                    isLast: index == _quoteLines.length - 1,
+                                    isDark: isDark,
+                                    isConfirmedOrder: isConfirmedOrder,
+                                    onEdit: () => _editLine(index),
+                                    onDelete: () => _removeLine(index),
+                                    onUpdate: (quantity, unitPrice) =>
+                                        _updateLine(index, quantity, unitPrice),
+                                  );
+                                }),
+                                if (_isAddingLine) ...[
+                                  const SizedBox(height: 8),
+                                  Card(
+                                    margin: const EdgeInsets.only(bottom: 8),
+                                    elevation: 0,
+                                    color: isDark
+                                        ? Colors.grey[850]
+                                        : Colors.white,
+                                    child: const Padding(
+                                      padding: EdgeInsets.all(16),
+                                      child: Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          SizedBox(
+                                            width: 18,
+                                            height: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
+                                          ),
+                                          SizedBox(width: 10),
+                                          Text('Adding product...'),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                                if (_quoteLines.isNotEmpty) ...[
+                                  const SizedBox(height: 16),
+                                  Container(
+                                    padding: const EdgeInsets.all(20),
+                                    decoration: BoxDecoration(
+                                      color: isDark
+                                          ? Colors.white.withOpacity(.1)
+                                          : Colors.blue.withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                        color: isDark
+                                            ? Colors.white.withOpacity(.3)
+                                            : Colors.blue.withOpacity(0.3),
+                                      ),
+                                    ),
+                                    child: Column(
+                                      children: [
+                                        Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Flexible(
+                                              child: Text(
+                                                'Subtotal:',
+                                                style: TextStyle(
+                                                  fontSize: 16,
+                                                  fontWeight: FontWeight.w500,
+                                                  color: isDark
+                                                      ? Colors.grey[300]
+                                                      : Colors.grey[700],
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Flexible(
+                                              child: Consumer<CurrencyProvider>(
+                                                builder: (context, currencyProvider, _) {
+                                                  final code =
+                                                      (currencyProvider
+                                                                  .companyCurrencyIdList !=
+                                                              null &&
+                                                          currencyProvider
+                                                                  .companyCurrencyIdList!
+                                                                  .length >
+                                                              1)
+                                                      ? currencyProvider
+                                                            .companyCurrencyIdList![1]
+                                                            .toString()
+                                                      : currencyProvider
+                                                            .currency;
+                                                  final formatted =
+                                                      currencyProvider
+                                                          .formatAmount(
+                                                            _subtotal,
+                                                            currency: code,
+                                                          );
+                                                  return Text(
+                                                    formatted,
+                                                    style: TextStyle(
+                                                      fontSize: 16,
+                                                      fontWeight:
+                                                          FontWeight.w500,
+                                                      color: isDark
+                                                          ? Colors.grey[300]
+                                                          : Colors.grey[700],
+                                                    ),
+                                                    textAlign: TextAlign.end,
+                                                  );
+                                                },
+                                              ),
+                                            ),
+                                          ],
                                         ),
-                                        SizedBox(width: 10),
-                                        Text('Adding product...'),
+                                        const SizedBox(height: 8),
+
+                                        Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Flexible(
+                                              child: Text(
+                                                'Tax:',
+                                                style: TextStyle(
+                                                  fontSize: 16,
+                                                  fontWeight: FontWeight.w500,
+                                                  color: isDark
+                                                      ? Colors.grey[300]
+                                                      : Colors.grey[700],
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Flexible(
+                                              child: _isCalculatingTax
+                                                  ? Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        SizedBox(
+                                                          width: 16,
+                                                          height: 16,
+                                                          child: CircularProgressIndicator(
+                                                            strokeWidth: 2,
+                                                            valueColor:
+                                                                AlwaysStoppedAnimation<
+                                                                  Color
+                                                                >(
+                                                                  isDark
+                                                                      ? Colors
+                                                                            .blue[300]!
+                                                                      : Colors
+                                                                            .blue,
+                                                                ),
+                                                          ),
+                                                        ),
+                                                        const SizedBox(
+                                                          width: 8,
+                                                        ),
+                                                        Text(
+                                                          'Calculating...',
+                                                          style: TextStyle(
+                                                            fontSize: 14,
+                                                            color: isDark
+                                                                ? Colors
+                                                                      .grey[400]
+                                                                : Colors
+                                                                      .grey[600],
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    )
+                                                  : Consumer<CurrencyProvider>(
+                                                      builder:
+                                                          (
+                                                            context,
+                                                            currencyProvider,
+                                                            _,
+                                                          ) {
+                                                            final code =
+                                                                (currencyProvider
+                                                                            .companyCurrencyIdList !=
+                                                                        null &&
+                                                                    currencyProvider
+                                                                            .companyCurrencyIdList!
+                                                                            .length >
+                                                                        1)
+                                                                ? currencyProvider
+                                                                      .companyCurrencyIdList![1]
+                                                                      .toString()
+                                                                : currencyProvider
+                                                                      .currency;
+                                                            final formatted =
+                                                                currencyProvider
+                                                                    .formatAmount(
+                                                                      _taxAmount,
+                                                                      currency:
+                                                                          code,
+                                                                    );
+                                                            return Text(
+                                                              formatted,
+                                                              style: TextStyle(
+                                                                fontSize: 16,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w500,
+                                                                color: isDark
+                                                                    ? Colors
+                                                                          .grey[300]
+                                                                    : Colors
+                                                                          .grey[700],
+                                                              ),
+                                                              textAlign:
+                                                                  TextAlign.end,
+                                                            );
+                                                          },
+                                                    ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 12),
+
+                                        Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Flexible(
+                                              child: Text(
+                                                'Total Amount:',
+                                                style: TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: isDark
+                                                      ? Colors.white
+                                                      : Colors.grey[900],
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Flexible(
+                                              child: Consumer<CurrencyProvider>(
+                                                builder: (context, currencyProvider, _) {
+                                                  final code =
+                                                      (currencyProvider
+                                                                  .companyCurrencyIdList !=
+                                                              null &&
+                                                          currencyProvider
+                                                                  .companyCurrencyIdList!
+                                                                  .length >
+                                                              1)
+                                                      ? currencyProvider
+                                                            .companyCurrencyIdList![1]
+                                                            .toString()
+                                                      : currencyProvider
+                                                            .currency;
+                                                  final formatted =
+                                                      currencyProvider
+                                                          .formatAmount(
+                                                            _total,
+                                                            currency: code,
+                                                          );
+                                                  return Text(
+                                                    formatted,
+                                                    style: TextStyle(
+                                                      fontSize: 20,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      color: isDark
+                                                          ? Colors.white
+                                                          : Colors.blue,
+                                                    ),
+                                                    textAlign: TextAlign.end,
+                                                  );
+                                                },
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                       ],
                                     ),
                                   ),
-                                ),
+                                ],
                               ],
-                              if (_quoteLines.isNotEmpty) ...[
-                                const SizedBox(height: 16),
-                                Container(
-                                  padding: const EdgeInsets.all(20),
-                                  decoration: BoxDecoration(
-                                    color: isDark
-                                        ? Colors.white.withOpacity(.1)
-                                        : Colors.blue.withOpacity(0.1),
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                      color: isDark
-                                          ? Colors.white.withOpacity(.3)
-                                          : Colors.blue.withOpacity(0.3),
-                                    ),
-                                  ),
-                                  child: Column(
-                                    children: [
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Flexible(
-                                            child: Text(
-                                              'Subtotal:',
-                                              style: TextStyle(
-                                                fontSize: 16,
-                                                fontWeight: FontWeight.w500,
-                                                color: isDark
-                                                    ? Colors.grey[300]
-                                                    : Colors.grey[700],
-                                              ),
-                                            ),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Flexible(
-                                            child: Consumer<CurrencyProvider>(
-                                              builder: (context, currencyProvider, _) {
-                                                final code =
-                                                    (currencyProvider
-                                                                .companyCurrencyIdList !=
-                                                            null &&
-                                                        currencyProvider
-                                                                .companyCurrencyIdList!
-                                                                .length >
-                                                            1)
-                                                    ? currencyProvider
-                                                          .companyCurrencyIdList![1]
-                                                          .toString()
-                                                    : currencyProvider.currency;
-                                                final formatted =
-                                                    currencyProvider
-                                                        .formatAmount(
-                                                          _subtotal,
-                                                          currency: code,
-                                                        );
-                                                return Text(
-                                                  formatted,
-                                                  style: TextStyle(
-                                                    fontSize: 16,
-                                                    fontWeight: FontWeight.w500,
-                                                    color: isDark
-                                                        ? Colors.grey[300]
-                                                        : Colors.grey[700],
-                                                  ),
-                                                  textAlign: TextAlign.end,
-                                                );
-                                              },
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 8),
-
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Flexible(
-                                            child: Text(
-                                              'Tax:',
-                                              style: TextStyle(
-                                                fontSize: 16,
-                                                fontWeight: FontWeight.w500,
-                                                color: isDark
-                                                    ? Colors.grey[300]
-                                                    : Colors.grey[700],
-                                              ),
-                                            ),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Flexible(
-                                            child: _isCalculatingTax
-                                                ? Row(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      SizedBox(
-                                                        width: 16,
-                                                        height: 16,
-                                                        child: CircularProgressIndicator(
-                                                          strokeWidth: 2,
-                                                          valueColor:
-                                                              AlwaysStoppedAnimation<
-                                                                Color
-                                                              >(
-                                                                isDark
-                                                                    ? Colors
-                                                                          .blue[300]!
-                                                                    : Colors
-                                                                          .blue,
-                                                              ),
-                                                        ),
-                                                      ),
-                                                      const SizedBox(width: 8),
-                                                      Text(
-                                                        'Calculating...',
-                                                        style: TextStyle(
-                                                          fontSize: 14,
-                                                          color: isDark
-                                                              ? Colors.grey[400]
-                                                              : Colors
-                                                                    .grey[600],
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  )
-                                                : Consumer<CurrencyProvider>(
-                                                    builder: (context, currencyProvider, _) {
-                                                      final code =
-                                                          (currencyProvider
-                                                                      .companyCurrencyIdList !=
-                                                                  null &&
-                                                              currencyProvider
-                                                                      .companyCurrencyIdList!
-                                                                      .length >
-                                                                  1)
-                                                          ? currencyProvider
-                                                                .companyCurrencyIdList![1]
-                                                                .toString()
-                                                          : currencyProvider
-                                                                .currency;
-                                                      final formatted =
-                                                          currencyProvider
-                                                              .formatAmount(
-                                                                _taxAmount,
-                                                                currency: code,
-                                                              );
-                                                      return Text(
-                                                        formatted,
-                                                        style: TextStyle(
-                                                          fontSize: 16,
-                                                          fontWeight:
-                                                              FontWeight.w500,
-                                                          color: isDark
-                                                              ? Colors.grey[300]
-                                                              : Colors
-                                                                    .grey[700],
-                                                        ),
-                                                        textAlign:
-                                                            TextAlign.end,
-                                                      );
-                                                    },
-                                                  ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 12),
-
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Flexible(
-                                            child: Text(
-                                              'Total Amount:',
-                                              style: TextStyle(
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.w600,
-                                                color: isDark
-                                                    ? Colors.white
-                                                    : Colors.grey[900],
-                                              ),
-                                            ),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Flexible(
-                                            child: Consumer<CurrencyProvider>(
-                                              builder: (context, currencyProvider, _) {
-                                                final code =
-                                                    (currencyProvider
-                                                                .companyCurrencyIdList !=
-                                                            null &&
-                                                        currencyProvider
-                                                                .companyCurrencyIdList!
-                                                                .length >
-                                                            1)
-                                                    ? currencyProvider
-                                                          .companyCurrencyIdList![1]
-                                                          .toString()
-                                                    : currencyProvider.currency;
-                                                final formatted =
-                                                    currencyProvider
-                                                        .formatAmount(
-                                                          _total,
-                                                          currency: code,
-                                                        );
-                                                return Text(
-                                                  formatted,
-                                                  style: TextStyle(
-                                                    fontSize: 20,
-                                                    fontWeight: FontWeight.bold,
-                                                    color: isDark
-                                                        ? Colors.white
-                                                        : Colors.blue,
-                                                  ),
-                                                  textAlign: TextAlign.end,
-                                                );
-                                              },
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Container(
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(8),
-                        boxShadow: [
-                          BoxShadow(
-                            color: isDark
-                                ? Colors.black.withOpacity(0.18)
-                                : Colors.black.withOpacity(0.06),
-                            blurRadius: 12,
-                            offset: const Offset(0, 4),
-                          ),
+                            ),
                         ],
                       ),
-                      child: SizedBox(
-                        width: double.infinity,
-                        height: 56,
-                        child: ElevatedButton.icon(
-                          onPressed: (_quoteLines.isEmpty || _isLoading)
-                              ? null
-                              : _saveQuote,
-                          icon: _isLoading
-                              ? const SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    valueColor: AlwaysStoppedAnimation<Color>(
-                                      Colors.white,
+                      const SizedBox(height: 8),
+                      Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          boxShadow: [
+                            BoxShadow(
+                              color: isDark
+                                  ? Colors.black.withOpacity(0.18)
+                                  : Colors.black.withOpacity(0.06),
+                              blurRadius: 12,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: SizedBox(
+                          width: double.infinity,
+                          height: 56,
+                          child: ElevatedButton.icon(
+                            onPressed: (_quoteLines.isEmpty || _isLoading)
+                                ? null
+                                : _saveQuote,
+                            icon: _isLoading
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      valueColor: AlwaysStoppedAnimation<Color>(
+                                        Colors.white,
+                                      ),
                                     ),
+                                  )
+                                : const Icon(
+                                    HugeIcons.strokeRoundedFileAdd,
+                                    color: Colors.white,
+                                    size: 20,
                                   ),
-                                )
-                              : const Icon(
-                                  HugeIcons.strokeRoundedFileAdd,
-                                  color: Colors.white,
-                                  size: 20,
-                                ),
-                          label: Text(
-                            _isLoading
-                                ? (widget.quotationToEdit != null
-                                      ? 'Updating Quote...'
-                                      : 'Creating Quote...')
-                                : (widget.quotationToEdit != null
-                                      ? 'Update Quote'
-                                      : 'Create Quote'),
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white,
+                            label: Text(
+                              _isLoading
+                                  ? (widget.quotationToEdit != null
+                                        ? 'Updating Quote...'
+                                        : 'Creating Quote...')
+                                  : (widget.quotationToEdit != null
+                                        ? 'Update Quote'
+                                        : 'Create Quote'),
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                              ),
                             ),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Theme.of(context).primaryColor,
-                            foregroundColor: Colors.white,
-                            elevation: 0,
-                            shadowColor: Colors.transparent,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Theme.of(context).primaryColor,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shadowColor: Colors.transparent,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 14,
+                                horizontal: 16,
+                              ),
+                              disabledBackgroundColor: isDark
+                                  ? Colors.grey[700]!
+                                  : Colors.grey[400]!,
                             ),
-                            padding: const EdgeInsets.symmetric(
-                              vertical: 14,
-                              horizontal: 16,
-                            ),
-                            disabledBackgroundColor: isDark
-                                ? Colors.grey[700]!
-                                : Colors.grey[400]!,
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 20),
-                  ],
+                      const SizedBox(height: 20),
+                    ],
+                  ),
                 ),
               ),
-            ),
+      ),
     );
   }
 

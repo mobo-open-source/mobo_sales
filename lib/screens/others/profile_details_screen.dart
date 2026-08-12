@@ -289,69 +289,80 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      builder: (context) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 8),
-          Container(
-            width: 40,
-            height: 4,
-            margin: const EdgeInsets.only(bottom: 12),
-            decoration: BoxDecoration(
-              color: isDark ? Colors.grey[700] : Colors.grey[300],
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-          InkWell(
-            onTap: () {
-              Navigator.pop(context);
-              _pickImageFromSource(ImageSource.camera);
-            },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-              child: Row(
-                children: [
-                  Icon(
-                    HugeIcons.strokeRoundedCamera02,
-                    size: 24,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                  const SizedBox(width: 16),
-                  const Text('Take Photo', style: TextStyle(fontSize: 16)),
-                ],
+      builder: (context) => SafeArea(
+        top: false,
+        left: false,
+        right: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: isDark ? Colors.grey[700] : Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
               ),
             ),
-          ),
-          Divider(
-            height: 1,
-            thickness: 1,
-            color: isDark ? Colors.grey[800] : Colors.grey[200],
-          ),
-          InkWell(
-            onTap: () {
-              Navigator.pop(context);
-              _pickImageFromSource(ImageSource.gallery);
-            },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-              child: Row(
-                children: [
-                  Icon(
-                    HugeIcons.strokeRoundedImageCrop,
-                    size: 24,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                  const SizedBox(width: 16),
-                  const Text(
-                    'Choose from Gallery',
-                    style: TextStyle(fontSize: 16),
-                  ),
-                ],
+            InkWell(
+              onTap: () {
+                Navigator.pop(context);
+                _pickImageFromSource(ImageSource.camera);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 14,
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      HugeIcons.strokeRoundedCamera02,
+                      size: 24,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
+                    const SizedBox(width: 16),
+                    const Text('Take Photo', style: TextStyle(fontSize: 16)),
+                  ],
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 8),
-        ],
+            Divider(
+              height: 1,
+              thickness: 1,
+              color: isDark ? Colors.grey[800] : Colors.grey[200],
+            ),
+            InkWell(
+              onTap: () {
+                Navigator.pop(context);
+                _pickImageFromSource(ImageSource.gallery);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 14,
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      HugeIcons.strokeRoundedImageCrop,
+                      size: 24,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
+                    const SizedBox(width: 16),
+                    const Text(
+                      'Choose from Gallery',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
       ),
     );
   }

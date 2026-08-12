@@ -219,79 +219,84 @@ class _CreateProductScreenState extends State<CreateProductScreen>
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       builder: (context) {
         final isDark = Theme.of(context).brightness == Brightness.dark;
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 8),
-            Container(
-              width: 40,
-              height: 4,
-              margin: const EdgeInsets.only(bottom: 12),
-              decoration: BoxDecoration(
-                color: isDark ? Colors.grey[700] : Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            InkWell(
-              onTap: () {
-                Navigator.pop(context);
-                _pickImageFromSource(ImageSource.camera);
-              },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 14,
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      HugeIcons.strokeRoundedCamera02,
-                      size: 20,
-                      color: isDark ? Colors.white : Colors.black87,
-                    ),
-                    const SizedBox(width: 16),
-                    const Text('Take Photo', style: TextStyle(fontSize: 16)),
-                  ],
+        return SafeArea(
+          top: false,
+          left: false,
+          right: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 8),
+              Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: isDark ? Colors.grey[700] : Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
                 ),
               ),
-            ),
-            Divider(
-              height: 1,
-              thickness: 1,
-              color: isDark ? Colors.grey[800] : Colors.grey[200],
-            ),
-            InkWell(
-              onTap: () {
-                Navigator.pop(context);
-                _pickImageFromSource(ImageSource.gallery);
-              },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 14,
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      HugeIcons.strokeRoundedImageAdd01,
-                      size: 20,
-                      color: isDark ? Colors.white : Colors.black87,
-                    ),
-                    const SizedBox(width: 16),
-                    const Text(
-                      'Choose from Gallery',
-                      style: TextStyle(fontSize: 16),
-                    ),
-                  ],
+              InkWell(
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickImageFromSource(ImageSource.camera);
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 14,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        HugeIcons.strokeRoundedCamera02,
+                        size: 20,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                      const SizedBox(width: 16),
+                      const Text('Take Photo', style: TextStyle(fontSize: 16)),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            Divider(
-              height: 1,
-              thickness: 1,
-              color: isDark ? Colors.grey[800] : Colors.grey[200],
-            ),
-          ],
+              Divider(
+                height: 1,
+                thickness: 1,
+                color: isDark ? Colors.grey[800] : Colors.grey[200],
+              ),
+              InkWell(
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickImageFromSource(ImageSource.gallery);
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 14,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        HugeIcons.strokeRoundedImageAdd01,
+                        size: 20,
+                        color: isDark ? Colors.white : Colors.black87,
+                      ),
+                      const SizedBox(width: 16),
+                      const Text(
+                        'Choose from Gallery',
+                        style: TextStyle(fontSize: 16),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Divider(
+                height: 1,
+                thickness: 1,
+                color: isDark ? Colors.grey[800] : Colors.grey[200],
+              ),
+            ],
+          ),
         );
       },
     );
@@ -1433,316 +1438,347 @@ class _CreateProductScreenState extends State<CreateProductScreen>
         ],
       ),
       backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-      body: Container(
-        color: isDark ? Colors.grey[900] : Colors.white,
-        child: Form(
-          key: _formKey,
-          autovalidateMode: AutovalidateMode.onUserInteraction,
-          child: ListView(
-            padding: const EdgeInsets.all(20),
-            children: [
-              Center(
-                child: Stack(
-                  alignment: Alignment.bottomRight,
-                  children: [
-                    photoWidget,
-                    Positioned(
-                      bottom: 0,
-                      right: 0,
-                      child: InkWell(
-                        onTap: _isLoading ? null : _showImageSourceActionSheet,
-                        borderRadius: BorderRadius.circular(24),
-                        child: CircleAvatar(
-                          radius: 18,
-                          backgroundColor: isDark
-                              ? Colors.grey
-                              : Theme.of(context).primaryColor,
-                          child: Icon(
-                            HugeIcons.strokeRoundedImageAdd01,
-                            color: Colors.white,
-                            size: 20,
+      body: SafeArea(
+        top: false,
+        left: false,
+        right: false,
+        child: Container(
+          color: isDark ? Colors.grey[900] : Colors.white,
+          child: Form(
+            key: _formKey,
+            autovalidateMode: AutovalidateMode.onUserInteraction,
+            child: ListView(
+              padding: const EdgeInsets.all(20),
+              children: [
+                Center(
+                  child: Stack(
+                    alignment: Alignment.bottomRight,
+                    children: [
+                      photoWidget,
+                      Positioned(
+                        bottom: 0,
+                        right: 0,
+                        child: InkWell(
+                          onTap: _isLoading
+                              ? null
+                              : _showImageSourceActionSheet,
+                          borderRadius: BorderRadius.circular(24),
+                          child: CircleAvatar(
+                            radius: 18,
+                            backgroundColor: isDark
+                                ? Colors.grey
+                                : Theme.of(context).primaryColor,
+                            child: Icon(
+                              HugeIcons.strokeRoundedImageAdd01,
+                              color: Colors.white,
+                              size: 20,
+                            ),
                           ),
                         ),
                       ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                CustomTextField(
+                  controller: _nameController,
+                  labelText: 'Product Name *',
+                  hintText: 'Enter product name',
+                  isDark: isDark,
+                  validator: (v) {
+                    if (v == null || v.trim().isEmpty) {
+                      return 'Product name is required';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 12),
+                CustomTextField(
+                  controller: _defaultCodeController,
+                  labelText: 'SKU/Default Code',
+                  hintText: 'Enter SKU',
+                  isDark: isDark,
+                  validator: (v) => null,
+                ),
+                const SizedBox(height: 12),
+                CustomTextField(
+                  controller: _barcodeController,
+                  labelText: 'Barcode',
+                  hintText: 'Enter barcode or scan using camera',
+                  isDark: isDark,
+                  validator: (v) => null,
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.qr_code_scanner),
+                    onPressed: _scanBarcode,
+                    tooltip: 'Scan Barcode',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                CustomDropdownField(
+                  value:
+                      _categoryOptions.any(
+                        (m) => m['value'] == _selectedCategory,
+                      )
+                      ? _selectedCategory
+                      : null,
+                  labelText: 'Category',
+                  hintText: 'Select a product category',
+                  isDark: isDark,
+                  items: _dropdownsLoading
+                      ? [
+                          DropdownMenuItem(
+                            value: null,
+                            child: Text('Loading...'),
+                          ),
+                        ]
+                      : _categoryOptions
+                            .map(
+                              (m) => DropdownMenuItem(
+                                value: m['value'],
+                                child: Text(m['label']!),
+                              ),
+                            )
+                            .toList(),
+                  onChanged: _dropdownsLoading
+                      ? null
+                      : (v) => setState(() => _selectedCategory = v),
+                  validator: (v) => null,
+                ),
+                const SizedBox(height: 12),
+                CustomTextField(
+                  controller: _listPriceController,
+                  labelText: 'List Price',
+                  hintText: 'Enter selling price',
+                  isDark: isDark,
+                  keyboardType: TextInputType.number,
+                  validator: (v) {
+                    if (v != null && v.trim().isNotEmpty) {
+                      if (double.tryParse(v.trim()) == null) {
+                        return 'Enter a valid number';
+                      }
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 12),
+                CustomTextField(
+                  controller: _standardPriceController,
+                  labelText: 'Cost Price',
+                  hintText: 'Enter cost price',
+                  isDark: isDark,
+                  keyboardType: TextInputType.number,
+                  validator: (v) {
+                    if (v != null && v.trim().isNotEmpty) {
+                      if (double.tryParse(v.trim()) == null) {
+                        return 'Enter a valid number';
+                      }
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 12),
+                CustomDropdownField(
+                  value: _taxOptions.any((m) => m['value'] == _selectedTax)
+                      ? _selectedTax
+                      : null,
+                  labelText: 'Tax',
+                  hintText: 'Select applicable tax',
+                  isDark: isDark,
+                  items: _dropdownsLoading
+                      ? [
+                          DropdownMenuItem(
+                            value: null,
+                            child: Text('Loading...'),
+                          ),
+                        ]
+                      : _taxOptions
+                            .map(
+                              (m) => DropdownMenuItem(
+                                value: m['value'],
+                                child: Text(m['label']!),
+                              ),
+                            )
+                            .toList(),
+                  onChanged: _dropdownsLoading
+                      ? null
+                      : (v) => setState(() => _selectedTax = v),
+                  validator: (v) => null,
+                ),
+                const SizedBox(height: 12),
+                CustomDropdownField(
+                  value: _uomOptions.any((m) => m['value'] == _selectedUOM)
+                      ? _selectedUOM
+                      : null,
+                  labelText: 'Unit of Measure',
+                  hintText: 'Select unit',
+                  isDark: isDark,
+                  items: _dropdownsLoading
+                      ? [
+                          DropdownMenuItem(
+                            value: null,
+                            child: Text('Loading...'),
+                          ),
+                        ]
+                      : _uomOptions
+                            .map(
+                              (m) => DropdownMenuItem(
+                                value: m['value'],
+                                child: Text(m['label']!),
+                              ),
+                            )
+                            .toList(),
+                  onChanged: _dropdownsLoading
+                      ? null
+                      : (v) => setState(() => _selectedUOM = v),
+                  validator: (v) => null,
+                ),
+                const SizedBox(height: 12),
+                CustomDropdownField(
+                  value:
+                      _currencyOptions.any(
+                        (m) => m['value'] == _selectedCurrency,
+                      )
+                      ? _selectedCurrency
+                      : null,
+                  labelText: 'Currency',
+                  hintText: 'Select currency',
+                  isDark: isDark,
+                  items: _dropdownsLoading
+                      ? [
+                          DropdownMenuItem(
+                            value: null,
+                            child: Text('Loading...'),
+                          ),
+                        ]
+                      : _currencyOptions
+                            .map(
+                              (m) => DropdownMenuItem(
+                                value: m['value'],
+                                child: Text(m['label']!),
+                              ),
+                            )
+                            .toList(),
+                  onChanged: _dropdownsLoading
+                      ? null
+                      : (v) => setState(() => _selectedCurrency = v),
+                  validator: (v) => null,
+                ),
+                const SizedBox(height: 12),
+                CustomTextField(
+                  controller: _weightController,
+                  labelText: 'Weight',
+                  hintText: 'Enter weight in kg',
+                  isDark: isDark,
+                  keyboardType: TextInputType.number,
+                  validator: (v) {
+                    if (v != null && v.trim().isNotEmpty) {
+                      if (double.tryParse(v.trim()) == null) {
+                        return 'Enter a valid number';
+                      }
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 12),
+                CustomTextField(
+                  controller: _volumeController,
+                  labelText: 'Volume',
+                  hintText: 'Enter volume in cubic meters',
+                  isDark: isDark,
+                  keyboardType: TextInputType.number,
+                  validator: (v) {
+                    if (v != null && v.trim().isNotEmpty) {
+                      if (double.tryParse(v.trim()) == null) {
+                        return 'Enter a valid number';
+                      }
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 12),
+                CustomTextField(
+                  controller: _descriptionController,
+                  labelText: 'Description',
+                  hintText: 'Enter a product description',
+                  isDark: isDark,
+                  maxLines: 3,
+                  validator: (v) => null,
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Checkbox(
+                      checkColor: Colors.white,
+                      activeColor: isDark ? Colors.grey : primaryColor,
+                      value: _isActive,
+                      onChanged: (v) => setState(() => _isActive = v ?? true),
                     ),
+                    const Text('Active'),
                   ],
                 ),
-              ),
-              const SizedBox(height: 16),
-              CustomTextField(
-                controller: _nameController,
-                labelText: 'Product Name *',
-                hintText: 'Enter product name',
-                isDark: isDark,
-                validator: (v) {
-                  if (v == null || v.trim().isEmpty) {
-                    return 'Product name is required';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 12),
-              CustomTextField(
-                controller: _defaultCodeController,
-                labelText: 'SKU/Default Code',
-                hintText: 'Enter SKU',
-                isDark: isDark,
-                validator: (v) => null,
-              ),
-              const SizedBox(height: 12),
-              CustomTextField(
-                controller: _barcodeController,
-                labelText: 'Barcode',
-                hintText: 'Enter barcode or scan using camera',
-                isDark: isDark,
-                validator: (v) => null,
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.qr_code_scanner),
-                  onPressed: _scanBarcode,
-                  tooltip: 'Scan Barcode',
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Checkbox(
+                      checkColor: Colors.white,
+                      activeColor: isDark ? Colors.grey : primaryColor,
+                      value: _canBeSold,
+                      onChanged: (v) => setState(() => _canBeSold = v ?? true),
+                    ),
+                    const Text('Can be Sold'),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 12),
-              CustomDropdownField(
-                value:
-                    _categoryOptions.any((m) => m['value'] == _selectedCategory)
-                    ? _selectedCategory
-                    : null,
-                labelText: 'Category',
-                hintText: 'Select a product category',
-                isDark: isDark,
-                items: _dropdownsLoading
-                    ? [DropdownMenuItem(value: null, child: Text('Loading...'))]
-                    : _categoryOptions
-                          .map(
-                            (m) => DropdownMenuItem(
-                              value: m['value'],
-                              child: Text(m['label']!),
-                            ),
-                          )
-                          .toList(),
-                onChanged: _dropdownsLoading
-                    ? null
-                    : (v) => setState(() => _selectedCategory = v),
-                validator: (v) => null,
-              ),
-              const SizedBox(height: 12),
-              CustomTextField(
-                controller: _listPriceController,
-                labelText: 'List Price',
-                hintText: 'Enter selling price',
-                isDark: isDark,
-                keyboardType: TextInputType.number,
-                validator: (v) {
-                  if (v != null && v.trim().isNotEmpty) {
-                    if (double.tryParse(v.trim()) == null) {
-                      return 'Enter a valid number';
-                    }
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 12),
-              CustomTextField(
-                controller: _standardPriceController,
-                labelText: 'Cost Price',
-                hintText: 'Enter cost price',
-                isDark: isDark,
-                keyboardType: TextInputType.number,
-                validator: (v) {
-                  if (v != null && v.trim().isNotEmpty) {
-                    if (double.tryParse(v.trim()) == null) {
-                      return 'Enter a valid number';
-                    }
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 12),
-              CustomDropdownField(
-                value: _taxOptions.any((m) => m['value'] == _selectedTax)
-                    ? _selectedTax
-                    : null,
-                labelText: 'Tax',
-                hintText: 'Select applicable tax',
-                isDark: isDark,
-                items: _dropdownsLoading
-                    ? [DropdownMenuItem(value: null, child: Text('Loading...'))]
-                    : _taxOptions
-                          .map(
-                            (m) => DropdownMenuItem(
-                              value: m['value'],
-                              child: Text(m['label']!),
-                            ),
-                          )
-                          .toList(),
-                onChanged: _dropdownsLoading
-                    ? null
-                    : (v) => setState(() => _selectedTax = v),
-                validator: (v) => null,
-              ),
-              const SizedBox(height: 12),
-              CustomDropdownField(
-                value: _uomOptions.any((m) => m['value'] == _selectedUOM)
-                    ? _selectedUOM
-                    : null,
-                labelText: 'Unit of Measure',
-                hintText: 'Select unit',
-                isDark: isDark,
-                items: _dropdownsLoading
-                    ? [DropdownMenuItem(value: null, child: Text('Loading...'))]
-                    : _uomOptions
-                          .map(
-                            (m) => DropdownMenuItem(
-                              value: m['value'],
-                              child: Text(m['label']!),
-                            ),
-                          )
-                          .toList(),
-                onChanged: _dropdownsLoading
-                    ? null
-                    : (v) => setState(() => _selectedUOM = v),
-                validator: (v) => null,
-              ),
-              const SizedBox(height: 12),
-              CustomDropdownField(
-                value:
-                    _currencyOptions.any((m) => m['value'] == _selectedCurrency)
-                    ? _selectedCurrency
-                    : null,
-                labelText: 'Currency',
-                hintText: 'Select currency',
-                isDark: isDark,
-                items: _dropdownsLoading
-                    ? [DropdownMenuItem(value: null, child: Text('Loading...'))]
-                    : _currencyOptions
-                          .map(
-                            (m) => DropdownMenuItem(
-                              value: m['value'],
-                              child: Text(m['label']!),
-                            ),
-                          )
-                          .toList(),
-                onChanged: _dropdownsLoading
-                    ? null
-                    : (v) => setState(() => _selectedCurrency = v),
-                validator: (v) => null,
-              ),
-              const SizedBox(height: 12),
-              CustomTextField(
-                controller: _weightController,
-                labelText: 'Weight',
-                hintText: 'Enter weight in kg',
-                isDark: isDark,
-                keyboardType: TextInputType.number,
-                validator: (v) {
-                  if (v != null && v.trim().isNotEmpty) {
-                    if (double.tryParse(v.trim()) == null) {
-                      return 'Enter a valid number';
-                    }
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 12),
-              CustomTextField(
-                controller: _volumeController,
-                labelText: 'Volume',
-                hintText: 'Enter volume in cubic meters',
-                isDark: isDark,
-                keyboardType: TextInputType.number,
-                validator: (v) {
-                  if (v != null && v.trim().isNotEmpty) {
-                    if (double.tryParse(v.trim()) == null) {
-                      return 'Enter a valid number';
-                    }
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 12),
-              CustomTextField(
-                controller: _descriptionController,
-                labelText: 'Description',
-                hintText: 'Enter a product description',
-                isDark: isDark,
-                maxLines: 3,
-                validator: (v) => null,
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Checkbox(
-                    checkColor: Colors.white,
-                    activeColor: isDark ? Colors.grey : primaryColor,
-                    value: _isActive,
-                    onChanged: (v) => setState(() => _isActive = v ?? true),
-                  ),
-                  const Text('Active'),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Checkbox(
-                    checkColor: Colors.white,
-                    activeColor: isDark ? Colors.grey : primaryColor,
-                    value: _canBeSold,
-                    onChanged: (v) => setState(() => _canBeSold = v ?? true),
-                  ),
-                  const Text('Can be Sold'),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Checkbox(
-                    checkColor: Colors.white,
-                    activeColor: isDark ? Colors.grey : primaryColor,
-                    value: _canBePurchased,
-                    onChanged: (v) =>
-                        setState(() => _canBePurchased = v ?? true),
-                  ),
-                  const Text('Can be Purchased'),
-                ],
-              ),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: (_isLoading || !_isNameFilled) ? null : save,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: primaryColor,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 14,
-                      horizontal: 16,
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Checkbox(
+                      checkColor: Colors.white,
+                      activeColor: isDark ? Colors.grey : primaryColor,
+                      value: _canBePurchased,
+                      onChanged: (v) =>
+                          setState(() => _canBePurchased = v ?? true),
                     ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+                    const Text('Can be Purchased'),
+                  ],
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: (_isLoading || !_isNameFilled) ? null : save,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: primaryColor,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 14,
+                        horizontal: 16,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      disabledBackgroundColor:
+                          Theme.of(context).brightness == Brightness.dark
+                          ? Colors.grey[700]!
+                          : Colors.grey[400]!,
                     ),
-                    disabledBackgroundColor:
-                        Theme.of(context).brightness == Brightness.dark
-                        ? Colors.grey[700]!
-                        : Colors.grey[400]!,
-                  ),
-                  child: _isLoading
-                      ? const SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2,
+                    child: _isLoading
+                        ? const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2,
+                            ),
+                          )
+                        : Text(
+                            _isEditMode ? 'Save Changes' : 'Create Product',
+                            style: TextStyle(fontSize: 16),
                           ),
-                        )
-                      : Text(
-                          _isEditMode ? 'Save Changes' : 'Create Product',
-                          style: TextStyle(fontSize: 16),
-                        ),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

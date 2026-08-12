@@ -1687,501 +1687,528 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
           builder: (context, scrollController) {
             return StatefulBuilder(
               builder: (context, setState) {
-                return Column(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(24),
+                return SafeArea(
+                  top: false,
+                  left: false,
+                  right: false,
+                  child: Column(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(24),
 
-                      decoration: BoxDecoration(
-                        color: isDark
-                            ? Colors.white.withOpacity(.05)
-                            : headerColor.withOpacity(0.05),
+                        decoration: BoxDecoration(
+                          color: isDark
+                              ? Colors.white.withOpacity(.05)
+                              : headerColor.withOpacity(0.05),
 
-                        borderRadius: const BorderRadius.vertical(
-                          top: Radius.circular(16),
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            'Select Sale Order',
-                            style: TextStyle(
-                              color: isDark ? Colors.white : Colors.grey[900],
-
-                              fontSize: 18,
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: -0.3,
-                            ),
-                          ),
-                          Row(
-                            children: [
-                              if (invoiceProvider.selectedSaleOrder != null)
-                                IconButton(
-                                  icon: Icon(
-                                    Icons.cancel,
-                                    color: isDark
-                                        ? Colors.grey[400]
-                                        : Colors.grey[600],
-                                  ),
-                                  onPressed: () {
-                                    invoiceProvider.clearSelectedSaleOrder();
-                                    Navigator.pop(context);
-                                  },
-                                  tooltip: 'Clear Sale Order',
-                                ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                    Divider(
-                      height: 1,
-                      color: isDark ? Colors.grey[700] : Colors.grey[200],
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.all(24.0),
-
-                      child: TextField(
-                        controller: searchController,
-                        decoration: InputDecoration(
-                          hintText: 'Search sale orders...',
-                          prefixIcon: Icon(
-                            Icons.search,
-                            color: isDark ? Colors.grey[400] : Colors.grey[600],
-                          ),
-                          suffixIcon: searchController.text.isNotEmpty
-                              ? IconButton(
-                                  icon: Icon(
-                                    Icons.clear,
-                                    color: isDark
-                                        ? Colors.grey[400]
-                                        : Colors.grey[600],
-                                  ),
-                                  onPressed: () {
-                                    searchController.clear();
-                                    invoiceProvider.filterSaleOrders('');
-                                    setState(() {
-                                      isSearching = false;
-                                    });
-                                  },
-                                )
-                              : null,
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                            borderSide: BorderSide(
-                              color: isDark
-                                  ? Colors.grey[700]!
-                                  : Colors.grey[200]!,
-                            ),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                            borderSide: BorderSide(
-                              color: isDark
-                                  ? Colors.grey[700]!
-                                  : Colors.grey[200]!,
-                            ),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                            borderSide: BorderSide(
-                              color: headerColor,
-                              width: 2,
-                            ),
-                          ),
-                          filled: true,
-                          fillColor: isDark
-                              ? Colors.grey[800]
-                              : Colors.grey[50],
-
-                          hintStyle: TextStyle(
-                            color: isDark ? Colors.grey[400] : Colors.grey[600],
-                            fontSize: 14,
-                          ),
-                          labelStyle: TextStyle(
-                            color: isDark ? Colors.grey[400] : Colors.grey[600],
-                            fontSize: 14,
+                          borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(16),
                           ),
                         ),
-                        style: TextStyle(
-                          color: isDark ? Colors.white : Colors.grey[900],
-                          fontSize: 14,
-                        ),
-                        onChanged: (value) {
-                          invoiceProvider.filterSaleOrders(value);
-                          setState(() {
-                            isSearching = value.isNotEmpty;
-                          });
-                        },
-                      ),
-                    ),
-                    Expanded(
-                      child: invoiceProvider.isLoadingSaleOrders
-                          ? Center(
-                              child: CircularProgressIndicator(
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                  headerColor,
-                                ),
-                                backgroundColor: isDark
-                                    ? Colors.grey[700]
-                                    : Colors.grey[200],
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Select Sale Order',
+                              style: TextStyle(
+                                color: isDark ? Colors.white : Colors.grey[900],
+
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: -0.3,
                               ),
-                            )
-                          : invoiceProvider.filteredSaleOrders.isEmpty
-                          ? Center(
-                              child: Text(
-                                'No sale orders found',
-                                style: TextStyle(
-                                  color: isDark
-                                      ? Colors.grey[400]
-                                      : Colors.grey[600],
-                                  fontSize: 14,
-                                ),
-                              ),
-                            )
-                          : ListView.builder(
-                              controller: scrollController,
-                              padding: const EdgeInsets.symmetric(vertical: 0),
-                              itemCount:
-                                  invoiceProvider.filteredSaleOrders.length,
-                              itemBuilder: (context, index) {
-                                final order =
-                                    invoiceProvider.filteredSaleOrders[index];
-                                return Container(
-                                  margin: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                    vertical: 8,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: _getSaleOrderCardColor(
-                                      order,
-                                      isDark,
+                            ),
+                            Row(
+                              children: [
+                                if (invoiceProvider.selectedSaleOrder != null)
+                                  IconButton(
+                                    icon: Icon(
+                                      Icons.cancel,
+                                      color: isDark
+                                          ? Colors.grey[400]
+                                          : Colors.grey[600],
                                     ),
-                                    borderRadius: BorderRadius.circular(16),
-                                    border: _getSaleOrderCardBorder(
-                                      order,
-                                      isDark,
-                                    ),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: isDark
-                                            ? Colors.black.withOpacity(0.18)
-                                            : Colors.black.withOpacity(0.06),
-                                        blurRadius: 12,
-                                        offset: const Offset(0, 4),
-                                      ),
-                                    ],
-                                  ),
-                                  child: InkWell(
-                                    onTap: () async {
-                                      if (isLoadingSaleOrder) return;
-
-                                      final canInvoice =
-                                          order.extraData?['can_invoice']
-                                              as bool? ??
-                                          false;
-                                      final invoiceStatus =
-                                          order.invoiceStatus ?? '';
-                                      final statusReason =
-                                          order
-                                              .extraData?['invoice_status_reason']
-                                              ?.toString() ??
-                                          '';
-
-                                      if (!canInvoice) {
-                                        _showInvoiceStatusDialog(
-                                          context,
-                                          invoiceStatus,
-                                          statusReason,
-                                        );
-                                        return;
-                                      }
-
-                                      setState(() {
-                                        isLoadingSaleOrder = true;
-                                      });
-                                      showDialog(
-                                        context: context,
-                                        barrierDismissible: false,
-                                        builder: (context) => Dialog(
-                                          backgroundColor: Colors.transparent,
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 24.0,
-                                              vertical: 20.0,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: isDark
-                                                  ? Colors.grey[850]
-                                                  : Colors.white,
-                                              borderRadius:
-                                                  BorderRadius.circular(16),
-                                              boxShadow: [
-                                                BoxShadow(
-                                                  color: isDark
-                                                      ? Colors.black
-                                                            .withOpacity(0.18)
-                                                      : Colors.black
-                                                            .withOpacity(0.06),
-                                                  blurRadius: 12,
-                                                  offset: const Offset(0, 4),
-                                                ),
-                                              ],
-                                            ),
-                                            child: Column(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                CircularProgressIndicator(
-                                                  strokeWidth: 3,
-                                                  valueColor:
-                                                      AlwaysStoppedAnimation<
-                                                        Color
-                                                      >(
-                                                        isDark
-                                                            ? Colors.white
-                                                            : headerColor,
-                                                      ),
-                                                  backgroundColor: isDark
-                                                      ? Colors.grey[700]
-                                                      : Colors.grey[200],
-                                                ),
-                                                const SizedBox(height: 16),
-                                                Text(
-                                                  'Loading sale order details...',
-                                                  style: TextStyle(
-                                                    fontSize: 14,
-                                                    fontWeight: FontWeight.w500,
-                                                    color: isDark
-                                                        ? Colors.white
-                                                        : Colors.grey[900],
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                      );
-                                      try {
-                                        await invoiceProvider
-                                            .setSelectedSaleOrder(order);
-                                        if (context.mounted) {
-                                          Navigator.pop(context);
-                                          Navigator.pop(context);
-                                        }
-                                      } catch (e) {
-                                        if (context.mounted) {
-                                          Navigator.pop(context);
-                                          CustomSnackbar.showError(
-                                            context,
-                                            'Failed to load sale order details',
-                                          );
-                                        }
-                                      } finally {
-                                        setState(() {
-                                          isLoadingSaleOrder = false;
-                                        });
-                                      }
+                                    onPressed: () {
+                                      invoiceProvider.clearSelectedSaleOrder();
+                                      Navigator.pop(context);
                                     },
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(24),
-                                      child: Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Container(
-                                            padding: const EdgeInsets.all(8),
-                                            decoration: BoxDecoration(
-                                              color: isDark
-                                                  ? Colors.white.withOpacity(.1)
-                                                  : headerColor.withOpacity(
-                                                      0.1,
+                                    tooltip: 'Clear Sale Order',
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      Divider(
+                        height: 1,
+                        color: isDark ? Colors.grey[700] : Colors.grey[200],
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.all(24.0),
+
+                        child: TextField(
+                          controller: searchController,
+                          decoration: InputDecoration(
+                            hintText: 'Search sale orders...',
+                            prefixIcon: Icon(
+                              Icons.search,
+                              color: isDark
+                                  ? Colors.grey[400]
+                                  : Colors.grey[600],
+                            ),
+                            suffixIcon: searchController.text.isNotEmpty
+                                ? IconButton(
+                                    icon: Icon(
+                                      Icons.clear,
+                                      color: isDark
+                                          ? Colors.grey[400]
+                                          : Colors.grey[600],
+                                    ),
+                                    onPressed: () {
+                                      searchController.clear();
+                                      invoiceProvider.filterSaleOrders('');
+                                      setState(() {
+                                        isSearching = false;
+                                      });
+                                    },
+                                  )
+                                : null,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(
+                                color: isDark
+                                    ? Colors.grey[700]!
+                                    : Colors.grey[200]!,
+                              ),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(
+                                color: isDark
+                                    ? Colors.grey[700]!
+                                    : Colors.grey[200]!,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(
+                                color: headerColor,
+                                width: 2,
+                              ),
+                            ),
+                            filled: true,
+                            fillColor: isDark
+                                ? Colors.grey[800]
+                                : Colors.grey[50],
+
+                            hintStyle: TextStyle(
+                              color: isDark
+                                  ? Colors.grey[400]
+                                  : Colors.grey[600],
+                              fontSize: 14,
+                            ),
+                            labelStyle: TextStyle(
+                              color: isDark
+                                  ? Colors.grey[400]
+                                  : Colors.grey[600],
+                              fontSize: 14,
+                            ),
+                          ),
+                          style: TextStyle(
+                            color: isDark ? Colors.white : Colors.grey[900],
+                            fontSize: 14,
+                          ),
+                          onChanged: (value) {
+                            invoiceProvider.filterSaleOrders(value);
+                            setState(() {
+                              isSearching = value.isNotEmpty;
+                            });
+                          },
+                        ),
+                      ),
+                      Expanded(
+                        child: invoiceProvider.isLoadingSaleOrders
+                            ? Center(
+                                child: CircularProgressIndicator(
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    headerColor,
+                                  ),
+                                  backgroundColor: isDark
+                                      ? Colors.grey[700]
+                                      : Colors.grey[200],
+                                ),
+                              )
+                            : invoiceProvider.filteredSaleOrders.isEmpty
+                            ? Center(
+                                child: Text(
+                                  'No sale orders found',
+                                  style: TextStyle(
+                                    color: isDark
+                                        ? Colors.grey[400]
+                                        : Colors.grey[600],
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              )
+                            : ListView.builder(
+                                controller: scrollController,
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 0,
+                                ),
+                                itemCount:
+                                    invoiceProvider.filteredSaleOrders.length,
+                                itemBuilder: (context, index) {
+                                  final order =
+                                      invoiceProvider.filteredSaleOrders[index];
+                                  return Container(
+                                    margin: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 8,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: _getSaleOrderCardColor(
+                                        order,
+                                        isDark,
+                                      ),
+                                      borderRadius: BorderRadius.circular(16),
+                                      border: _getSaleOrderCardBorder(
+                                        order,
+                                        isDark,
+                                      ),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: isDark
+                                              ? Colors.black.withOpacity(0.18)
+                                              : Colors.black.withOpacity(0.06),
+                                          blurRadius: 12,
+                                          offset: const Offset(0, 4),
+                                        ),
+                                      ],
+                                    ),
+                                    child: InkWell(
+                                      onTap: () async {
+                                        if (isLoadingSaleOrder) return;
+
+                                        final canInvoice =
+                                            order.extraData?['can_invoice']
+                                                as bool? ??
+                                            false;
+                                        final invoiceStatus =
+                                            order.invoiceStatus ?? '';
+                                        final statusReason =
+                                            order
+                                                .extraData?['invoice_status_reason']
+                                                ?.toString() ??
+                                            '';
+
+                                        if (!canInvoice) {
+                                          _showInvoiceStatusDialog(
+                                            context,
+                                            invoiceStatus,
+                                            statusReason,
+                                          );
+                                          return;
+                                        }
+
+                                        setState(() {
+                                          isLoadingSaleOrder = true;
+                                        });
+                                        showDialog(
+                                          context: context,
+                                          barrierDismissible: false,
+                                          builder: (context) => Dialog(
+                                            backgroundColor: Colors.transparent,
+                                            child: Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 24.0,
+                                                    vertical: 20.0,
+                                                  ),
+                                              decoration: BoxDecoration(
+                                                color: isDark
+                                                    ? Colors.grey[850]
+                                                    : Colors.white,
+                                                borderRadius:
+                                                    BorderRadius.circular(16),
+                                                boxShadow: [
+                                                  BoxShadow(
+                                                    color: isDark
+                                                        ? Colors.black
+                                                              .withOpacity(0.18)
+                                                        : Colors.black
+                                                              .withOpacity(
+                                                                0.06,
+                                                              ),
+                                                    blurRadius: 12,
+                                                    offset: const Offset(0, 4),
+                                                  ),
+                                                ],
+                                              ),
+                                              child: Column(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  CircularProgressIndicator(
+                                                    strokeWidth: 3,
+                                                    valueColor:
+                                                        AlwaysStoppedAnimation<
+                                                          Color
+                                                        >(
+                                                          isDark
+                                                              ? Colors.white
+                                                              : headerColor,
+                                                        ),
+                                                    backgroundColor: isDark
+                                                        ? Colors.grey[700]
+                                                        : Colors.grey[200],
+                                                  ),
+                                                  const SizedBox(height: 16),
+                                                  Text(
+                                                    'Loading sale order details...',
+                                                    style: TextStyle(
+                                                      fontSize: 14,
+                                                      fontWeight:
+                                                          FontWeight.w500,
+                                                      color: isDark
+                                                          ? Colors.white
+                                                          : Colors.grey[900],
                                                     ),
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
-                                            ),
-                                            child: Icon(
-                                              HugeIcons.strokeRoundedAiMail,
-                                              color: isDark
-                                                  ? Colors.white
-                                                  : headerColor,
-                                              size: 20,
+                                                  ),
+                                                ],
+                                              ),
                                             ),
                                           ),
-                                          const SizedBox(width: 12),
-                                          Expanded(
-                                            flex: 2,
-                                            child: Column(
+                                        );
+                                        try {
+                                          await invoiceProvider
+                                              .setSelectedSaleOrder(order);
+                                          if (context.mounted) {
+                                            Navigator.pop(context);
+                                            Navigator.pop(context);
+                                          }
+                                        } catch (e) {
+                                          if (context.mounted) {
+                                            Navigator.pop(context);
+                                            CustomSnackbar.showError(
+                                              context,
+                                              'Failed to load sale order details',
+                                            );
+                                          }
+                                        } finally {
+                                          setState(() {
+                                            isLoadingSaleOrder = false;
+                                          });
+                                        }
+                                      },
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(24),
+                                        child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Container(
+                                              padding: const EdgeInsets.all(8),
+                                              decoration: BoxDecoration(
+                                                color: isDark
+                                                    ? Colors.white.withOpacity(
+                                                        .1,
+                                                      )
+                                                    : headerColor.withOpacity(
+                                                        0.1,
+                                                      ),
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                              ),
+                                              child: Icon(
+                                                HugeIcons.strokeRoundedAiMail,
+                                                color: isDark
+                                                    ? Colors.white
+                                                    : headerColor,
+                                                size: 20,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              flex: 2,
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    order.name,
+                                                    style: TextStyle(
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                      fontSize: 14,
+                                                      color: isDark
+                                                          ? Colors.white
+                                                          : Colors.grey[900],
+                                                      letterSpacing: -0.3,
+                                                    ),
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                  const SizedBox(height: 4),
+                                                  Text(
+                                                    'Customer: ${order.customerName ?? 'Unknown'}',
+                                                    style: TextStyle(
+                                                      color: isDark
+                                                          ? Colors.grey[400]
+                                                          : Colors.grey[600],
+                                                      fontSize: 12,
+                                                    ),
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                  const SizedBox(height: 8),
+                                                  Wrap(
+                                                    spacing: 8,
+                                                    runSpacing: 4,
+                                                    children: [
+                                                      Container(
+                                                        padding:
+                                                            const EdgeInsets.symmetric(
+                                                              horizontal: 8,
+                                                              vertical: 4,
+                                                            ),
+                                                        decoration: BoxDecoration(
+                                                          color:
+                                                              _getStatusColor(
+                                                                order.status,
+                                                                isDark,
+                                                              ),
+                                                          borderRadius:
+                                                              BorderRadius.circular(
+                                                                12,
+                                                              ),
+                                                        ),
+                                                        child: Text(
+                                                          _getStatusText(
+                                                            order.status,
+                                                          ),
+                                                          style:
+                                                              const TextStyle(
+                                                                color: Colors
+                                                                    .white,
+                                                                fontSize: 11,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w500,
+                                                              ),
+                                                        ),
+                                                      ),
+                                                      Container(
+                                                        padding:
+                                                            const EdgeInsets.symmetric(
+                                                              horizontal: 8,
+                                                              vertical: 4,
+                                                            ),
+                                                        decoration: BoxDecoration(
+                                                          color:
+                                                              _getEnhancedInvoiceStatusColor(
+                                                                order,
+                                                                isDark,
+                                                              ),
+                                                          borderRadius:
+                                                              BorderRadius.circular(
+                                                                12,
+                                                              ),
+                                                        ),
+                                                        child: Row(
+                                                          mainAxisSize:
+                                                              MainAxisSize.min,
+                                                          children: [
+                                                            Icon(
+                                                              _getInvoiceStatusIcon(
+                                                                order,
+                                                              ),
+                                                              color:
+                                                                  Colors.white,
+                                                              size: 12,
+                                                            ),
+                                                            const SizedBox(
+                                                              width: 4,
+                                                            ),
+                                                            Text(
+                                                              _getEnhancedInvoiceStatusText(
+                                                                order,
+                                                              ),
+                                                              style: const TextStyle(
+                                                                color: Colors
+                                                                    .white,
+                                                                fontSize: 11,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w500,
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            Column(
                                               crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
+                                                  CrossAxisAlignment.end,
                                               children: [
                                                 Text(
-                                                  order.name,
+                                                  (() {
+                                                    final String? currencyCode =
+                                                        order.currencyName;
+                                                    final String code =
+                                                        currencyCode ??
+                                                        currencyProvider
+                                                            .currency;
+                                                    final String locale =
+                                                        currencyProvider
+                                                            .currencyToLocale[code] ??
+                                                        'en_US';
+                                                    return NumberFormat.currency(
+                                                      locale: locale,
+                                                      name: code,
+
+                                                      decimalDigits: 2,
+                                                    ).format(
+                                                      order.total ?? 0.0,
+                                                    );
+                                                  })(),
                                                   style: TextStyle(
                                                     fontWeight: FontWeight.w600,
-                                                    fontSize: 14,
                                                     color: isDark
                                                         ? Colors.white
-                                                        : Colors.grey[900],
+                                                        : headerColor,
+                                                    fontSize: 14,
                                                     letterSpacing: -0.3,
                                                   ),
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
                                                 ),
-                                                const SizedBox(height: 4),
-                                                Text(
-                                                  'Customer: ${order.customerName ?? 'Unknown'}',
-                                                  style: TextStyle(
-                                                    color: isDark
-                                                        ? Colors.grey[400]
-                                                        : Colors.grey[600],
-                                                    fontSize: 12,
+                                                if (order.dateOrder != null)
+                                                  Text(
+                                                    DateFormat(
+                                                      'MMM dd, yyyy',
+                                                    ).format(order.dateOrder!),
+                                                    style: TextStyle(
+                                                      color: isDark
+                                                          ? Colors.grey[400]
+                                                          : Colors.grey[600],
+                                                      fontSize: 11,
+                                                    ),
                                                   ),
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                ),
-                                                const SizedBox(height: 8),
-                                                Wrap(
-                                                  spacing: 8,
-                                                  runSpacing: 4,
-                                                  children: [
-                                                    Container(
-                                                      padding:
-                                                          const EdgeInsets.symmetric(
-                                                            horizontal: 8,
-                                                            vertical: 4,
-                                                          ),
-                                                      decoration: BoxDecoration(
-                                                        color: _getStatusColor(
-                                                          order.status,
-                                                          isDark,
-                                                        ),
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              12,
-                                                            ),
-                                                      ),
-                                                      child: Text(
-                                                        _getStatusText(
-                                                          order.status,
-                                                        ),
-                                                        style: const TextStyle(
-                                                          color: Colors.white,
-                                                          fontSize: 11,
-                                                          fontWeight:
-                                                              FontWeight.w500,
-                                                        ),
-                                                      ),
-                                                    ),
-                                                    Container(
-                                                      padding:
-                                                          const EdgeInsets.symmetric(
-                                                            horizontal: 8,
-                                                            vertical: 4,
-                                                          ),
-                                                      decoration: BoxDecoration(
-                                                        color:
-                                                            _getEnhancedInvoiceStatusColor(
-                                                              order,
-                                                              isDark,
-                                                            ),
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              12,
-                                                            ),
-                                                      ),
-                                                      child: Row(
-                                                        mainAxisSize:
-                                                            MainAxisSize.min,
-                                                        children: [
-                                                          Icon(
-                                                            _getInvoiceStatusIcon(
-                                                              order,
-                                                            ),
-                                                            color: Colors.white,
-                                                            size: 12,
-                                                          ),
-                                                          const SizedBox(
-                                                            width: 4,
-                                                          ),
-                                                          Text(
-                                                            _getEnhancedInvoiceStatusText(
-                                                              order,
-                                                            ),
-                                                            style:
-                                                                const TextStyle(
-                                                                  color: Colors
-                                                                      .white,
-                                                                  fontSize: 11,
-                                                                  fontWeight:
-                                                                      FontWeight
-                                                                          .w500,
-                                                                ),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
                                               ],
                                             ),
-                                          ),
-                                          Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.end,
-                                            children: [
-                                              Text(
-                                                (() {
-                                                  final String? currencyCode =
-                                                      order.currencyName;
-                                                  final String code =
-                                                      currencyCode ??
-                                                      currencyProvider.currency;
-                                                  final String locale =
-                                                      currencyProvider
-                                                          .currencyToLocale[code] ??
-                                                      'en_US';
-                                                  return NumberFormat.currency(
-                                                    locale: locale,
-                                                    name: code,
-
-                                                    decimalDigits: 2,
-                                                  ).format(order.total ?? 0.0);
-                                                })(),
-                                                style: TextStyle(
-                                                  fontWeight: FontWeight.w600,
-                                                  color: isDark
-                                                      ? Colors.white
-                                                      : headerColor,
-                                                  fontSize: 14,
-                                                  letterSpacing: -0.3,
-                                                ),
-                                              ),
-                                              if (order.dateOrder != null)
-                                                Text(
-                                                  DateFormat(
-                                                    'MMM dd, yyyy',
-                                                  ).format(order.dateOrder!),
-                                                  style: TextStyle(
-                                                    color: isDark
-                                                        ? Colors.grey[400]
-                                                        : Colors.grey[600],
-                                                    fontSize: 11,
-                                                  ),
-                                                ),
-                                            ],
-                                          ),
-                                        ],
+                                          ],
+                                        ),
                                       ),
                                     ),
-                                  ),
-                                );
-                              },
-                            ),
-                    ),
-                  ],
+                                  );
+                                },
+                              ),
+                      ),
+                    ],
+                  ),
                 );
               },
             );
@@ -3394,40 +3421,45 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
                     ),
                   ),
                 ),
-                body: SingleChildScrollView(
-                  padding: const EdgeInsets.all(20),
-                  child: Form(
-                    key: _formKey,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        if (widget.invoiceToEdit == null &&
-                            widget.invoiceType != 'percentage' &&
-                            widget.invoiceType != 'fixed')
-                          _buildCustomerSection(context, invoiceProvider),
+                body: SafeArea(
+                  top: false,
+                  left: false,
+                  right: false,
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(20),
+                    child: Form(
+                      key: _formKey,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (widget.invoiceToEdit == null &&
+                              widget.invoiceType != 'percentage' &&
+                              widget.invoiceType != 'fixed')
+                            _buildCustomerSection(context, invoiceProvider),
 
-                        if (widget.invoiceType == 'percentage' ||
-                            widget.invoiceType == 'fixed')
-                          _buildDownPaymentInfoSection(
-                            context,
-                            invoiceProvider,
-                          ),
+                          if (widget.invoiceType == 'percentage' ||
+                              widget.invoiceType == 'fixed')
+                            _buildDownPaymentInfoSection(
+                              context,
+                              invoiceProvider,
+                            ),
 
-                        _buildInvoiceDetailsSection(context, invoiceProvider),
+                          _buildInvoiceDetailsSection(context, invoiceProvider),
 
-                        if (widget.invoiceType != 'percentage' &&
-                            widget.invoiceType != 'fixed')
-                          _buildInvoiceLinesSection(context, invoiceProvider),
+                          if (widget.invoiceType != 'percentage' &&
+                              widget.invoiceType != 'fixed')
+                            _buildInvoiceLinesSection(context, invoiceProvider),
 
-                        if (widget.invoiceType != 'percentage' &&
-                            widget.invoiceType != 'fixed')
-                          _buildTotalsSection(context, invoiceProvider),
+                          if (widget.invoiceType != 'percentage' &&
+                              widget.invoiceType != 'fixed')
+                            _buildTotalsSection(context, invoiceProvider),
 
-                        _buildNotesSection(context),
-                        const SizedBox(height: 24),
-                        _buildCreateInvoiceButton(context, invoiceProvider),
-                        const SizedBox(height: 16),
-                      ],
+                          _buildNotesSection(context),
+                          const SizedBox(height: 24),
+                          _buildCreateInvoiceButton(context, invoiceProvider),
+                          const SizedBox(height: 16),
+                        ],
+                      ),
                     ),
                   ),
                 ),

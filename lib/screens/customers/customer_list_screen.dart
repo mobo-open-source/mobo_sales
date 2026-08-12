@@ -563,64 +563,75 @@ class CustomerListScreenState extends State<CustomerListScreen>
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (bottomSheetContext) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Text(
-              'Send Message',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: isDark ? Colors.white : Colors.black87,
+      builder: (bottomSheetContext) => SafeArea(
+        top: false,
+        left: false,
+        right: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Text(
+                'Send Message',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: isDark ? Colors.white : Colors.black87,
+                ),
               ),
             ),
-          ),
-          Divider(height: 1, color: isDark ? Colors.white24 : Colors.grey[300]),
-          ListTile(
-            leading: Icon(
-              HugeIcons.strokeRoundedMessage01,
-              color: isDark ? Colors.white : primaryColor,
+            Divider(
+              height: 1,
+              color: isDark ? Colors.white24 : Colors.grey[300],
             ),
-            title: Text(
-              'System Messenger',
-              style: TextStyle(color: isDark ? Colors.white : Colors.black87),
-            ),
-            subtitle: Text(
-              'Send SMS using default messaging app',
-              style: TextStyle(
-                color: isDark ? Colors.white60 : Colors.grey[600],
+            ListTile(
+              leading: Icon(
+                HugeIcons.strokeRoundedMessage01,
+                color: isDark ? Colors.white : primaryColor,
               ),
-            ),
-            onTap: () {
-              Navigator.pop(bottomSheetContext);
-              final phoneNumber = contact.phone ?? contact.mobile;
-              _sendSMS(phoneNumber);
-            },
-          ),
-          ListTile(
-            leading: Icon(HugeIcons.strokeRoundedWhatsapp, color: Colors.green),
-            title: Text(
-              'WhatsApp',
-              style: TextStyle(color: isDark ? Colors.white : Colors.black87),
-            ),
-            subtitle: Text(
-              'Send message via WhatsApp',
-              style: TextStyle(
-                color: isDark ? Colors.white60 : Colors.grey[600],
+              title: Text(
+                'System Messenger',
+                style: TextStyle(color: isDark ? Colors.white : Colors.black87),
               ),
+              subtitle: Text(
+                'Send SMS using default messaging app',
+                style: TextStyle(
+                  color: isDark ? Colors.white60 : Colors.grey[600],
+                ),
+              ),
+              onTap: () {
+                Navigator.pop(bottomSheetContext);
+                final phoneNumber = contact.phone ?? contact.mobile;
+                _sendSMS(phoneNumber);
+              },
             ),
-            onTap: () {
-              Navigator.pop(bottomSheetContext);
-              _openWhatsApp(context, contact);
-            },
-          ),
-          Builder(
-            builder: (context) =>
-                SizedBox(height: MediaQuery.of(context).viewInsets.bottom),
-          ),
-        ],
+            ListTile(
+              leading: Icon(
+                HugeIcons.strokeRoundedWhatsapp,
+                color: Colors.green,
+              ),
+              title: Text(
+                'WhatsApp',
+                style: TextStyle(color: isDark ? Colors.white : Colors.black87),
+              ),
+              subtitle: Text(
+                'Send message via WhatsApp',
+                style: TextStyle(
+                  color: isDark ? Colors.white60 : Colors.grey[600],
+                ),
+              ),
+              onTap: () {
+                Navigator.pop(bottomSheetContext);
+                _openWhatsApp(context, contact);
+              },
+            ),
+            Builder(
+              builder: (context) =>
+                  SizedBox(height: MediaQuery.of(context).viewInsets.bottom),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1574,165 +1585,173 @@ class CustomerListScreenState extends State<CustomerListScreen>
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (bottomSheetContext) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Text(
-              'Add Location for ${contact.displayName ?? 'Customer'}',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: isDark ? Colors.white : Colors.black87,
+      builder: (bottomSheetContext) => SafeArea(
+        top: false,
+        left: false,
+        right: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Text(
+                'Add Location for ${contact.displayName ?? 'Customer'}',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: isDark ? Colors.white : Colors.black87,
+                ),
               ),
             ),
-          ),
-          Divider(height: 1, color: isDark ? Colors.white24 : Colors.grey[300]),
-          ListTile(
-            leading: Icon(
-              HugeIcons.strokeRoundedCoordinate01,
-              color: isDark ? Colors.white : primaryColor,
+            Divider(
+              height: 1,
+              color: isDark ? Colors.white24 : Colors.grey[300],
             ),
-            title: Text(
-              'Geolocalize with Odoo',
-              style: TextStyle(color: isDark ? Colors.white : Colors.black87),
-            ),
-            subtitle: Text(
-              'Use Odoo\'s geolocation service',
-              style: TextStyle(
-                color: isDark ? Colors.white60 : Colors.grey[600],
+            ListTile(
+              leading: Icon(
+                HugeIcons.strokeRoundedCoordinate01,
+                color: isDark ? Colors.white : primaryColor,
               ),
-            ),
-            onTap: () async {
-              Navigator.pop(bottomSheetContext);
-              await handleCustomerLocation(
-                context: context,
-                parentContext: context,
-                contact: contact,
-                onContactUpdated: (updatedContact) {
-                  final provider = Provider.of<ContactProvider>(
-                    context,
-                    listen: false,
-                  );
-                  provider.updateContactCoordinates(updatedContact);
-                  setState(() {});
-                },
-                suppressMapRedirect: true,
-                skipConfirmation: true,
-              );
-            },
-          ),
-          ListTile(
-            leading: Icon(
-              HugeIcons.strokeRoundedMaping,
-              color: isDark ? Colors.white : primaryColor,
-            ),
-            title: Text(
-              'Select location on map',
-              style: TextStyle(color: isDark ? Colors.white : Colors.black87),
-            ),
-            subtitle: Text(
-              'Manually choose a location on the map',
-              style: TextStyle(
-                color: isDark ? Colors.white60 : Colors.grey[600],
+              title: Text(
+                'Geolocalize with Odoo',
+                style: TextStyle(color: isDark ? Colors.white : Colors.black87),
               ),
+              subtitle: Text(
+                'Use Odoo\'s geolocation service',
+                style: TextStyle(
+                  color: isDark ? Colors.white60 : Colors.grey[600],
+                ),
+              ),
+              onTap: () async {
+                Navigator.pop(bottomSheetContext);
+                await handleCustomerLocation(
+                  context: context,
+                  parentContext: context,
+                  contact: contact,
+                  onContactUpdated: (updatedContact) {
+                    final provider = Provider.of<ContactProvider>(
+                      context,
+                      listen: false,
+                    );
+                    provider.updateContactCoordinates(updatedContact);
+                    setState(() {});
+                  },
+                  suppressMapRedirect: true,
+                  skipConfirmation: true,
+                );
+              },
             ),
-            onTap: () async {
-              Navigator.pop(bottomSheetContext);
-              final LatLng? selected = await Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => SelectLocationScreen(
-                    onSaveLocation: (LatLng latLng) async {
-                      final sessionService = Provider.of<SessionService>(
-                        context,
-                        listen: false,
-                      );
-                      final client = await sessionService.client;
-                      if (client == null) {
-                        return false;
-                      }
-                      try {
-                        final result = await client.callKw({
-                          'model': 'res.partner',
-                          'method': 'write',
-                          'args': [
-                            [contact.id],
-                            {
-                              'partner_latitude': latLng.latitude,
-                              'partner_longitude': latLng.longitude,
-                            },
-                          ],
-                          'kwargs': {},
-                        });
-                        Future.microtask(() {
-                          _showSnack(
-                            'Location updated successfully!',
-                            type: SnackbarType.success,
-                          );
-                        });
-                        if (result == true) {
-                          WidgetsBinding.instance.addPostFrameCallback((_) {
-                            if (mounted) {
-                              setState(() {
-                                contact = contact.copyWith(
-                                  latitude: latLng.latitude,
-                                  longitude: latLng.longitude,
-                                );
-                              });
-                            }
-                          });
-                          return true;
-                        } else {
+            ListTile(
+              leading: Icon(
+                HugeIcons.strokeRoundedMaping,
+                color: isDark ? Colors.white : primaryColor,
+              ),
+              title: Text(
+                'Select location on map',
+                style: TextStyle(color: isDark ? Colors.white : Colors.black87),
+              ),
+              subtitle: Text(
+                'Manually choose a location on the map',
+                style: TextStyle(
+                  color: isDark ? Colors.white60 : Colors.grey[600],
+                ),
+              ),
+              onTap: () async {
+                Navigator.pop(bottomSheetContext);
+                final LatLng? selected = await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => SelectLocationScreen(
+                      onSaveLocation: (LatLng latLng) async {
+                        final sessionService = Provider.of<SessionService>(
+                          context,
+                          listen: false,
+                        );
+                        final client = await sessionService.client;
+                        if (client == null) {
                           return false;
                         }
-                      } catch (e) {
-                        return false;
-                      }
-                    },
-                  ),
-                ),
-              );
-              if (selected != null) {
-                final sessionService = Provider.of<SessionService>(
-                  context,
-                  listen: false,
-                );
-                final client = await sessionService.client;
-                if (client != null) {
-                  await client.callKw({
-                    'model': 'res.partner',
-                    'method': 'write',
-                    'args': [
-                      [contact.id],
-                      {
-                        'partner_latitude': selected.latitude,
-                        'partner_longitude': selected.longitude,
+                        try {
+                          final result = await client.callKw({
+                            'model': 'res.partner',
+                            'method': 'write',
+                            'args': [
+                              [contact.id],
+                              {
+                                'partner_latitude': latLng.latitude,
+                                'partner_longitude': latLng.longitude,
+                              },
+                            ],
+                            'kwargs': {},
+                          });
+                          Future.microtask(() {
+                            _showSnack(
+                              'Location updated successfully!',
+                              type: SnackbarType.success,
+                            );
+                          });
+                          if (result == true) {
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (mounted) {
+                                setState(() {
+                                  contact = contact.copyWith(
+                                    latitude: latLng.latitude,
+                                    longitude: latLng.longitude,
+                                  );
+                                });
+                              }
+                            });
+                            return true;
+                          } else {
+                            return false;
+                          }
+                        } catch (e) {
+                          return false;
+                        }
                       },
-                    ],
-                    'kwargs': {},
-                  });
-                  final provider = Provider.of<ContactProvider>(
+                    ),
+                  ),
+                );
+                if (selected != null) {
+                  final sessionService = Provider.of<SessionService>(
                     context,
                     listen: false,
                   );
-                  provider.updateContactCoordinates(
-                    contact.copyWith(
-                      latitude: selected.latitude,
-                      longitude: selected.longitude,
-                    ),
-                  );
-                  setState(() {});
+                  final client = await sessionService.client;
+                  if (client != null) {
+                    await client.callKw({
+                      'model': 'res.partner',
+                      'method': 'write',
+                      'args': [
+                        [contact.id],
+                        {
+                          'partner_latitude': selected.latitude,
+                          'partner_longitude': selected.longitude,
+                        },
+                      ],
+                      'kwargs': {},
+                    });
+                    final provider = Provider.of<ContactProvider>(
+                      context,
+                      listen: false,
+                    );
+                    provider.updateContactCoordinates(
+                      contact.copyWith(
+                        latitude: selected.latitude,
+                        longitude: selected.longitude,
+                      ),
+                    );
+                    setState(() {});
+                  }
                 }
-              }
-            },
-          ),
-          Builder(
-            builder: (context) =>
-                SizedBox(height: MediaQuery.of(context).viewInsets.bottom),
-          ),
-        ],
+              },
+            ),
+            Builder(
+              builder: (context) =>
+                  SizedBox(height: MediaQuery.of(context).viewInsets.bottom),
+            ),
+          ],
+        ),
       ),
     );
   }

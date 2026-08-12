@@ -176,18 +176,23 @@ class CompanySelectorWidget extends StatelessWidget {
         backgroundColor: Colors.transparent,
         builder: (context) {
           final isDark = Theme.of(context).brightness == Brightness.dark;
-          return Container(
-            decoration: BoxDecoration(
-              color: isDark ? Colors.grey[900] : Colors.white,
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(16),
+          return SafeArea(
+            top: false,
+            left: false,
+            right: false,
+            child: Container(
+              decoration: BoxDecoration(
+                color: isDark ? Colors.grey[900] : Colors.white,
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(16),
+                ),
               ),
-            ),
-            padding: const EdgeInsets.only(top: 8, bottom: 16),
-            child: _CompanyDropdownContent(
-              provider: provider,
-              onCompanyChanged: onCompanyChanged,
-              width: screenSize.width,
+              padding: const EdgeInsets.only(top: 8, bottom: 16),
+              child: _CompanyDropdownContent(
+                provider: provider,
+                onCompanyChanged: onCompanyChanged,
+                width: screenSize.width,
+              ),
             ),
           );
         },
@@ -529,9 +534,7 @@ class _CompanyDropdownContentState extends State<_CompanyDropdownContent> {
                 Expanded(
                   child: ElevatedButton(
                     onPressed: () {
-                      final disabled =
-                          _applying ||
-                          widget.provider.isSwitching;
+                      final disabled = _applying || widget.provider.isSwitching;
                       if (!disabled) {
                         _onConfirm();
                       }

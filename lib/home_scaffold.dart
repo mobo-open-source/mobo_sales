@@ -249,213 +249,219 @@ class HomeScaffoldState extends State<HomeScaffold> {
                     top: Radius.circular(16),
                   ),
                 ),
-                child: Column(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 16,
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              'Filter & Group By',
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                color: isDark ? Colors.white : Colors.black87,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w600,
+                child: SafeArea(
+                  top: false,
+                  left: false,
+                  right: false,
+                  child: Column(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 16,
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'Filter & Group By',
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  color: isDark ? Colors.white : Colors.black87,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
-                          ),
-                          IconButton(
-                            onPressed: () => Navigator.of(context).pop(),
-                            icon: Icon(
-                              Icons.close,
-                              color: isDark ? Colors.white : Colors.black54,
-                            ),
-                            splashRadius: 20,
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 16),
-                      decoration: BoxDecoration(
-                        color: isDark ? Colors.grey[800] : Colors.grey[100],
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: TabBar(
-                        indicator: BoxDecoration(
-                          color: theme.primaryColor,
-                          borderRadius: BorderRadius.circular(10),
-                          boxShadow: [
-                            BoxShadow(
-                              color: theme.primaryColor.withOpacity(0.3),
-                              blurRadius: 8,
-                              offset: const Offset(0, 2),
+                            IconButton(
+                              onPressed: () => Navigator.of(context).pop(),
+                              icon: Icon(
+                                Icons.close,
+                                color: isDark ? Colors.white : Colors.black54,
+                              ),
+                              splashRadius: 20,
                             ),
                           ],
                         ),
-                        indicatorPadding: const EdgeInsets.all(4),
-                        indicatorSize: TabBarIndicatorSize.tab,
-                        dividerColor: Colors.transparent,
-                        labelColor: Colors.white,
-                        unselectedLabelColor: isDark
-                            ? Colors.grey[400]
-                            : Colors.grey[600],
-                        labelStyle: const TextStyle(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 14,
-                        ),
-                        unselectedLabelStyle: const TextStyle(
-                          fontWeight: FontWeight.w500,
-                          fontSize: 14,
-                        ),
-                        tabs: const [
-                          Tab(height: 48, text: 'Filter'),
-                          Tab(height: 48, text: 'Group By'),
-                        ],
                       ),
-                    ),
-                    const SizedBox(height: 16),
 
-                    Expanded(
-                      child: TabBarView(
-                        children: [
-                          _buildFilterTab(
-                            context,
-                            setDialogState,
-                            isDark,
-                            theme,
-                            provider,
-                          ),
-                          _buildGroupByTab(
-                            context,
-                            setDialogState,
-                            isDark,
-                            theme,
-                            provider,
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    Container(
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        color: isDark ? Colors.grey[850] : Colors.grey[50],
-                        border: Border(
-                          top: BorderSide(
-                            color: isDark
-                                ? Colors.grey[700]!
-                                : Colors.grey[200]!,
-                          ),
+                      Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: isDark ? Colors.grey[800] : Colors.grey[100],
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: () async {
-                                setDialogState(() {
-                                  _activeFilters.clear();
-                                  _startDate = null;
-                                  _endDate = null;
-                                  _selectedGroupBy = null;
-                                });
-
-                                final provider = Provider.of<QuotationProvider>(
-                                  context,
-                                  listen: false,
-                                );
-                                provider.setDateRange(null, null);
-                                await provider.loadQuotations(
-                                  filters: const {},
-                                  clearGroupBy: true,
-                                );
-                                if (mounted) {
-                                  CustomSnackbar.showInfo(
-                                    context,
-                                    'All filters cleared',
-                                  );
-                                  Navigator.of(context).pop();
-                                }
-                              },
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: isDark
-                                    ? Colors.white
-                                    : Colors.black87,
-                                side: BorderSide(
-                                  color: isDark
-                                      ? Colors.grey[600]!
-                                      : Colors.grey[300]!,
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 12,
-                                ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
+                        child: TabBar(
+                          indicator: BoxDecoration(
+                            color: theme.primaryColor,
+                            borderRadius: BorderRadius.circular(10),
+                            boxShadow: [
+                              BoxShadow(
+                                color: theme.primaryColor.withOpacity(0.3),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
                               ),
-                              child: const Text('Clear All'),
+                            ],
+                          ),
+                          indicatorPadding: const EdgeInsets.all(4),
+                          indicatorSize: TabBarIndicatorSize.tab,
+                          dividerColor: Colors.transparent,
+                          labelColor: Colors.white,
+                          unselectedLabelColor: isDark
+                              ? Colors.grey[400]
+                              : Colors.grey[600],
+                          labelStyle: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                          ),
+                          unselectedLabelStyle: const TextStyle(
+                            fontWeight: FontWeight.w500,
+                            fontSize: 14,
+                          ),
+                          tabs: const [
+                            Tab(height: 48, text: 'Filter'),
+                            Tab(height: 48, text: 'Group By'),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+
+                      Expanded(
+                        child: TabBarView(
+                          children: [
+                            _buildFilterTab(
+                              context,
+                              setDialogState,
+                              isDark,
+                              theme,
+                              provider,
+                            ),
+                            _buildGroupByTab(
+                              context,
+                              setDialogState,
+                              isDark,
+                              theme,
+                              provider,
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: isDark ? Colors.grey[850] : Colors.grey[50],
+                          border: Border(
+                            top: BorderSide(
+                              color: isDark
+                                  ? Colors.grey[700]!
+                                  : Colors.grey[200]!,
                             ),
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            flex: 2,
-                            child: ElevatedButton(
-                              onPressed: () async {
-                                try {
-                                  Navigator.of(context).pop();
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: () async {
+                                  setDialogState(() {
+                                    _activeFilters.clear();
+                                    _startDate = null;
+                                    _endDate = null;
+                                    _selectedGroupBy = null;
+                                  });
 
-                                  provider.setDateRange(_startDate, _endDate);
+                                  final provider =
+                                      Provider.of<QuotationProvider>(
+                                        context,
+                                        listen: false,
+                                      );
+                                  provider.setDateRange(null, null);
                                   await provider.loadQuotations(
-                                    filters: _activeFilters,
-                                    groupBy: _selectedGroupBy,
+                                    filters: const {},
+                                    clearGroupBy: true,
                                   );
-
-                                  final hasDateFilter =
-                                      _startDate != null || _endDate != null;
-                                  final totalFilters =
-                                      _activeFilters.length +
-                                      (hasDateFilter ? 1 : 0);
-
                                   if (mounted) {
                                     CustomSnackbar.showInfo(
                                       context,
-                                      totalFilters == 0
-                                          ? 'All filters cleared'
-                                          : 'Applied $totalFilters filter${totalFilters > 1 ? 's' : ''}',
+                                      'All filters cleared',
                                     );
+                                    Navigator.of(context).pop();
                                   }
-                                } catch (e) {
-                                  if (mounted) {
-                                    CustomSnackbar.showError(
-                                      context,
-                                      'Failed to apply filters: ${e.toString()}',
-                                    );
-                                  }
-                                }
-                              },
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: theme.primaryColor,
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 12,
+                                },
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: isDark
+                                      ? Colors.white
+                                      : Colors.black87,
+                                  side: BorderSide(
+                                    color: isDark
+                                        ? Colors.grey[600]!
+                                        : Colors.grey[300]!,
+                                  ),
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 12,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
                                 ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
+                                child: const Text('Clear All'),
                               ),
-                              child: const Text('Apply'),
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 12),
+                            Expanded(
+                              flex: 2,
+                              child: ElevatedButton(
+                                onPressed: () async {
+                                  try {
+                                    Navigator.of(context).pop();
+
+                                    provider.setDateRange(_startDate, _endDate);
+                                    await provider.loadQuotations(
+                                      filters: _activeFilters,
+                                      groupBy: _selectedGroupBy,
+                                    );
+
+                                    final hasDateFilter =
+                                        _startDate != null || _endDate != null;
+                                    final totalFilters =
+                                        _activeFilters.length +
+                                        (hasDateFilter ? 1 : 0);
+
+                                    if (mounted) {
+                                      CustomSnackbar.showInfo(
+                                        context,
+                                        totalFilters == 0
+                                            ? 'All filters cleared'
+                                            : 'Applied $totalFilters filter${totalFilters > 1 ? 's' : ''}',
+                                      );
+                                    }
+                                  } catch (e) {
+                                    if (mounted) {
+                                      CustomSnackbar.showError(
+                                        context,
+                                        'Failed to apply filters: ${e.toString()}',
+                                      );
+                                    }
+                                  }
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: theme.primaryColor,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 12,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                ),
+                                child: const Text('Apply'),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               );
             },

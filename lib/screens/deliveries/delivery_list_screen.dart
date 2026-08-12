@@ -202,155 +202,160 @@ class _DeliveryListScreenState extends State<DeliveryListScreen>
                     top: Radius.circular(16),
                   ),
                 ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 16,
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              'Filter & Group By',
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                color: isDark ? Colors.white : Colors.black87,
-                                fontWeight: FontWeight.w600,
-                                fontSize: 18,
+                child: SafeArea(
+                  top: false,
+                  left: false,
+                  right: false,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 16,
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'Filter & Group By',
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  color: isDark ? Colors.white : Colors.black87,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 18,
+                                ),
                               ),
                             ),
-                          ),
-                          IconButton(
-                            onPressed: () => Navigator.of(context).pop(),
-                            icon: Icon(
-                              Icons.close,
-                              color: isDark ? Colors.white : Colors.black54,
-                            ),
-                            splashRadius: 20,
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 16),
-                      decoration: BoxDecoration(
-                        color: isDark ? Colors.grey[800] : Colors.grey[100],
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: TabBar(
-                        indicator: BoxDecoration(
-                          color: theme.primaryColor,
-                          borderRadius: BorderRadius.circular(10),
-                          boxShadow: [
-                            BoxShadow(
-                              color: theme.primaryColor.withOpacity(0.3),
-                              blurRadius: 8,
-                              offset: const Offset(0, 2),
+                            IconButton(
+                              onPressed: () => Navigator.of(context).pop(),
+                              icon: Icon(
+                                Icons.close,
+                                color: isDark ? Colors.white : Colors.black54,
+                              ),
+                              splashRadius: 20,
                             ),
                           ],
                         ),
-                        indicatorPadding: const EdgeInsets.all(4),
-                        indicatorSize: TabBarIndicatorSize.tab,
-                        dividerColor: Colors.transparent,
-                        labelColor: Colors.white,
-                        unselectedLabelColor: isDark
-                            ? Colors.grey[400]
-                            : Colors.grey[600],
-                        labelStyle: const TextStyle(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 14,
-                        ),
-                        unselectedLabelStyle: const TextStyle(
-                          fontWeight: FontWeight.w500,
-                          fontSize: 14,
-                        ),
-                        tabs: const [
-                          Tab(height: 48, text: 'Filter'),
-                          Tab(height: 48, text: 'Group By'),
-                        ],
                       ),
-                    ),
-                    const SizedBox(height: 16),
 
-                    Expanded(
-                      child: TabBarView(
-                        children: [
-                          _buildFilterTab(isDark, setDialogState, theme),
-                          _buildGroupByTab(isDark, setDialogState, theme),
-                        ],
-                      ),
-                    ),
-
-                    Container(
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        border: Border(
-                          top: BorderSide(
-                            color: isDark
-                                ? Colors.grey[800]!
-                                : Colors.grey[200]!,
-                            width: 1,
-                          ),
+                      Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: isDark ? Colors.grey[800] : Colors.grey[100],
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: () {
-                                setDialogState(() {
-                                  _activeFilters.clear();
-                                  _startDate = null;
-                                  _endDate = null;
-                                  _selectedGroupBy = null;
-                                  _isGrouped = false;
-                                });
-                              },
-                              style: OutlinedButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 16,
-                                ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
+                        child: TabBar(
+                          indicator: BoxDecoration(
+                            color: theme.primaryColor,
+                            borderRadius: BorderRadius.circular(10),
+                            boxShadow: [
+                              BoxShadow(
+                                color: theme.primaryColor.withOpacity(0.3),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
                               ),
-                              child: const Text('Clear All'),
+                            ],
+                          ),
+                          indicatorPadding: const EdgeInsets.all(4),
+                          indicatorSize: TabBarIndicatorSize.tab,
+                          dividerColor: Colors.transparent,
+                          labelColor: Colors.white,
+                          unselectedLabelColor: isDark
+                              ? Colors.grey[400]
+                              : Colors.grey[600],
+                          labelStyle: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                          ),
+                          unselectedLabelStyle: const TextStyle(
+                            fontWeight: FontWeight.w500,
+                            fontSize: 14,
+                          ),
+                          tabs: const [
+                            Tab(height: 48, text: 'Filter'),
+                            Tab(height: 48, text: 'Group By'),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+
+                      Expanded(
+                        child: TabBarView(
+                          children: [
+                            _buildFilterTab(isDark, setDialogState, theme),
+                            _buildGroupByTab(isDark, setDialogState, theme),
+                          ],
+                        ),
+                      ),
+
+                      Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          border: Border(
+                            top: BorderSide(
+                              color: isDark
+                                  ? Colors.grey[800]!
+                                  : Colors.grey[200]!,
+                              width: 1,
                             ),
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: ElevatedButton(
-                              onPressed: () {
-                                Navigator.pop(context);
-                                setState(() {
-                                  if (_selectedGroupBy != null) {
-                                    _isGrouped = true;
-                                    _groupDeliveries();
-                                  } else {
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: () {
+                                  setDialogState(() {
+                                    _activeFilters.clear();
+                                    _startDate = null;
+                                    _endDate = null;
+                                    _selectedGroupBy = null;
                                     _isGrouped = false;
-                                  }
-                                });
-                                _fetchDeliveries();
-                              },
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: theme.primaryColor,
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 16,
+                                  });
+                                },
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 16,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
                                 ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
+                                child: const Text('Clear All'),
                               ),
-                              child: const Text('Apply'),
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  setState(() {
+                                    if (_selectedGroupBy != null) {
+                                      _isGrouped = true;
+                                      _groupDeliveries();
+                                    } else {
+                                      _isGrouped = false;
+                                    }
+                                  });
+                                  _fetchDeliveries();
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: theme.primaryColor,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 16,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                ),
+                                child: const Text('Apply'),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               );
             },
