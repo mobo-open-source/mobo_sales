@@ -127,52 +127,61 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-      builder: (bottomSheetContext) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ListTile(
-            leading: Icon(
-              HugeIcons.strokeRoundedCatalogue,
-              color: isDark ? Colors.white : Colors.grey[800],
-              size: 20,
-            ),
-            title: Text(
-              'PDF Quote',
-              style: TextStyle(color: isDark ? Colors.white : Colors.grey[800]),
-            ),
-            onTap: () async {
-              Navigator.pop(bottomSheetContext);
-              await _generatePdfWithDialog(
-                ({onBeforeOpen}) => PDFGenerator.generatePdfQuote(
-                  context,
-                  widget.quotation,
-                  onBeforeOpen: onBeforeOpen,
+      builder: (bottomSheetContext) => SafeArea(
+        top: false,
+        left: false,
+        right: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(
+                HugeIcons.strokeRoundedCatalogue,
+                color: isDark ? Colors.white : Colors.grey[800],
+                size: 20,
+              ),
+              title: Text(
+                'PDF Quote',
+                style: TextStyle(
+                  color: isDark ? Colors.white : Colors.grey[800],
                 ),
-              );
-            },
-          ),
-          ListTile(
-            leading: Icon(
-              HugeIcons.strokeRoundedNote04,
-              color: isDark ? Colors.white : Colors.grey[800],
-              size: 20,
+              ),
+              onTap: () async {
+                Navigator.pop(bottomSheetContext);
+                await _generatePdfWithDialog(
+                  ({onBeforeOpen}) => PDFGenerator.generatePdfQuote(
+                    context,
+                    widget.quotation,
+                    onBeforeOpen: onBeforeOpen,
+                  ),
+                );
+              },
             ),
-            title: Text(
-              'Quotation / Order',
-              style: TextStyle(color: isDark ? Colors.white : Colors.grey[800]),
-            ),
-            onTap: () async {
-              Navigator.pop(bottomSheetContext);
-              await _generatePdfWithDialog(
-                ({onBeforeOpen}) => PDFGenerator.generateAndSavePdf(
-                  context,
-                  widget.quotation,
-                  onBeforeOpen: onBeforeOpen,
+            ListTile(
+              leading: Icon(
+                HugeIcons.strokeRoundedNote04,
+                color: isDark ? Colors.white : Colors.grey[800],
+                size: 20,
+              ),
+              title: Text(
+                'Quotation / Order',
+                style: TextStyle(
+                  color: isDark ? Colors.white : Colors.grey[800],
                 ),
-              );
-            },
-          ),
-        ],
+              ),
+              onTap: () async {
+                Navigator.pop(bottomSheetContext);
+                await _generatePdfWithDialog(
+                  ({onBeforeOpen}) => PDFGenerator.generateAndSavePdf(
+                    context,
+                    widget.quotation,
+                    onBeforeOpen: onBeforeOpen,
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
       ),
     );
   }

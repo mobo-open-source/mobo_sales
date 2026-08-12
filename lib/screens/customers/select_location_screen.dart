@@ -615,7 +615,7 @@ class _SelectLocationScreenState extends State<SelectLocationScreen> {
             ),
           if (_saveError != null && !_isSaving)
             Positioned(
-              bottom: 32,
+              bottom: 32 + MediaQuery.of(context).padding.bottom,
               left: 24,
               right: 24,
               child: Container(

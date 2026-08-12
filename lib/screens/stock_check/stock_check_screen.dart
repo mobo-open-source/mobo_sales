@@ -2048,169 +2048,180 @@ class _StockCheckPageState extends State<StockCheckPage> {
         initialChildSize: 0.7,
         minChildSize: 0.5,
         maxChildSize: 0.95,
-        builder: (context, scrollController) => Container(
-          decoration: BoxDecoration(
-            color: isDark ? Colors.grey[900] : Colors.white,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-            boxShadow: [
-              if (!isDark)
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
-                  blurRadius: 10,
-                  spreadRadius: 0,
-                ),
-            ],
-          ),
-          child: Column(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Column(
-                  children: [
-                    Container(
-                      width: 40,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: handleColor,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      child: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: isDark
-                                  ? Colors.grey[800]
-                                  : Colors.grey.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Icon(
-                              HugeIcons.strokeRoundedPackage,
-                              color: isDark ? Colors.white : Colors.black,
-                              size: 20,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Inventory Details',
-                                  style: TextStyle(
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold,
-                                    color: isDark ? Colors.white : Colors.black,
-                                  ),
-                                ),
-                                FutureBuilder<List<Map<String, String>>>(
-                                  future: _fetchVariantAttributesForBottomSheet(
-                                    variant,
-                                  ),
-                                  builder: (context, snapshot) {
-                                    final hasSku =
-                                        variant["default_code"] != null &&
-                                        variant["default_code"] is String &&
-                                        variant["default_code"]
-                                            .toString()
-                                            .trim()
-                                            .isNotEmpty &&
-                                        variant["default_code"] != 'false';
-
-                                    final attributes = snapshot.data ?? [];
-                                    final hasAttributes = attributes.isNotEmpty;
-
-                                    String displayText =
-                                        variant["name"] ?? 'Unknown Variant';
-
-                                    if (hasSku && hasAttributes) {
-                                      displayText +=
-                                          ' (SKU: ${variant["default_code"]})';
-                                      displayText +=
-                                          ' • ${attributes.map((attr) => '${attr['attribute_name']}: ${attr['value_name']}').join(', ')}';
-                                    } else if (hasSku) {
-                                      displayText +=
-                                          ' (SKU: ${variant["default_code"]})';
-                                    } else if (hasAttributes) {
-                                      displayText +=
-                                          ' • ${attributes.map((attr) => '${attr['attribute_name']}: ${attr['value_name']}').join(', ')}';
-                                    }
-
-                                    return Text(
-                                      displayText,
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        color: isDark
-                                            ? Colors.white
-                                            : Colors.black,
-                                      ),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    );
-                                  },
-                                ),
-                              ],
-                            ),
-                          ),
-                          Material(
-                            color: isDark
-                                ? Colors.white.withOpacity(.1)
-                                : Colors.grey.withOpacity(.1),
-                            borderRadius: BorderRadius.circular(8),
-                            child: IconButton(
-                              onPressed: () => Navigator.of(context).pop(),
-                              icon: Icon(
-                                HugeIcons.strokeRoundedCancelCircleHalfDot,
-                                color: isDark ? Colors.white : Colors.black,
-                              ),
-                              tooltip: 'Close',
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
+        builder: (context, scrollController) => SafeArea(
+          top: false,
+          left: false,
+          right: false,
+          child: Container(
+            decoration: BoxDecoration(
+              color: isDark ? Colors.grey[900] : Colors.white,
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(24),
               ),
-              Divider(
-                height: 1,
-                color: isDark
-                    ? Colors.white.withOpacity(.5)
-                    : Colors.black.withOpacity(.5),
-              ),
-              Expanded(
-                child: FutureBuilder<Map<String, dynamic>>(
-                  future: _fetchInventory(variant['id']),
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return _buildLoadingState(isDark: isDark);
-                    }
-                    if (snapshot.hasError) {
-                      return _buildErrorState(
-                        snapshot.error.toString(),
-                        isDark: isDark,
-                      );
-                    }
-
-                    return SingleChildScrollView(
-                      controller: scrollController,
-                      child: Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: _buildInventoryContent(
-                          variant: variant,
-                          inventoryDetails: snapshot.data!,
-                          isDark: isDark,
+              boxShadow: [
+                if (!isDark)
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 10,
+                    spreadRadius: 0,
+                  ),
+              ],
+            ),
+            child: Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Column(
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: handleColor,
+                          borderRadius: BorderRadius.circular(2),
                         ),
                       ),
-                    );
-                  },
+                      const SizedBox(height: 16),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: isDark
+                                    ? Colors.grey[800]
+                                    : Colors.grey.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Icon(
+                                HugeIcons.strokeRoundedPackage,
+                                color: isDark ? Colors.white : Colors.black,
+                                size: 20,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Inventory Details',
+                                    style: TextStyle(
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.bold,
+                                      color: isDark
+                                          ? Colors.white
+                                          : Colors.black,
+                                    ),
+                                  ),
+                                  FutureBuilder<List<Map<String, String>>>(
+                                    future:
+                                        _fetchVariantAttributesForBottomSheet(
+                                          variant,
+                                        ),
+                                    builder: (context, snapshot) {
+                                      final hasSku =
+                                          variant["default_code"] != null &&
+                                          variant["default_code"] is String &&
+                                          variant["default_code"]
+                                              .toString()
+                                              .trim()
+                                              .isNotEmpty &&
+                                          variant["default_code"] != 'false';
+
+                                      final attributes = snapshot.data ?? [];
+                                      final hasAttributes =
+                                          attributes.isNotEmpty;
+
+                                      String displayText =
+                                          variant["name"] ?? 'Unknown Variant';
+
+                                      if (hasSku && hasAttributes) {
+                                        displayText +=
+                                            ' (SKU: ${variant["default_code"]})';
+                                        displayText +=
+                                            ' • ${attributes.map((attr) => '${attr['attribute_name']}: ${attr['value_name']}').join(', ')}';
+                                      } else if (hasSku) {
+                                        displayText +=
+                                            ' (SKU: ${variant["default_code"]})';
+                                      } else if (hasAttributes) {
+                                        displayText +=
+                                            ' • ${attributes.map((attr) => '${attr['attribute_name']}: ${attr['value_name']}').join(', ')}';
+                                      }
+
+                                      return Text(
+                                        displayText,
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          color: isDark
+                                              ? Colors.white
+                                              : Colors.black,
+                                        ),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Material(
+                              color: isDark
+                                  ? Colors.white.withOpacity(.1)
+                                  : Colors.grey.withOpacity(.1),
+                              borderRadius: BorderRadius.circular(8),
+                              child: IconButton(
+                                onPressed: () => Navigator.of(context).pop(),
+                                icon: Icon(
+                                  HugeIcons.strokeRoundedCancelCircleHalfDot,
+                                  color: isDark ? Colors.white : Colors.black,
+                                ),
+                                tooltip: 'Close',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+                Divider(
+                  height: 1,
+                  color: isDark
+                      ? Colors.white.withOpacity(.5)
+                      : Colors.black.withOpacity(.5),
+                ),
+                Expanded(
+                  child: FutureBuilder<Map<String, dynamic>>(
+                    future: _fetchInventory(variant['id']),
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return _buildLoadingState(isDark: isDark);
+                      }
+                      if (snapshot.hasError) {
+                        return _buildErrorState(
+                          snapshot.error.toString(),
+                          isDark: isDark,
+                        );
+                      }
+
+                      return SingleChildScrollView(
+                        controller: scrollController,
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: _buildInventoryContent(
+                            variant: variant,
+                            inventoryDetails: snapshot.data!,
+                            isDark: isDark,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

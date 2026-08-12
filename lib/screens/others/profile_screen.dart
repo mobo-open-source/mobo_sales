@@ -211,7 +211,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _isLoadingCountries = false);
-        _showErrorSnackBar('Failed to load countries: $e');
       }
     }
   }
@@ -337,69 +336,80 @@ class _ProfileScreenState extends State<ProfileScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      builder: (context) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 8),
-          Container(
-            width: 40,
-            height: 4,
-            margin: const EdgeInsets.only(bottom: 12),
-            decoration: BoxDecoration(
-              color: isDark ? Colors.grey[700] : Colors.grey[300],
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-          InkWell(
-            onTap: () {
-              Navigator.pop(context);
-              _pickImageFromSource(ImageSource.camera);
-            },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-              child: Row(
-                children: [
-                  Icon(
-                    HugeIcons.strokeRoundedCamera02,
-                    size: 24,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                  const SizedBox(width: 16),
-                  const Text('Take Photo', style: TextStyle(fontSize: 16)),
-                ],
+      builder: (context) => SafeArea(
+        top: false,
+        left: false,
+        right: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: isDark ? Colors.grey[700] : Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
               ),
             ),
-          ),
-          Divider(
-            height: 1,
-            thickness: 1,
-            color: isDark ? Colors.grey[800] : Colors.grey[200],
-          ),
-          InkWell(
-            onTap: () {
-              Navigator.pop(context);
-              _pickImageFromSource(ImageSource.gallery);
-            },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-              child: Row(
-                children: [
-                  Icon(
-                    HugeIcons.strokeRoundedImageCrop,
-                    size: 24,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                  const SizedBox(width: 16),
-                  const Text(
-                    'Choose from Gallery',
-                    style: TextStyle(fontSize: 16),
-                  ),
-                ],
+            InkWell(
+              onTap: () {
+                Navigator.pop(context);
+                _pickImageFromSource(ImageSource.camera);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 14,
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      HugeIcons.strokeRoundedCamera02,
+                      size: 24,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
+                    const SizedBox(width: 16),
+                    const Text('Take Photo', style: TextStyle(fontSize: 16)),
+                  ],
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 8),
-        ],
+            Divider(
+              height: 1,
+              thickness: 1,
+              color: isDark ? Colors.grey[800] : Colors.grey[200],
+            ),
+            InkWell(
+              onTap: () {
+                Navigator.pop(context);
+                _pickImageFromSource(ImageSource.gallery);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 14,
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      HugeIcons.strokeRoundedImageCrop,
+                      size: 24,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
+                    const SizedBox(width: 16),
+                    const Text(
+                      'Choose from Gallery',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
       ),
     );
   }
@@ -1042,7 +1052,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
         setState(() {
           _isLoading = false;
         });
-        _showErrorSnackBar('Failed to load profile: $e');
       }
     }
   }
@@ -1401,9 +1410,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
 
     if (context.mounted) {
-      Navigator.of(
-        context,
-      ).pushNamedAndRemoveUntil('/login', (route) => false);
+      Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
     }
     final rootContext = navigatorKey.currentContext;
     if (rootContext != null && rootContext.mounted) {
@@ -2809,47 +2816,52 @@ class _AccountDrawer extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final storedAccounts = sessionService.storedAccounts;
 
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.7,
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[900] : Colors.white,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      child: Column(
-        children: [
-          Container(
-            width: 40,
-            height: 4,
-            margin: const EdgeInsets.symmetric(vertical: 12),
-            decoration: BoxDecoration(
-              color: isDark ? Colors.grey[600] : Colors.grey[300],
-              borderRadius: BorderRadius.circular(2),
+    return SafeArea(
+      top: false,
+      left: false,
+      right: false,
+      child: Container(
+        height: MediaQuery.of(context).size.height * 0.7,
+        decoration: BoxDecoration(
+          color: isDark ? Colors.grey[900] : Colors.white,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.symmetric(vertical: 12),
+              decoration: BoxDecoration(
+                color: isDark ? Colors.grey[600] : Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
-          ),
 
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-            child: Row(
-              children: [
-                Text(
-                  'Switch Accounts',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white : Colors.black87,
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Row(
+                children: [
+                  Text(
+                    'Switch Accounts',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w600,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          const Divider(height: 1),
+            const Divider(height: 1),
 
-          Expanded(
-            child: storedAccounts.isEmpty
-                ? _buildEmptyState(context)
-                : _buildAccountsList(context, storedAccounts),
-          ),
-        ],
+            Expanded(
+              child: storedAccounts.isEmpty
+                  ? _buildEmptyState(context)
+                  : _buildAccountsList(context, storedAccounts),
+            ),
+          ],
+        ),
       ),
     );
   }

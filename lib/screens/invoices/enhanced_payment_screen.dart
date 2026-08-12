@@ -653,63 +653,68 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
           ),
         ),
       ),
-      body: _isLoading
-          ? _buildLoadingScreen()
-          : FadeTransition(
-              opacity: _fadeAnimation,
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(20),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildInvoiceInfoCard(isDark),
-                      const SizedBox(height: 20),
-
-                      if (_isLoadingExistingPayments) ...[
-                        _buildExistingPaymentsShimmer(isDark),
+      body: SafeArea(
+        top: false,
+        left: false,
+        right: false,
+        child: _isLoading
+            ? _buildLoadingScreen()
+            : FadeTransition(
+                opacity: _fadeAnimation,
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(20),
+                  child: Form(
+                    key: _formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildInvoiceInfoCard(isDark),
                         const SizedBox(height: 20),
-                      ] else if (_existingPayments.isNotEmpty) ...[
-                        _buildExistingPaymentsCard(isDark),
+
+                        if (_isLoadingExistingPayments) ...[
+                          _buildExistingPaymentsShimmer(isDark),
+                          const SizedBox(height: 20),
+                        ] else if (_existingPayments.isNotEmpty) ...[
+                          _buildExistingPaymentsCard(isDark),
+                          const SizedBox(height: 20),
+                        ],
+
+                        _buildPaymentDetailsCard(isDark),
                         const SizedBox(height: 20),
-                      ],
 
-                      _buildPaymentDetailsCard(isDark),
-                      const SizedBox(height: 20),
+                        if (_showPaymentDifference)
+                          _buildPaymentDifferenceCard(isDark),
 
-                      if (_showPaymentDifference)
-                        _buildPaymentDifferenceCard(isDark),
+                        const SizedBox(height: 30),
 
-                      const SizedBox(height: 30),
-
-                      SizedBox(
-                        width: double.infinity,
-                        height: 50,
-                        child: ElevatedButton.icon(
-                          onPressed: _recordQuickPayment,
-                          icon: const Icon(HugeIcons.strokeRoundedPayment02),
-                          label: Text(
-                            'Record Payment',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w600,
-                              color: isDark ? Colors.white70 : Colors.white,
+                        SizedBox(
+                          width: double.infinity,
+                          height: 50,
+                          child: ElevatedButton.icon(
+                            onPressed: _recordQuickPayment,
+                            icon: const Icon(HugeIcons.strokeRoundedPayment02),
+                            label: Text(
+                              'Record Payment',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                color: isDark ? Colors.white70 : Colors.white,
+                              ),
                             ),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: theme.primaryColor,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: theme.primaryColor,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
+      ),
     );
   }
 
