@@ -16,6 +16,7 @@ import '../../widgets/connection_status_widget.dart';
 import '../../widgets/custom_text_field.dart';
 import '../../widgets/custom_dropdown.dart';
 import '../../widgets/custom_snackbar.dart';
+import '../../services/odoo_error_classifier.dart';
 
 class CreateProductScreen extends StatefulWidget {
   final Product? product;
@@ -178,20 +179,8 @@ class _CreateProductScreenState extends State<CreateProductScreen>
     super.dispose();
   }
 
-  bool _isServerUnreachableError(dynamic error) {
-    final s = error.toString().toLowerCase();
-    return s.contains('socketexception') ||
-        s.contains('connection refused') ||
-        s.contains('connection timeout') ||
-        s.contains('host unreachable') ||
-        s.contains('no route to host') ||
-        s.contains('network is unreachable') ||
-        s.contains('failed to connect') ||
-        s.contains('connection failed') ||
-        s.contains('server returned html instead of json') ||
-        s.contains('server may be down') ||
-        s.contains('url incorrect');
-  }
+  bool _isServerUnreachableError(dynamic error) =>
+      OdooErrorClassifier.isServerUnreachable(error);
 
   Future<void> _pickImageFromSource(ImageSource source) async {
     final picked = await _picker.pickImage(

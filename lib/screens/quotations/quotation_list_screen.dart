@@ -19,6 +19,7 @@ import '../../widgets/custom_snackbar.dart';
 import '../../widgets/empty_state_widget.dart';
 import '../../widgets/list_shimmer.dart';
 import '../../models/quote.dart';
+import '../../services/odoo_error_classifier.dart';
 
 class QuotationListScreen extends StatefulWidget {
   final int? customerId;
@@ -1109,42 +1110,18 @@ class _QuotationListScreenState extends State<QuotationListScreen>
             provider.startDate != null || provider.endDate != null;
 
         if (widget.initialFilters?.contains('expired') == true) {
-          DateTime? parseDateOnly(dynamic v) {
-            if (v == null) return null;
-            final s = v.toString();
-            if (s.isEmpty) return null;
-            try {
-              final datePart = s.length >= 10 ? s.substring(0, 10) : s;
-              return DateTime.parse(datePart);
-            } catch (_) {
-              return null;
-            }
-          }
-
           final today = DateTime.now();
           final todayDateOnly = DateTime(today.year, today.month, today.day);
-          quotations = quotations.where((q) {
-            final state = (q['state'] ?? '').toString();
-            if (state != 'draft' && state != 'sent') return false;
-            final d = parseDateOnly(q['validity_date']);
-            if (d == null) return false;
+          quotations = quotations.whereType<Quote>().where((q) {
+            if (q.status != 'draft' && q.status != 'sent') return false;
+            final v = q.validityDate;
+            if (v == null) return false;
+            final d = DateTime(v.year, v.month, v.day);
             return d.isBefore(todayDateOnly);
           }).toList();
         }
 
         if (widget.expiringSoonOnly) {
-          DateTime? parseDateOnly(dynamic v) {
-            if (v == null) return null;
-            final s = v.toString();
-            if (s.isEmpty) return null;
-            try {
-              final datePart = s.length >= 10 ? s.substring(0, 10) : s;
-              return DateTime.parse(datePart);
-            } catch (_) {
-              return null;
-            }
-          }
-
           final now = DateTime.now();
           final from = DateTime(
             now.year,
@@ -1156,11 +1133,11 @@ class _QuotationListScreenState extends State<QuotationListScreen>
             now.month,
             now.day,
           ).add(const Duration(days: 7));
-          quotations = quotations.where((q) {
-            final state = (q['state'] ?? '').toString();
-            if (state != 'draft' && state != 'sent') return false;
-            final d = parseDateOnly(q['validity_date']);
-            if (d == null) return false;
+          quotations = quotations.whereType<Quote>().where((q) {
+            if (q.status != 'draft' && q.status != 'sent') return false;
+            final v = q.validityDate;
+            if (v == null) return false;
+            final d = DateTime(v.year, v.month, v.day);
             return !d.isBefore(from) && !d.isAfter(to);
           }).toList();
         }
@@ -3704,57 +3681,37 @@ class _QuotationListScreenState extends State<QuotationListScreen>
       }
     } catch (_) {}
 
-    if ((widget.customerId != null || widget.invoiceName != null) &&
-        _quotationProvider != null) {
-      _quotationProvider!.setCustomerFilter(null);
-      _quotationProvider!.setInvoiceNameFilter(null);
-      _quotationProvider!.clearCache();
+    final provider = _quotationProvider;
+    final resetCustomerFilter =
+        (widget.customerId != null || widget.invoiceName != null) &&
+        provider != null;
+    final resetDateFilter =
+        (widget.initialFilters?.contains('expired') == true ||
+            widget.expiringSoonOnly) &&
+        provider != null;
 
-      _quotationProvider!.loadQuotations(filters: {}, clearGroupBy: false);
+    if (resetCustomerFilter || resetDateFilter) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        try {
+          if (resetCustomerFilter) {
+            provider.setCustomerFilter(null);
+            provider.setInvoiceNameFilter(null);
+            provider.clearCache();
+            provider.loadQuotations(filters: {}, clearGroupBy: false);
+          }
+          if (resetDateFilter) {
+            provider.setDateRange(null, null);
+            provider.loadQuotations(filters: {}, clearGroupBy: true);
+          }
+        } catch (_) {}
+      });
     }
-
-    try {
-      final hadExpiredFilter =
-          widget.initialFilters?.contains('expired') == true;
-      if (hadExpiredFilter || widget.expiringSoonOnly) {
-        final provider2 =
-            _quotationProvider ??
-            (mounted
-                ? Provider.of<QuotationProvider>(context, listen: false)
-                : null);
-        if (provider2 != null) {
-          provider2.setDateRange(null, null);
-
-          provider2.loadQuotations(filters: {}, clearGroupBy: true);
-        }
-      }
-    } catch (_) {}
 
     super.dispose();
   }
 
-  bool _isServerUnreachableError(String error) {
-    final errorString = error.toLowerCase();
-    return errorString.contains('socketexception') ||
-        errorString.contains('connection refused') ||
-        errorString.contains('connection timeout') ||
-        errorString.contains('host unreachable') ||
-        errorString.contains('no route to host') ||
-        errorString.contains('network is unreachable') ||
-        errorString.contains('failed to connect') ||
-        errorString.contains('connection failed') ||
-        errorString.contains('server returned html instead of json') ||
-        errorString.contains('server may be down') ||
-        errorString.contains('url incorrect') ||
-        errorString.contains('odoo server error') ||
-        errorString.contains('unexpected response') ||
-        errorString.contains('404') ||
-        errorString.contains('not found') ||
-        errorString.contains('500') ||
-        errorString.contains('502') ||
-        errorString.contains('503') ||
-        errorString.contains('504');
-  }
+  bool _isServerUnreachableError(String error) =>
+      OdooErrorClassifier.isServerUnreachable(error);
 }
 
 class AccessErrorBanner extends StatelessWidget {

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/connectivity_service.dart';
 import '../services/session_service.dart';
 import '../services/stock_service.dart';
+import '../services/odoo_error_classifier.dart';
 
 /// Manages stock product listing, pagination, search, and inventory detail fetching.
 class StockCheckProvider with ChangeNotifier {
@@ -46,17 +47,8 @@ class StockCheckProvider with ChangeNotifier {
   bool get isServerUnreachable => _isServerUnreachable;
   String? get error => _error;
 
-  bool _isServerUnreachableError(dynamic error) {
-    final errorString = error.toString().toLowerCase();
-    return errorString.contains('socketexception') ||
-        errorString.contains('connection refused') ||
-        errorString.contains('connection timeout') ||
-        errorString.contains('host unreachable') ||
-        errorString.contains('no route to host') ||
-        errorString.contains('network is unreachable') ||
-        errorString.contains('failed to connect') ||
-        errorString.contains('connection failed');
-  }
+  bool _isServerUnreachableError(dynamic error) =>
+      OdooErrorClassifier.isServerUnreachable(error);
 
   /// Loads the first page of stock products, optionally bypassing the cache.
   Future<void> fetchInitialStock({bool forceRefresh = false}) async {

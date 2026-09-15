@@ -20,6 +20,7 @@ import '../../widgets/custom_snackbar.dart';
 import '../../widgets/list_shimmer.dart';
 import '../../widgets/product_list_tile.dart';
 import 'package:flutter/services.dart';
+import '../../services/odoo_error_classifier.dart';
 
 class StockCheckPage extends StatefulWidget {
   const StockCheckPage({super.key});
@@ -54,17 +55,8 @@ class _StockCheckPageState extends State<StockCheckPage> {
   String _lastSearchValue = '';
   bool _isSearching = false;
 
-  bool _isServerUnreachableError(dynamic error) {
-    final errorString = error.toString().toLowerCase();
-    return errorString.contains('socketexception') ||
-        errorString.contains('connection refused') ||
-        errorString.contains('connection timeout') ||
-        errorString.contains('host unreachable') ||
-        errorString.contains('no route to host') ||
-        errorString.contains('network is unreachable') ||
-        errorString.contains('failed to connect') ||
-        errorString.contains('connection failed');
-  }
+  bool _isServerUnreachableError(dynamic error) =>
+      OdooErrorClassifier.isServerUnreachable(error);
 
   Widget _buildTag({
     required String text,

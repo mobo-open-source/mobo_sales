@@ -18,6 +18,7 @@ import '../../widgets/connection_status_widget.dart';
 import '../../widgets/empty_state_widget.dart';
 import '../../widgets/list_shimmer.dart';
 import '../../models/invoice.dart';
+import '../../services/odoo_error_classifier.dart';
 
 class InvoiceListScreen extends StatefulWidget {
   final int? customerId;
@@ -167,28 +168,8 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
 
   String? _accessErrorMessage;
 
-  bool _isServerUnreachableError(dynamic error) {
-    final errorString = error.toString().toLowerCase();
-    return errorString.contains('socketexception') ||
-        errorString.contains('connection refused') ||
-        errorString.contains('connection timeout') ||
-        errorString.contains('host unreachable') ||
-        errorString.contains('no route to host') ||
-        errorString.contains('network is unreachable') ||
-        errorString.contains('failed to connect') ||
-        errorString.contains('connection failed') ||
-        errorString.contains('server returned html instead of json') ||
-        errorString.contains('server may be down') ||
-        errorString.contains('url incorrect') ||
-        errorString.contains('odoo server error') ||
-        errorString.contains('unexpected response') ||
-        errorString.contains('404') ||
-        errorString.contains('not found') ||
-        errorString.contains('500') ||
-        errorString.contains('502') ||
-        errorString.contains('503') ||
-        errorString.contains('504');
-  }
+  bool _isServerUnreachableError(dynamic error) =>
+      OdooErrorClassifier.isServerUnreachable(error);
 
   String _getErrorMessage(dynamic error) {
     final errorString = error.toString().toLowerCase();

@@ -1718,8 +1718,7 @@ class PaymentService {
     }
 
     if (errorString.contains('odoo server error') ||
-        errorString.contains('internal server error') ||
-        errorString.contains('500')) {
+        errorString.contains('internal server error')) {
       return PaymentError.network(
         message: 'Server error occurred. Please try again in a few moments.',
         action: PaymentErrorAction.retry,

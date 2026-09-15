@@ -17,6 +17,7 @@ import '../providers/settings_provider.dart';
 import '../providers/last_opened_provider.dart';
 import '../providers/product_provider.dart';
 import '../providers/login_provider.dart';
+import 'field_validation_service.dart';
 import 'odoo_session_manager.dart';
 import 'odoo_api_service.dart';
 import 'biometric_context_service.dart';
@@ -959,6 +960,10 @@ class SessionService extends ChangeNotifier {
 
     try {
       PaymentStatusSynchronizer.clearAllCaches();
+    } catch (e) {}
+
+    try {
+      FieldValidationService.clearInvalidFieldsCache();
     } catch (e) {}
 
     _clearScreenStaticCaches();

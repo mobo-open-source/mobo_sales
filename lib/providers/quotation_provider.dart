@@ -13,6 +13,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:odoo_rpc/odoo_rpc.dart';
 import '../models/quote.dart';
 import '../services/field_validation_service.dart';
+import '../services/odoo_error_classifier.dart';
 
 class QuotationProvider with ChangeNotifier {
   final QuotationService _quotationService;
@@ -892,22 +893,8 @@ class QuotationProvider with ChangeNotifier {
 
   bool get isServerUnreachable => _isServerUnreachable;
 
-  bool _isServerUnreachableError(dynamic error) {
-    final errorString = error.toString().toLowerCase();
-    return errorString.contains('socketexception') ||
-        errorString.contains('connection refused') ||
-        errorString.contains('connection timeout') ||
-        errorString.contains('host unreachable') ||
-        errorString.contains('no route to host') ||
-        errorString.contains('network is unreachable') ||
-        errorString.contains('failed to connect') ||
-        errorString.contains('connection failed') ||
-        errorString.contains('server returned html instead of json') ||
-        errorString.contains('server may be down') ||
-        errorString.contains('url incorrect') ||
-        errorString.contains('odoo server error') ||
-        errorString.contains('unexpected response');
-  }
+  bool _isServerUnreachableError(dynamic error) =>
+      OdooErrorClassifier.isServerUnreachable(error);
 
   int? get customerFilterId => _customerFilterId;
 

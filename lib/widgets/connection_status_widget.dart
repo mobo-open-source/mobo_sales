@@ -127,8 +127,7 @@ class ConnectionStatusWidget extends StatelessWidget {
         errorLower.contains('failed host lookup') ||
         errorLower.contains('connection refused') ||
         errorLower.contains('network is unreachable') ||
-        errorLower.contains('clientexception') ||
-        errorLower.contains('odoo server error')) {
+        errorLower.contains('clientexception')) {
       String serverHint = '';
       final addressMatch = RegExp(r'address = ([^,]+)').firstMatch(error);
       if (addressMatch != null) {

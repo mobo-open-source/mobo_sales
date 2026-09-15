@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -7,6 +8,7 @@ import '../services/connectivity_service.dart';
 import '../services/session_service.dart';
 import '../services/customer_service.dart';
 import '../services/field_validation_service.dart';
+import '../services/odoo_error_classifier.dart';
 
 /// Manages the customer/contact list with pagination, filtering, grouping, and search.
 class ContactProvider with ChangeNotifier {
@@ -44,6 +46,17 @@ class ContactProvider with ChangeNotifier {
   String? get accessErrorMessage => _accessErrorMessage;
 
   final Map<int, Uint8List> _base64ImageCache = {};
+
+  int _fetchSequence = 0;
+  Future<void>? _inFlightFetch;
+
+  static const int _creditBreachScanLimit = 2000;
+  List<int>? _creditBreachIds;
+  String? _creditFilterError;
+
+  /// Set when the "Credit Breaches" filter could not be resolved, usually
+  /// because the user lacks the accounting groups that guard `credit_limit`.
+  String? get creditFilterError => _creditFilterError;
 
   Map<String, String> _groupByOptions = {};
   String? _selectedGroupBy;
@@ -266,21 +279,56 @@ class ContactProvider with ChangeNotifier {
   void cacheBase64Image(int contactId, Uint8List bytes) =>
       _base64ImageCache[contactId] = bytes;
 
-  bool _isServerUnreachableError(dynamic error) {
-    final errorString = error.toString().toLowerCase();
-    return errorString.contains('socketexception') ||
-        errorString.contains('connection refused') ||
-        errorString.contains('connection timeout') ||
-        errorString.contains('host unreachable') ||
-        errorString.contains('no route to host') ||
-        errorString.contains('network is unreachable') ||
-        errorString.contains('failed to connect') ||
-        errorString.contains('connection failed') ||
-        errorString.contains('server returned html instead of json') ||
-        errorString.contains('server may be down') ||
-        errorString.contains('url incorrect') ||
-        errorString.contains('odoo server error') ||
-        errorString.contains('unexpected response');
+  bool _isServerUnreachableError(dynamic error) =>
+      OdooErrorClassifier.isServerUnreachable(error);
+
+  /// Resolves the ids of partners whose outstanding credit exceeds their limit.
+  ///
+  /// Odoo cannot compare two fields inside a domain, so the candidates are read
+  /// first and the comparison is applied here; the resulting id list keeps
+  /// server-side paging and counts exact.
+  Future<void> _resolveCreditBreachIds(Map<String, dynamic>? filters) async {
+    if (filters?['showCreditBreachesOnly'] != true) {
+      _creditBreachIds = null;
+      _creditFilterError = null;
+      return;
+    }
+
+    try {
+      final result = await OdooSessionManager.safeCallKw({
+        'model': 'res.partner',
+        'method': 'search_read',
+        'args': [
+          [
+            ['credit', '>', 0],
+          ],
+        ],
+        'kwargs': {
+          'fields': ['id', 'credit', 'credit_limit'],
+          'limit': _creditBreachScanLimit,
+        },
+      });
+
+      final ids = <int>[];
+      if (result is List) {
+        for (final row in result) {
+          if (row is! Map) continue;
+          final credit = (row['credit'] as num?)?.toDouble() ?? 0.0;
+          final limit = (row['credit_limit'] as num?)?.toDouble() ?? 0.0;
+          final id = (row['id'] as num?)?.toInt();
+          if (id != null && limit > 0 && credit > limit) {
+            ids.add(id);
+          }
+        }
+      }
+      _creditBreachIds = ids;
+      _creditFilterError = null;
+    } catch (_) {
+      _creditBreachIds = const <int>[];
+      _creditFilterError =
+          'Credit limits are not available for your user, so the '
+          'Credit Breaches filter cannot be applied.';
+    }
   }
 
   List<dynamic> _buildDomain(
@@ -298,6 +346,9 @@ class ContactProvider with ChangeNotifier {
       }
       if (filters['showIndividualsOnly'] == true) {
         domain.add(['is_company', '=', false]);
+      }
+      if (filters['showCreditBreachesOnly'] == true) {
+        domain.add(['id', 'in', _creditBreachIds ?? const <int>[]]);
       }
 
       if (filters['startDate'] != null || filters['endDate'] != null) {
@@ -342,13 +393,46 @@ class ContactProvider with ChangeNotifier {
   }
 
   /// Fetches contacts from Odoo, using cache unless [forceRefresh] is set.
+  ///
+  /// Requests are serialised rather than dropped: a call made while another is
+  /// still running waits for it, and is then abandoned only if a newer call has
+  /// arrived meanwhile. This keeps a search typed during the initial load — or
+  /// while an earlier search is in flight — from being silently discarded.
   Future<void> fetchContacts({
     bool forceRefresh = false,
     String? searchQuery,
     Map<String, dynamic>? filters,
   }) async {
-    if (_isLoading || _isSearching) return;
+    final int requestId = ++_fetchSequence;
+    final Future<void>? previous = _inFlightFetch;
+    final completer = Completer<void>();
+    _inFlightFetch = completer.future;
 
+    try {
+      if (previous != null) {
+        try {
+          await previous;
+        } catch (_) {}
+      }
+      if (requestId != _fetchSequence) return;
+      await _performFetchContacts(
+        requestId: requestId,
+        forceRefresh: forceRefresh,
+        searchQuery: searchQuery,
+        filters: filters,
+      );
+    } finally {
+      if (!completer.isCompleted) completer.complete();
+      if (identical(_inFlightFetch, completer.future)) _inFlightFetch = null;
+    }
+  }
+
+  Future<void> _performFetchContacts({
+    required int requestId,
+    required bool forceRefresh,
+    required String? searchQuery,
+    required Map<String, dynamic>? filters,
+  }) async {
     _currentSearchQuery = (searchQuery ?? '').trim();
     if (_currentSearchQuery.isNotEmpty) {
       _isSearching = true;
@@ -397,6 +481,8 @@ class ContactProvider with ChangeNotifier {
     _contacts = [];
 
     try {
+      await _resolveCreditBreachIds(_currentFilters);
+      if (requestId != _fetchSequence) return;
       List<dynamic> domain = _buildDomain(_currentSearchQuery, _currentFilters);
 
       final List<String> fieldsToFetch = [
@@ -441,6 +527,7 @@ class ContactProvider with ChangeNotifier {
       (() async {
         try {
           final total = await _customerService.getContactCount(domain);
+          if (requestId != _fetchSequence) return;
           _totalContacts = total;
           _hasMoreData = _contacts.length < _totalContacts;
           notifyListeners();

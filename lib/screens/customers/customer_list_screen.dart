@@ -22,6 +22,7 @@ import 'customer_details_screen.dart';
 import 'edit_customer_screen.dart';
 import 'select_location_screen.dart';
 import 'package:latlong2/latlong.dart';
+import '../../services/odoo_error_classifier.dart';
 
 class CustomerListScreen extends StatefulWidget {
   final bool showForcedAppBar;
@@ -172,20 +173,11 @@ class CustomerListScreenState extends State<CustomerListScreen>
 
       final provider = Provider.of<ContactProvider>(context, listen: false);
 
-      if (_currentSearchQuery.isNotEmpty && _currentSearchQuery.length >= 2) {
-        final filters = _buildCurrentFilters();
-        await provider.fetchContacts(
-          searchQuery: _currentSearchQuery,
-          filters: filters?.isEmpty == true ? null : filters,
-        );
-        if (mounted) {}
-      } else if (_currentSearchQuery.isEmpty) {
-        final filters = _buildCurrentFilters();
-        await provider.fetchContacts(
-          searchQuery: null,
-          filters: filters?.isEmpty == true ? null : filters,
-        );
-      }
+      final filters = _buildCurrentFilters();
+      await provider.fetchContacts(
+        searchQuery: _currentSearchQuery.isEmpty ? null : _currentSearchQuery,
+        filters: filters?.isEmpty == true ? null : filters,
+      );
     });
   }
 
@@ -2233,6 +2225,25 @@ class CustomerListScreenState extends State<CustomerListScreen>
                       );
                     }
 
+                    if (provider.creditFilterError != null) {
+                      return CustomScrollView(
+                        slivers: [
+                          SliverFillRemaining(
+                            hasScrollBody: false,
+                            child: EmptyStateWidget(
+                              icon: HugeIcons.strokeRoundedUserMultiple,
+                              title: 'Credit Breaches Unavailable',
+                              message: provider.creditFilterError!,
+                              showRetry: true,
+                              onRetry: () async {
+                                await _clearSearchAndReload(resetFilters: true);
+                              },
+                            ),
+                          ),
+                        ],
+                      );
+                    }
+
                     if (filteredContacts.isEmpty &&
                         !isLoading &&
                         !isSearching &&
@@ -3457,28 +3468,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
     }
   }
 
-  bool _isServerUnreachableError(String error) {
-    final errorString = error.toLowerCase();
-    return errorString.contains('socketexception') ||
-        errorString.contains('connection refused') ||
-        errorString.contains('connection timeout') ||
-        errorString.contains('host unreachable') ||
-        errorString.contains('no route to host') ||
-        errorString.contains('network is unreachable') ||
-        errorString.contains('failed to connect') ||
-        errorString.contains('connection failed') ||
-        errorString.contains('server returned html instead of json') ||
-        errorString.contains('server may be down') ||
-        errorString.contains('url incorrect') ||
-        errorString.contains('odoo server error') ||
-        errorString.contains('unexpected response') ||
-        errorString.contains('404') ||
-        errorString.contains('not found') ||
-        errorString.contains('500') ||
-        errorString.contains('502') ||
-        errorString.contains('503') ||
-        errorString.contains('504');
-  }
+  bool _isServerUnreachableError(String error) =>
+      OdooErrorClassifier.isServerUnreachable(error);
 }
 
 class _FadeInMemoryImage extends StatefulWidget {
