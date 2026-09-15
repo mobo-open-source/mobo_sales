@@ -111,7 +111,7 @@ class CustomerService {
         'method': 'search_read',
         'args': [domain],
         'kwargs': {
-          if (limit != null) 'limit': limit,
+          'limit': limit ?? 200,
           'fields': [
             'id',
             'name',
@@ -125,7 +125,7 @@ class CustomerService {
             'state_id',
             'zip',
             'country_id',
-            'image_1920',
+            'image_128',
             'is_company',
             'company_name',
             'vat',

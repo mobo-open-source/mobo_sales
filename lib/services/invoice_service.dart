@@ -161,34 +161,80 @@ class InvoiceService {
     }
   }
 
+  /// The fields that read across Odoo 17, 18 and 19 without renaming.
+  static const _saleOrderLineBaseFields = [
+    'id',
+    'product_id',
+    'name',
+    'product_uom_qty',
+    'qty_delivered',
+    'qty_invoiced',
+    'qty_to_invoice',
+    'price_unit',
+    'price_subtotal',
+    'price_total',
+    'discount',
+  ];
+
+  /// sale.order.line's tax and unit-of-measure fields have been renamed
+  /// between Odoo versions (e.g. tax_id -> tax_ids in 17+). Each list holds
+  /// every known alias, tried in order, so the read call below self-heals
+  /// instead of failing outright when the server rejects one.
+  static const _saleOrderLineTaxFieldAliases = ['tax_id', 'tax_ids'];
+  static const _saleOrderLineUomFieldAliases = ['product_uom', 'product_uom_id'];
+
+  /// Extracts the offending field name from an "Invalid field 'x' on
+  /// 'model'" Odoo server error, or null if the error doesn't match.
+  String? _invalidFieldFrom(Object error) {
+    final match = RegExp(
+      r"Invalid field '([^']+)'",
+    ).firstMatch(error.toString());
+    return match?.group(1);
+  }
+
   /// Fetches the `sale.order.line` records for the given [lineIds].
   Future<List<Map<String, dynamic>>> fetchSaleOrderLines(
     List<int> lineIds,
   ) async {
-    try {
-      final result = await OdooSessionManager.safeCallKw({
+    Future<dynamic> attemptRead(String taxField, String uomField) {
+      return OdooSessionManager.safeCallKw({
         'model': 'sale.order.line',
         'method': 'read',
         'args': [lineIds],
         'kwargs': {
-          'fields': [
-            'id',
-            'product_id',
-            'name',
-            'product_uom_qty',
-            'qty_delivered',
-            'qty_invoiced',
-            'qty_to_invoice',
-            'price_unit',
-            'price_subtotal',
-            'price_total',
-            'discount',
-            'tax_id',
-            'uom_id',
-            'product_uom_id',
-          ],
+          'fields': [..._saleOrderLineBaseFields, taxField, uomField],
         },
       });
+    }
+
+    try {
+      var taxField = _saleOrderLineTaxFieldAliases.first;
+      var uomField = _saleOrderLineUomFieldAliases.first;
+
+      dynamic result;
+      final maxAttempts =
+          _saleOrderLineTaxFieldAliases.length +
+          _saleOrderLineUomFieldAliases.length;
+      for (var attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+          result = await attemptRead(taxField, uomField);
+          break;
+        } catch (e) {
+          final invalidField = _invalidFieldFrom(e);
+          final taxIndex = _saleOrderLineTaxFieldAliases.indexOf(taxField);
+          final uomIndex = _saleOrderLineUomFieldAliases.indexOf(uomField);
+
+          if (invalidField == taxField &&
+              taxIndex < _saleOrderLineTaxFieldAliases.length - 1) {
+            taxField = _saleOrderLineTaxFieldAliases[taxIndex + 1];
+          } else if (invalidField == uomField &&
+              uomIndex < _saleOrderLineUomFieldAliases.length - 1) {
+            uomField = _saleOrderLineUomFieldAliases[uomIndex + 1];
+          } else {
+            rethrow;
+          }
+        }
+      }
 
       if (result is List) {
         return result.cast<Map<String, dynamic>>();

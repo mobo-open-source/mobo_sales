@@ -330,9 +330,6 @@ class CreateInvoiceProvider with ChangeNotifier {
 
       final partnerId = _selectedSaleOrder!.customerId;
       if (partnerId != null) {
-        if (_customers.isEmpty) {
-          await fetchCustomers();
-        }
         Contact? customer;
         try {
           customer = _customers.firstWhere(

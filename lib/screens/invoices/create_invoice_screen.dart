@@ -111,7 +111,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
         _customerSearchController.text = widget.customer!.name;
       }
 
-      invoiceProvider.fetchCustomers();
       if (widget.invoiceToEdit == null) {
         invoiceProvider.fetchSaleOrders();
       }

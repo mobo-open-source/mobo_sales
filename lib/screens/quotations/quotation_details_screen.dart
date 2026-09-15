@@ -496,6 +496,16 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
 
       Navigator.pop(context);
 
+      if (invoiceProvider.errorMessage.isNotEmpty) {
+        if (mounted) {
+          _showErrorDialog(
+            'Invoice Creation Failed',
+            invoiceProvider.errorMessage,
+          );
+        }
+        return;
+      }
+
       if (!mounted) return;
       showDialog(
         context: context,
