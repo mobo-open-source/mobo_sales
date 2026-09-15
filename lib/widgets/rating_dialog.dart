@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_rating_bar/flutter_rating_bar.dart';
-import 'package:google_fonts/google_fonts.dart';
-import '../utils/app_theme.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import '../services/review_service.dart';
 
+/// "How's your experience?" — the rate-us prompt.
+///
+/// Five tap-to-set stars, a Submit button and "Skip for Now". 4-5 stars
+/// triggers [onGoodReview] (the store sheet); 1-3 triggers [onBadReview]
+/// (a support email), so a complaint does not land on the public listing.
 class CustomRatingDialog extends StatefulWidget {
   final Function(double, String) onGoodReview;
   final Function(double, String) onBadReview;
@@ -39,226 +42,112 @@ class CustomRatingDialog extends StatefulWidget {
   }
 }
 
-class _CustomRatingDialogState extends State<CustomRatingDialog> {
-  double _rating = 5.0;
-  final TextEditingController _commentController = TextEditingController();
+const int _kStarCount = 5;
+const double _kStarGap = 6;
+const double _kStarSize = 44;
 
-  @override
-  void dispose() {
-    _commentController.dispose();
-    super.dispose();
-  }
+class _CustomRatingDialogState extends State<CustomRatingDialog> {
+  /// Three, as the design opens: a prefilled five reads as the app asking for
+  /// five rather than asking a question.
+  int _rating = 3;
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primaryColor = AppTheme.primaryColor;
+    final surface = isDark ? const Color(0xFF2C2C2C) : Colors.white;
+    final titleColor = isDark ? Colors.white : Colors.black;
+    final subtitleColor = isDark ? Colors.white70 : const Color(0xFF8A8A8A);
+    final buttonColor = isDark ? Colors.white : Colors.black;
+    final buttonTextColor = isDark ? Colors.black : Colors.white;
 
     return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-      backgroundColor: isDark ? const Color(0xFF2C2C2C) : Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+      backgroundColor: surface,
+      surfaceTintColor: Colors.transparent,
       child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(28, 36, 28, 28),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Header
-            Container(
+            Text(
+              'How’s your experience ?',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 18,
+                color: titleColor,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'Your feedback helps us improve\nand serve you better.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontWeight: FontWeight.w400,
+                fontSize: 14,
+                height: 1.4,
+                color: subtitleColor,
+              ),
+            ),
+            const SizedBox(height: 32),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: List.generate(_kStarCount, (index) {
+                  final filled = index < _rating;
+                  return GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => setState(() => _rating = index + 1),
+                    child: Padding(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: _kStarGap),
+                      child: SvgPicture.asset(
+                        filled
+                            ? 'assets/icons/star_filled.svg'
+                            : 'assets/icons/star_outlined.svg',
+                        width: _kStarSize,
+                        height: _kStarSize,
+                      ),
+                    ),
+                  );
+                }),
+              ),
+            ),
+            const SizedBox(height: 32),
+            SizedBox(
               width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              decoration: BoxDecoration(
-                color: primaryColor,
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(4),
-                  topRight: Radius.circular(4),
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: buttonColor,
+                  foregroundColor: buttonTextColor,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                onPressed: _submit,
+                child: const Text(
+                  'Submit',
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
                 ),
               ),
-              child: const Center(
-                child: Icon(Icons.stars_rounded, color: Colors.white, size: 40),
-              ),
             ),
-
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-              child: Column(
-                children: [
-                  Text(
-                    'Rate Us',
-                    style: GoogleFonts.manrope(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 22,
-                      color: primaryColor,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Tell others what you think about this app',
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.manrope(
-                      fontWeight: FontWeight.w600,
-                      fontSize: 14,
-                      color: primaryColor.withOpacity(0.8),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Rating Box
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey[300]!),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Column(
-                      children: [
-                        RatingBar.builder(
-                          initialRating: 5,
-                          minRating: 1,
-                          direction: Axis.horizontal,
-                          allowHalfRating: false,
-                          itemCount: 5,
-                          itemPadding: const EdgeInsets.symmetric(
-                            horizontal: 2.0,
-                          ),
-                          unratedColor: Colors.grey[300],
-                          itemSize: 34,
-                          itemBuilder: (context, _) => const Icon(
-                            Icons.star_rounded,
-                            color: Colors.amber,
-                          ),
-                          onRatingUpdate: (rating) {
-                            setState(() {
-                              _rating = rating;
-                            });
-                          },
-                        ),
-                        const SizedBox(height: 12),
-
-                        // Submit/Continue Button inside the box
-                        SizedBox(
-                          width: double.infinity,
-                          height: 55,
-                          child: ElevatedButton(
-                            onPressed: () {
-                              if (_rating >= 4) {
-                                widget.onGoodReview(
-                                  _rating,
-                                  _commentController.text,
-                                );
-                              } else {
-                                widget.onBadReview(
-                                  _rating,
-                                  _commentController.text,
-                                );
-                              }
-                            },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: primaryColor,
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              elevation: 1,
-                            ),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Text(
-                                  '${_rating.toInt()}/5  ',
-                                  style: GoogleFonts.manrope(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                Text(
-                                  'CONTINUE',
-                                  style: GoogleFonts.manrope(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  // Comment Box (Only show for ratings < 4 stars)
-                  Visibility(
-                    visible: _rating < 4,
-                    child: Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: TextField(
-                        controller: _commentController,
-                        maxLines: 2,
-                        decoration: InputDecoration(
-                          hintText: 'Any comments or feedback? (Optional)',
-                          hintStyle: GoogleFonts.manrope(
-                            fontSize: 12,
-                            color: Colors.grey,
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(4),
-                            borderSide: BorderSide(color: Colors.grey[300]!),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(4),
-                            borderSide: BorderSide(color: primaryColor),
-                          ),
-                          filled: true,
-                          fillColor: isDark ? Colors.black12 : Colors.grey[50],
-                        ),
-                        style: GoogleFonts.manrope(
-                          fontSize: 12,
-                          color: isDark ? Colors.white : Colors.black,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  TextButton(
-                    onPressed: () async {
-                      await ReviewService().neverAskAgain();
-                      if (mounted) Navigator.pop(context);
-                    },
-                    child: Text(
-                      'NEVER ASK AGAIN',
-                      style: GoogleFonts.manrope(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 11,
-                        color: primaryColor.withOpacity(0.6),
-                      ),
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: () {
-                      if (mounted) Navigator.pop(context);
-                    },
-                    child: Text(
-                      'ASK ME LATER',
-                      style: GoogleFonts.manrope(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 11,
-                        color: primaryColor.withOpacity(0.6),
-                      ),
-                    ),
-                  ),
-                ],
+            const SizedBox(height: 20),
+            TextButton(
+              onPressed: _skip,
+              child: Text(
+                'Skip for Now',
+                style: TextStyle(
+                  fontWeight: FontWeight.w500,
+                  fontSize: 14,
+                  color: titleColor.withValues(alpha: 0.5),
+                  decoration: TextDecoration.underline,
+                  decorationColor: titleColor.withValues(alpha: 0.5),
+                ),
               ),
             ),
           ],
@@ -266,4 +155,15 @@ class _CustomRatingDialogState extends State<CustomRatingDialog> {
       ),
     );
   }
+
+  void _submit() {
+    final rating = _rating.toDouble();
+    if (rating >= 4) {
+      widget.onGoodReview(rating, '');
+    } else {
+      widget.onBadReview(rating, '');
+    }
+  }
+
+  void _skip() => Navigator.of(context).pop();
 }

@@ -279,6 +279,13 @@ class OdooSessionManager {
     _onSessionCleared = onSessionCleared;
   }
 
+  /// Returns the in-memory session without touching `SharedPreferences`.
+  ///
+  /// Null until a session has been loaded, so callers that need certainty must
+  /// still use [getCurrentSession]; this exists for widgets that have to render
+  /// synchronously and can fall back gracefully.
+  static OdooSessionModel? get cachedSession => _cachedSession;
+
   /// Returns the current session from cache or `SharedPreferences`.
   static Future<OdooSessionModel?> getCurrentSession() async {
     if (_cachedSession != null) return _cachedSession;

@@ -14,6 +14,7 @@ import 'screens/products/product_list_screen.dart';
 import 'screens/others/dashboard_screen.dart';
 import 'screens/others/profile_screen.dart';
 import 'package:intl/intl.dart';
+import 'package:mobo_sales/services/odoo_session_manager.dart';
 import 'package:mobo_sales/widgets/circular_image_widget.dart';
 import 'package:mobo_sales/utils/app_theme.dart';
 import 'widgets/lazy_load_indexed_stack.dart';
@@ -34,6 +35,9 @@ class HomeScaffoldState extends State<HomeScaffold> {
   final GlobalKey<CustomerListScreenState> _customerListKey = GlobalKey();
 
   Widget? _cachedProfileAction;
+  bool _profileFetchScheduled = false;
+  int _profileFetchAttempts = 0;
+  static const int _maxProfileFetchAttempts = 3;
 
   @override
   void initState() {
@@ -137,30 +141,79 @@ class HomeScaffoldState extends State<HomeScaffold> {
     return [const CompanySelectorWidget(), _cachedProfileAction!];
   }
 
+  /// Re-fetches the user profile when it is missing.
+  ///
+  /// [_initializeSettingsProvider] only runs once per scaffold, so an account
+  /// switch or a failed first load would otherwise leave the avatar stuck on
+  /// its initial-letter fallback for the rest of the session.
+  void _ensureUserProfileLoaded(SettingsProvider settings) {
+    if (_profileFetchScheduled ||
+        _profileFetchAttempts >= _maxProfileFetchAttempts) {
+      return;
+    }
+    _profileFetchScheduled = true;
+    _profileFetchAttempts++;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      try {
+        await settings.fetchUserProfile();
+      } catch (_) {}
+      if (!mounted) return;
+      if (settings.userProfile == null) {
+        await Future.delayed(const Duration(seconds: 3));
+        if (!mounted) return;
+        _profileFetchScheduled = false;
+      }
+    });
+  }
+
+  /// Falls back to the signed-in session's own name so the avatar shows the
+  /// right initial before the profile arrives, instead of a generic 'U'.
+  String _avatarFallbackName(SettingsProvider settings) {
+    final profileName = settings.userProfile?['name'];
+    if (profileName != null && profileName.toString().trim().isNotEmpty) {
+      return profileName.toString();
+    }
+
+    final session = OdooSessionManager.cachedSession;
+    final sessionName = session?.userName;
+    if (sessionName != null && sessionName.trim().isNotEmpty) {
+      return sessionName;
+    }
+    final login = session?.userLogin;
+    if (login != null && login.trim().isNotEmpty) {
+      return login;
+    }
+    return 'User';
+  }
+
   Widget _buildProfileActionWidget(BuildContext context) {
     return Container(
       margin: const EdgeInsets.only(right: 14),
       child: Consumer<SettingsProvider>(
         builder: (context, settings, _) {
+          if (settings.userProfile == null) {
+            if (!settings.isLoadingUserProfile) {
+              _ensureUserProfileLoaded(settings);
+            }
+          } else {
+            _profileFetchScheduled = false;
+            _profileFetchAttempts = 0;
+          }
+
           String? avatarData;
 
           try {
-            final dynamic img = settings.userProfile != null
-                ? settings.userProfile!['image_1920']
-                : null;
+            final dynamic img = settings.userProfile?['image_1920'];
             if (img is String && img.isNotEmpty && img != 'false') {
               avatarData = img;
-            } else if (img is List && img.isNotEmpty) {}
+            }
           } catch (e) {}
 
           return CircularImageWidget(
             base64Image: avatarData,
             radius: 16,
-            fallbackText:
-                settings.userProfile != null &&
-                    settings.userProfile!['name'] != null
-                ? settings.userProfile!['name'].toString()
-                : 'User',
+            fallbackText: _avatarFallbackName(settings),
             backgroundColor: AppTheme.primaryColor,
             textColor: Colors.white,
             onTap: () {
