@@ -31,6 +31,7 @@ import '../../widgets/barcode_scanner_screen.dart';
 import '../../widgets/product_list_tile.dart';
 import 'product_details_page.dart';
 import 'create_product_screen.dart';
+import '../../widgets/list_search_bar.dart';
 
 class ProductListScreen extends StatefulWidget {
   const ProductListScreen({super.key});
@@ -1287,170 +1288,59 @@ class ProductListScreenState extends State<ProductListScreen>
       backgroundColor: backgroundColor,
       body: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.only(left: 16.0, right: 16, bottom: 16),
-            child: Container(
-              decoration: BoxDecoration(
-                boxShadow: [
-                  BoxShadow(
-                    color: Color(0xFF000000).withOpacity(0.05),
-                    offset: Offset(0, 6),
-                    blurRadius: 16,
-                    spreadRadius: 2,
-                  ),
-                ],
-              ),
-              child: TextField(
-                controller: _searchController,
-                enabled: !_isLoading,
-                style: TextStyle(
-                  color: isDark ? Colors.white : Color(0xff1E1E1E),
-                  fontWeight: FontWeight.w400,
-                  fontStyle: FontStyle.normal,
-                  fontSize: 15,
-                  height: 1.0,
-                  letterSpacing: 0.0,
+          ListSearchBar(
+            controller: _searchController,
+            hintText: 'Search products...',
+            enabled: !_isLoading,
+            onChanged: (_) {},
+            onFilterTap: showProductFilterBottomSheet,
+            trailing: [
+              IconButton(
+                splashRadius: 20,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(
+                  minWidth: 36,
+                  minHeight: 36,
                 ),
-                decoration: InputDecoration(
-                  hintText: 'Search products...',
-                  hintStyle: TextStyle(
-                    color: isDark ? Colors.white : Color(0xff1E1E1E),
-                    fontWeight: FontWeight.w400,
-                    fontStyle: FontStyle.normal,
-                    fontSize: 15,
-                    height: 1.0,
-                    letterSpacing: 0.0,
+                icon: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: Icon(
+                    HugeIcons.strokeRoundedMic01,
+                    key: ValueKey(_isListening ? 'listening' : 'idle'),
+                    color: _isListening
+                        ? Colors.red
+                        : ListSearchBar.actionIconColor(context),
+                    size: 20,
                   ),
-                  prefixIcon: IconButton(
-                    icon: Icon(
-                      HugeIcons.strokeRoundedFilterHorizontal,
-                      color: isDark ? Colors.grey[400] : Colors.grey[600],
-                      size: 18,
-                    ),
-                    tooltip: 'Filter & Group By',
-                    onPressed: () {
-                      showProductFilterBottomSheet();
-                    },
-                  ),
-                  suffixIcon: Container(
-                    constraints: const BoxConstraints(maxWidth: 180),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        if (_searchController.text.isNotEmpty)
-                          Transform.translate(
-                            offset: const Offset(4, 0),
-                            child: IconButton(
-                              icon: Icon(
-                                Icons.clear,
-                                color: isDark ? Colors.grey[400] : Colors.grey,
-                                size: 20,
-                              ),
-                              onPressed: _isLoading
-                                  ? null
-                                  : () {
-                                      _searchController.clear();
-                                    },
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(
-                                minWidth: 24,
-                                minHeight: 24,
-                              ),
-                            ),
-                          ),
-                        Transform.translate(
-                          offset: const Offset(-4, 0),
-                          child: IconButton(
-                            icon: AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 200),
-                              child: _isListening
-                                  ? Icon(
-                                      HugeIcons.strokeRoundedMic01,
-                                      key: const ValueKey('listening'),
-                                      color: Colors.red,
-                                      size: 20,
-                                    )
-                                  : Icon(
-                                      HugeIcons.strokeRoundedMic01,
-                                      key: const ValueKey('idle'),
-                                      color: isDark
-                                          ? Colors.grey[400]
-                                          : Colors.grey[600],
-                                      size: 20,
-                                    ),
-                            ),
-                            onPressed: _isLoading ? null : _listen,
-                            tooltip: _isLoading
-                                ? 'Loading...'
-                                : (_isListening
-                                      ? 'Listening...'
-                                      : 'Voice Search'),
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(
-                              minWidth: 24,
-                              minHeight: 24,
-                            ),
-                          ),
-                        ),
-                        Transform.translate(
-                          offset: const Offset(-8, 0),
-                          child: IconButton(
-                            icon: _isScanning
-                                ? SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.primary,
-                                    ),
-                                  )
-                                : Icon(
-                                    HugeIcons.strokeRoundedCameraAi,
-                                    color: isDark
-                                        ? Colors.grey[400]
-                                        : Colors.grey[600],
-                                    size: 20,
-                                  ),
-                            onPressed: _isLoading
-                                ? null
-                                : _isScanning
-                                ? null
-                                : _scanBarcode,
-                            tooltip: 'Scan Barcode',
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(
-                              minWidth: 24,
-                              minHeight: 24,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  filled: true,
-                  fillColor: isDark ? Colors.grey[850] : Colors.white,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(
-                      color: Theme.of(context).primaryColor,
-                    ),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  isDense: true,
-                  alignLabelWithHint: true,
                 ),
+                onPressed: _isLoading ? null : _listen,
+                tooltip: _isListening ? 'Listening...' : 'Voice Search',
               ),
-            ),
+              IconButton(
+                splashRadius: 20,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(
+                  minWidth: 36,
+                  minHeight: 36,
+                ),
+                icon: _isScanning
+                    ? SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      )
+                    : Icon(
+                        HugeIcons.strokeRoundedCameraAi,
+                        color: ListSearchBar.actionIconColor(context),
+                        size: 20,
+                      ),
+                onPressed: (_isLoading || _isScanning) ? null : _scanBarcode,
+                tooltip: 'Scan Barcode',
+              ),
+            ],
           ),
 
           Padding(

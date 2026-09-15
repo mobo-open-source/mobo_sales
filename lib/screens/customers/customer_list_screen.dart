@@ -23,6 +23,7 @@ import 'edit_customer_screen.dart';
 import 'select_location_screen.dart';
 import 'package:latlong2/latlong.dart';
 import '../../services/odoo_error_classifier.dart';
+import '../../widgets/list_search_bar.dart';
 
 class CustomerListScreen extends StatefulWidget {
   final bool showForcedAppBar;
@@ -1810,86 +1811,15 @@ class CustomerListScreenState extends State<CustomerListScreen>
           ),
           body: Column(
             children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                child: Container(
-                  decoration: BoxDecoration(
-                    boxShadow: [
-                      BoxShadow(
-                        color: Color(0xFF000000).withOpacity(0.05),
-                        offset: Offset(0, 6),
-                        blurRadius: 16,
-                        spreadRadius: 2,
-                      ),
-                    ],
-                  ),
-                  child: TextField(
-                    controller: _searchController,
-                    enabled: !isLoading && !isSearching,
-                    style: TextStyle(
-                      color: isDark ? Colors.white : Color(0xff1E1E1E),
-                      fontWeight: FontWeight.w400,
-                      fontStyle: FontStyle.normal,
-                      fontSize: 15,
-                      height: 1.0,
-                      letterSpacing: 0.0,
-                    ),
-                    decoration: InputDecoration(
-                      hintText: 'Search customers...',
-                      hintStyle: TextStyle(
-                        color: isDark ? Colors.white : Color(0xff1E1E1E),
-                        fontWeight: FontWeight.w400,
-                        fontStyle: FontStyle.normal,
-                        fontSize: 15,
-                        height: 1.0,
-                        letterSpacing: 0.0,
-                      ),
-                      prefixIcon: IconButton(
-                        icon: Icon(
-                          HugeIcons.strokeRoundedFilterHorizontal,
-                          color: isDark ? Colors.grey[400] : Colors.grey[600],
-                          size: 18,
-                        ),
-                        tooltip: 'Filter & Group By',
-                        onPressed: () {
-                          showCustomerFilterBottomSheet();
-                        },
-                      ),
-                      suffixIcon: _searchController.text.isNotEmpty
-                          ? IconButton(
-                              icon: Icon(
-                                Icons.clear,
-                                color: isDark ? Colors.grey[400] : Colors.grey,
-                              ),
-                              onPressed: (isLoading || isSearching)
-                                  ? null
-                                  : () {
-                                      _clearSearchAndReload();
-                                    },
-                            )
-                          : null,
-                      filled: true,
-                      fillColor: isDark ? Colors.grey[850] : Colors.white,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(
-                          color: Theme.of(context).primaryColor,
-                        ),
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      isDense: true,
-                      alignLabelWithHint: true,
-                    ),
-                  ),
-                ),
+              ListSearchBar(
+                controller: _searchController,
+                hintText: 'Search customers...',
+                enabled: !isLoading && !isSearching,
+                onChanged: (_) {},
+                onFilterTap: showCustomerFilterBottomSheet,
+                onClear: _clearSearchAndReload,
               ),
+
               SizedBox(height: 16),
 
               Consumer<ContactProvider>(

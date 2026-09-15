@@ -21,6 +21,7 @@ import '../../widgets/list_shimmer.dart';
 import '../../widgets/product_list_tile.dart';
 import 'package:flutter/services.dart';
 import '../../services/odoo_error_classifier.dart';
+import '../../widgets/list_search_bar.dart';
 
 class StockCheckPage extends StatefulWidget {
   const StockCheckPage({super.key});
@@ -1730,124 +1731,26 @@ class _StockCheckPageState extends State<StockCheckPage> {
         children: [
           Column(
             children: [
-              Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Container(
-                        decoration: BoxDecoration(
-                          boxShadow: [
-                            BoxShadow(
-                              color: Color(0xFF000000).withOpacity(0.05),
-                              offset: Offset(0, 6),
-                              blurRadius: 16,
-                              spreadRadius: 2,
-                            ),
-                          ],
+              ListSearchBar(
+                controller: _searchController,
+                hintText: 'Search by name, code or barcode',
+                enabled: !_isLoading,
+                onChanged: (_) {},
+                onSideButtonTap: _isScanning ? null : _scanBarcode,
+                sideButtonChild: _isScanning
+                    ? SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: AppTheme.primaryColor,
                         ),
-                        child: TextField(
-                          controller: _searchController,
-                          enabled: !_isLoading,
-                          style: TextStyle(
-                            color: isDark ? Colors.white : Color(0xff1E1E1E),
-                            fontWeight: FontWeight.w400,
-                            fontStyle: FontStyle.normal,
-                            fontSize: 15,
-                            height: 1.0,
-                            letterSpacing: 0.0,
-                          ),
-                          decoration: InputDecoration(
-                            hintText: 'Search by name, code or barcode',
-                            hintStyle: TextStyle(
-                              color: isDark ? Colors.white : Color(0xff1E1E1E),
-                              fontWeight: FontWeight.w400,
-                              fontStyle: FontStyle.normal,
-                              fontSize: 15,
-                              height: 1.0,
-                              letterSpacing: 0.0,
-                            ),
-                            prefixIcon: Icon(
-                              HugeIcons.strokeRoundedSearchList02,
-                              color: isDark
-                                  ? Colors.grey[400]
-                                  : Color(0xff9EA2AE),
-                              size: 18,
-                            ),
-                            suffixIcon: _searchController.text.isNotEmpty
-                                ? IconButton(
-                                    icon: Icon(
-                                      Icons.clear,
-                                      color: isDark
-                                          ? Colors.grey[400]
-                                          : Colors.grey,
-                                    ),
-                                    onPressed: () {
-                                      _searchController.clear();
-                                    },
-                                  )
-                                : null,
-                            filled: true,
-                            fillColor: isDark ? Colors.grey[850] : Colors.white,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide.none,
-                            ),
-
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(
-                                color: AppTheme.primaryColor,
-                                width: 1,
-                              ),
-                            ),
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 14,
-                            ),
-                            isDense: true,
-
-                            alignLabelWithHint: true,
-                          ),
-                        ),
+                      )
+                    : Icon(
+                        HugeIcons.strokeRoundedCameraAi,
+                        color: ListSearchBar.actionIconColor(context),
+                        size: 20,
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: isDark ? Colors.grey[850] : Colors.white,
-                        shape: BoxShape.circle,
-
-                        boxShadow: [
-                          BoxShadow(
-                            color: Color(0xFF000000).withOpacity(0.05),
-                            offset: Offset(0, 6),
-                            blurRadius: 16,
-                            spreadRadius: 2,
-                          ),
-                        ],
-                      ),
-                      child: IconButton(
-                        icon: _isScanning
-                            ? SizedBox(
-                                width: 24,
-                                height: 24,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: AppTheme.primaryColor,
-                                ),
-                              )
-                            : Icon(
-                                HugeIcons.strokeRoundedCameraAi,
-                                color: isDark
-                                    ? Colors.grey[400]
-                                    : Colors.grey[600],
-                              ),
-                        onPressed: _isScanning ? null : _scanBarcode,
-                      ),
-                    ),
-                  ],
-                ),
               ),
               Expanded(
                 child: Consumer2<ConnectivityService, SessionService>(

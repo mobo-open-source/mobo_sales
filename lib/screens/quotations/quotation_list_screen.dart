@@ -20,6 +20,7 @@ import '../../widgets/empty_state_widget.dart';
 import '../../widgets/list_shimmer.dart';
 import '../../models/quote.dart';
 import '../../services/odoo_error_classifier.dart';
+import '../../widgets/list_search_bar.dart';
 
 class QuotationListScreen extends StatefulWidget {
   final int? customerId;
@@ -2551,121 +2552,13 @@ class _QuotationListScreenState extends State<QuotationListScreen>
               : null,
           body: Column(
             children: [
-              Padding(
-                padding: const EdgeInsets.only(
-                  top: 0.0,
-                  left: 16.0,
-                  right: 16.0,
-                  bottom: 16.0,
-                ),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Container(
-                            decoration: BoxDecoration(
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Color(0xFF000000).withOpacity(0.05),
-                                  offset: Offset(0, 6),
-                                  blurRadius: 16,
-                                  spreadRadius: 2,
-                                ),
-                              ],
-                            ),
-                            child: TextField(
-                              controller: provider.searchController,
-                              enabled: !provider.isLoading,
-                              style: TextStyle(
-                                color: isDarkMode
-                                    ? Colors.white
-                                    : Color(0xff1E1E1E),
-                                fontWeight: FontWeight.w400,
-                                fontStyle: FontStyle.normal,
-                                fontSize: 15,
-                                height: 1.0,
-                                letterSpacing: 0.0,
-                              ),
-                              decoration: InputDecoration(
-                                hintText:
-                                    'Search by quotation ID or customer...',
-                                hintStyle: TextStyle(
-                                  color: isDarkMode
-                                      ? Colors.white
-                                      : Color(0xff1E1E1E),
-                                  fontWeight: FontWeight.w400,
-                                  fontStyle: FontStyle.normal,
-                                  fontSize: 15,
-                                  height: 1.0,
-                                  letterSpacing: 0.0,
-                                ),
-                                prefixIcon: IconButton(
-                                  onPressed: provider.isLoading
-                                      ? null
-                                      : () =>
-                                            showQuotationFilterAndGroupByBottomSheet(),
-                                  icon: Icon(
-                                    HugeIcons.strokeRoundedFilterHorizontal,
-                                    color: isDarkMode
-                                        ? Colors.grey[400]
-                                        : Colors.grey[600],
-                                    size: 18,
-                                  ),
-                                  tooltip: 'Filter & Group By',
-                                  splashRadius: 20,
-                                  padding: EdgeInsets.zero,
-                                  constraints: BoxConstraints(
-                                    minWidth: 32,
-                                    minHeight: 32,
-                                  ),
-                                ),
-                                suffixIcon:
-                                    provider.searchController.text.isNotEmpty
-                                    ? IconButton(
-                                        icon: Icon(
-                                          Icons.clear,
-                                          color: isDarkMode
-                                              ? Colors.grey[400]
-                                              : Colors.grey,
-                                        ),
-                                        onPressed: provider.isLoading
-                                            ? null
-                                            : () {
-                                                _clearSearchAndReload();
-                                              },
-                                      )
-                                    : null,
-                                filled: true,
-                                fillColor: isDarkMode
-                                    ? Colors.grey[850]
-                                    : Colors.white,
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide.none,
-                                ),
-
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(
-                                    color: Theme.of(context).primaryColor,
-                                  ),
-                                ),
-                                contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 12,
-                                ),
-                                isDense: true,
-
-                                alignLabelWithHint: true,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+              ListSearchBar(
+                controller: provider.searchController,
+                hintText: 'Search by quotation ID or customer...',
+                enabled: !provider.isLoading,
+                onChanged: (_) {},
+                onFilterTap: showQuotationFilterAndGroupByBottomSheet,
+                onClear: _clearSearchAndReload,
               ),
 
               Builder(
