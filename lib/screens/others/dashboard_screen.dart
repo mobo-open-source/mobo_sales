@@ -76,6 +76,19 @@ class _DashboardScreenState extends State<DashboardScreen>
   String? userLogin;
   bool _initialLoadComplete = false;
 
+  /// Account *and company* this screen's currently rendered data belongs to.
+  /// Used to tell a real scope change apart from the several session
+  /// notifications a single switch (or a routine session refresh) emits, so
+  /// the header and shimmer are only reset when the data actually goes stale.
+  /// Company is part of the key because switching company changes the data
+  /// while leaving the account untouched.
+  String? _loadedAccountKey;
+
+  static String _currentDataScopeKey() {
+    final session = SessionService.instance.currentSession;
+    return '${_getCurrentAccountKey()}_c${session?.selectedCompanyId ?? ''}';
+  }
+
   bool isLoadingDashboardAll = true;
   bool isLoadingCharts = true;
 
@@ -84,6 +97,7 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   bool _isToggling = false;
   Timer? _debounceTimer;
+  Timer? _sessionChangeTimer;
   bool _isServerUnreachable = false;
   bool _isForceRefreshing = false;
   bool _isCheckingConnectivity = false;
@@ -287,6 +301,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     WidgetsBinding.instance.removeObserver(this);
     _connectivitySubscription?.cancel();
     _debounceTimer?.cancel();
+    _sessionChangeTimer?.cancel();
 
     try {
       _scrollController.dispose();
@@ -442,6 +457,7 @@ class _DashboardScreenState extends State<DashboardScreen>
 
       if (hasUserData && hasCounts && hasMetrics && hasUIData) {
         if (mounted) {
+          _loadedAccountKey = _currentDataScopeKey();
           setState(() {
             _initialLoadComplete = true;
             isLoadingDashboardAll = false;
@@ -526,6 +542,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           }
         } finally {
           if (mounted) {
+            _loadedAccountKey = _currentDataScopeKey();
             setState(() {
               isLoadingDashboardAll = false;
               isLoadingCharts = false;
@@ -570,7 +587,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   void _loadCachedSalesMetrics() {
-    final key = 'metrics_${_getCurrentAccountKey()}';
+    final key = _getCurrentAccountKey();
     final cached = _accountCachedSalesMetrics[key];
     if (cached != null && mounted) {
       setState(() {
@@ -710,36 +727,43 @@ class _DashboardScreenState extends State<DashboardScreen>
       final now = DateTime.now();
 
       final monthStart = DateTime(now.year, now.month, 1);
-      final monthEnd = DateTime(
+      final monthEndEx = DateTime(now.year, now.month + 1, 1);
+
+      final weekStart = DateTime(
         now.year,
-        now.month + 1,
-        1,
-      ).subtract(Duration(days: 1));
+        now.month,
+        now.day - (now.weekday - 1),
+      );
+      final weekEndEx = DateTime(
+        weekStart.year,
+        weekStart.month,
+        weekStart.day + 7,
+      );
 
-      final last7DaysStart = now.subtract(Duration(days: 6));
-      final last7DaysEnd = now;
+      final last7DaysStart = DateTime(now.year, now.month, now.day - 6);
+      final last7DaysEndEx = DateTime(now.year, now.month, now.day + 1);
 
-      final currentWeekday = now.weekday;
-      final weekStart = now.subtract(Duration(days: currentWeekday - 1));
-      final weekEnd = weekStart.add(Duration(days: 6));
+      String formatUtcDateTime(DateTime d) {
+        final u = d.toUtc();
+        String p(int v) => v.toString().padLeft(2, '0');
+        return '${u.year}-${p(u.month)}-${p(u.day)} '
+            '${p(u.hour)}:${p(u.minute)}:${p(u.second)}';
+      }
 
-      final startOfYear = DateTime(now.year, 1, 1);
-
-      String formatDate(DateTime d) =>
-          '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-
-      final monthStartStr = formatDate(monthStart);
-      final monthEndStr = formatDate(monthEnd);
-      final weekStartStr = formatDate(weekStart);
-      final weekEndStr = formatDate(weekEnd);
-      final last7DaysStartStr = formatDate(last7DaysStart);
-      final last7DaysEndStr = formatDate(last7DaysEnd);
+      final monthStartStr = formatUtcDateTime(monthStart);
+      final monthEndExStr = formatUtcDateTime(monthEndEx);
+      final weekStartStr = formatUtcDateTime(weekStart);
+      final weekEndExStr = formatUtcDateTime(weekEndEx);
+      final last7DaysStartStr = formatUtcDateTime(last7DaysStart);
+      final last7DaysEndExStr = formatUtcDateTime(last7DaysEndEx);
 
       final todayStr =
           '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
 
+      await _loadCurrencyRates();
+
       final results = await Future.wait<dynamic>([
-        _safeAggregateSum(
+        _safeAggregateSumInCompanyCurrency(
           model: 'sale.order',
           domain: [
             [
@@ -748,12 +772,12 @@ class _DashboardScreenState extends State<DashboardScreen>
               ['sale', 'done'],
             ],
             ['date_order', '>=', monthStartStr],
-            ['date_order', '<=', monthEndStr],
+            ['date_order', '<', monthEndExStr],
           ],
           sumField: 'amount_total',
         ),
 
-        _safeAggregateSum(
+        _safeAggregateSumInCompanyCurrency(
           model: 'sale.order',
           domain: [
             [
@@ -762,10 +786,7 @@ class _DashboardScreenState extends State<DashboardScreen>
               ['sale', 'done'],
             ],
             ['date_order', '>=', weekStartStr],
-            ['date_order', '<=', weekEndStr],
-
-            ['date_order', '>=', monthStartStr],
-            ['date_order', '<=', monthEndStr],
+            ['date_order', '<', weekEndExStr],
           ],
           sumField: 'amount_total',
         ),
@@ -799,7 +820,7 @@ class _DashboardScreenState extends State<DashboardScreen>
               ['not_paid', 'partial'],
             ],
           ],
-          sumField: 'amount_residual',
+          sumField: 'amount_residual_signed',
         ),
 
         _safeAggregateSum(
@@ -808,7 +829,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             ['move_type', '=', 'out_invoice'],
             ['state', '=', 'posted'],
           ],
-          sumField: 'amount_untaxed',
+          sumField: 'amount_untaxed_signed',
         ),
 
         _safeTopProducts(
@@ -832,7 +853,11 @@ class _DashboardScreenState extends State<DashboardScreen>
           ],
         ),
 
-        _fetchDailyRevenue(last7DaysStartStr, last7DaysEndStr, last7DaysStart),
+        _fetchDailyRevenue(
+          last7DaysStartStr,
+          last7DaysEndExStr,
+          last7DaysStart,
+        ),
       ]);
 
       final monthlyAgg = (results[0] is Map)
@@ -884,7 +909,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           'args': [
             [
               ['date_order', '>=', monthStartStr],
-              ['date_order', '<=', monthEndStr],
+              ['date_order', '<', monthEndExStr],
               ['state', '!=', 'cancel'],
             ],
           ],
@@ -903,7 +928,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                     ['sale', 'done'],
                   ],
                   ['date_order', '>=', monthStartStr],
-                  ['date_order', '<=', monthEndStr],
+                  ['date_order', '<', monthEndExStr],
                 ],
               ],
               'kwargs': {},
@@ -999,6 +1024,113 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
   }
 
+  /// Exchange rates keyed by `res.currency` id, expressed as units of that
+  /// currency per one unit of the company currency (the company's own
+  /// currency is always 1.0). Used to bring per-currency totals back into
+  /// company currency before they are summed or displayed.
+  Map<int, double> _currencyRates = {};
+
+  Future<void> _loadCurrencyRates() async {
+    if (_currencyRates.isNotEmpty) return;
+    try {
+      final res = await OdooSessionManager.callKwWithCompany({
+        'model': 'res.currency',
+        'method': 'search_read',
+        'args': [
+          [],
+          ['id', 'rate'],
+        ],
+        'kwargs': {
+          'context': {'active_test': false},
+        },
+      });
+      if (res is List) {
+        final map = <int, double>{};
+        for (final row in res) {
+          final id = _safeToNum(row['id'])?.toInt();
+          final rate = _safeToNum(row['rate'])?.toDouble();
+          if (id != null && rate != null && rate > 0) {
+            map[id] = rate;
+          }
+        }
+        _currencyRates = map;
+      }
+    } catch (_) {}
+  }
+
+  /// Sums [sumField] grouped by `currency_id` and converts each bucket into
+  /// company currency, so amounts recorded in different currencies are never
+  /// added together at face value. If the grouped aggregate is unavailable it
+  /// falls back to a per-record read that converts each row individually.
+  /// Amounts whose rate cannot be resolved are excluded and reported via
+  /// `converted: false` rather than being counted unconverted.
+  /// The order's stored rate from company currency to the order's currency.
+  /// Mirrors Odoo's own Sales Analysis report, which divides by
+  /// `sale_order.currency_rate` and treats a zero/missing rate as 1.
+  double _orderRate(dynamic raw) {
+    final r = _safeToNum(raw)?.toDouble();
+    if (r == null || r == 0) return 1.0;
+    return r;
+  }
+
+  Future<Map<String, dynamic>> _safeAggregateSumInCompanyCurrency({
+    required String model,
+    required List<dynamic> domain,
+    required String sumField,
+  }) async {
+    try {
+      final res = await OdooSessionManager.callKwWithCompany({
+        'model': model,
+        'method': 'read_group',
+        'args': [domain],
+        'kwargs': {
+          'fields': ['$sumField:sum'],
+          'groupby': ['currency_rate'],
+          'lazy': false,
+        },
+      });
+
+      if (res is List) {
+        double total = 0.0;
+        int count = 0;
+
+        for (final row in res) {
+          if (row is! Map) continue;
+          final bucket = _safeToNum(row[sumField])?.toDouble() ?? 0.0;
+          count +=
+              _safeToNum(row['__count'])?.toInt() ??
+              _safeToNum(row['currency_rate_count'])?.toInt() ??
+              0;
+          total += bucket / _orderRate(row['currency_rate']);
+        }
+        return {'sum': total, 'count': count, 'converted': true};
+      }
+      return {'sum': 0.0, 'count': 0, 'converted': true};
+    } catch (_) {
+      final recs = await OdooSessionManager.callKwWithCompany({
+        'model': model,
+        'method': 'search_read',
+        'args': [domain],
+        'kwargs': {
+          'fields': [sumField, 'currency_rate'],
+          'limit': 5000,
+        },
+      });
+
+      double total = 0.0;
+      int count = 0;
+
+      if (recs is List) {
+        for (final r in recs) {
+          count += 1;
+          final raw = _safeToNum(r[sumField])?.toDouble() ?? 0.0;
+          total += raw / _orderRate(r['currency_rate']);
+        }
+      }
+      return {'sum': total, 'count': count, 'converted': true};
+    }
+  }
+
   Future<Map<String, dynamic>> _safeAggregateSum({
     required String model,
     required List<dynamic> domain,
@@ -1055,7 +1187,7 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   Future<List<Map<String, dynamic>>> _fetchDailyRevenue(
     String startDate,
-    String endDate,
+    String endDateExclusive,
     DateTime rangeStart,
   ) async {
     try {
@@ -1070,13 +1202,14 @@ class _DashboardScreenState extends State<DashboardScreen>
               ['sale', 'done'],
             ],
             ['date_order', '>=', startDate],
-            ['date_order', '<=', endDate],
+            ['date_order', '<', endDateExclusive],
           ],
         ],
         'kwargs': {
           'fields': ['date_order', 'amount_total:sum'],
-          'groupby': ['date_order:day'],
+          'groupby': ['date_order:day', 'currency_rate'],
           'orderby': 'date_order:day',
+          'lazy': false,
         },
       });
 
@@ -1089,8 +1222,9 @@ class _DashboardScreenState extends State<DashboardScreen>
                 group['date_order:day'] as String? ??
                 group['date_order'] as String? ??
                 group['__domain'] as String?;
-            final revenue =
+            final rawRevenue =
                 _safeToNum(group['amount_total'])?.toDouble() ?? 0.0;
+            final revenue = rawRevenue / _orderRate(group['currency_rate']);
 
             if (dateStr != null && dateStr.isNotEmpty) {
               DateTime date;
@@ -1169,58 +1303,86 @@ class _DashboardScreenState extends State<DashboardScreen>
     int limit = 10,
   }) async {
     try {
+      await _loadCurrencyRates();
+
       final res = await OdooSessionManager.callKwWithCompany({
         'model': 'sale.order.line',
         'method': 'read_group',
         'args': [domain],
         'kwargs': {
           'fields': ['product_id', 'product_uom_qty:sum', 'price_total:sum'],
-          'groupby': ['product_id'],
+          'groupby': ['product_id', 'currency_id'],
           'orderby': 'product_uom_qty:sum desc',
-          'limit': limit,
+          'limit': limit * 20,
+          'lazy': false,
         },
       });
 
       if (res is List) {
-        final List<Map<String, dynamic>> items = [];
+        final Map<int, Map<String, dynamic>> byProduct = {};
 
         for (final group in res) {
           try {
             final productInfo = group['product_id'];
-            if (productInfo is List && productInfo.length >= 2) {
-              final productId = productInfo[0] as int;
+            if (productInfo is! List || productInfo.length < 2) continue;
+            final productId = productInfo[0] as int;
 
-              final ordersCountRes = await OdooSessionManager.callKwWithCompany(
-                {
-                  'model': 'sale.order.line',
-                  'method': 'read_group',
-                  'args': [
-                    [
-                      ...domain,
-                      ['product_id', '=', productId],
-                    ],
-                  ],
-                  'kwargs': {
-                    'fields': ['order_id'],
-                    'groupby': ['order_id'],
-                  },
-                },
-              );
+            final cur = group['currency_id'];
+            final curId = (cur is List && cur.isNotEmpty)
+                ? _safeToNum(cur.first)?.toInt()
+                : _safeToNum(cur)?.toInt();
+            final rate = curId == null ? null : _currencyRates[curId];
 
-              final ordersCount = (ordersCountRes is List)
-                  ? ordersCountRes.length
-                  : 0;
+            final rawTotal =
+                _safeToNum(group['price_total'])?.toDouble() ?? 0.0;
+            final qty =
+                _safeToNum(group['product_uom_qty'])?.toDouble() ?? 0.0;
 
-              items.add({
+            final entry = byProduct.putIfAbsent(
+              productId,
+              () => {
                 'id': productId,
                 'name': productInfo[1] as String,
-                'qty': _safeToNum(group['product_uom_qty'])?.toDouble() ?? 0.0,
-                'total': _safeToNum(group['price_total'])?.toDouble() ?? 0.0,
-                'orders_count': ordersCount,
-              });
+                'qty': 0.0,
+                'total': 0.0,
+                'orders_count': 0,
+              },
+            );
+            entry['qty'] = (entry['qty'] as double) + qty;
+            if (rate != null && rate > 0) {
+              entry['total'] = (entry['total'] as double) + rawTotal / rate;
             }
           } catch (_) {}
         }
+
+        final ranked = byProduct.values.toList()
+          ..sort(
+            (a, b) => (b['qty'] as double).compareTo(a['qty'] as double),
+          );
+        final items = ranked.take(limit).toList();
+
+        for (final item in items) {
+          try {
+            final ordersCountRes = await OdooSessionManager.callKwWithCompany({
+              'model': 'sale.order.line',
+              'method': 'read_group',
+              'args': [
+                [
+                  ...domain,
+                  ['product_id', '=', item['id']],
+                ],
+              ],
+              'kwargs': {
+                'fields': ['order_id'],
+                'groupby': ['order_id'],
+              },
+            });
+            item['orders_count'] = (ordersCountRes is List)
+                ? ordersCountRes.length
+                : 0;
+          } catch (_) {}
+        }
+
         return items;
       }
       return [];
@@ -1241,6 +1403,7 @@ class _DashboardScreenState extends State<DashboardScreen>
               'product_uom_qty',
               'price_total',
               'order_id',
+              'currency_id',
             ],
             'limit': 2000,
           },
@@ -1260,7 +1423,16 @@ class _DashboardScreenState extends State<DashboardScreen>
               final name = productInfo[1] as String;
               final orderId = orderInfo[0] as int;
               final qty = _safeToNum(r['product_uom_qty'])?.toDouble() ?? 0.0;
-              final total = _safeToNum(r['price_total'])?.toDouble() ?? 0.0;
+              final curRaw = r['currency_id'];
+              final curId = (curRaw is List && curRaw.isNotEmpty)
+                  ? _safeToNum(curRaw.first)?.toInt()
+                  : _safeToNum(curRaw)?.toInt();
+              final lineRate = curId == null ? null : _currencyRates[curId];
+              final rawLineTotal =
+                  _safeToNum(r['price_total'])?.toDouble() ?? 0.0;
+              final total = (lineRate != null && lineRate > 0)
+                  ? rawLineTotal / lineRate
+                  : 0.0;
 
               final entry =
                   agg[id] ??
@@ -3834,21 +4006,36 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   void _onSessionChanged() {
     if (!mounted) return;
+    if (_handlingSessionChange) return;
 
-    userName = null;
-    userAvatar = null;
-    userLogin = null;
+    final newAccountKey = _currentDataScopeKey();
+    final accountChanged = newAccountKey != _loadedAccountKey;
+
+    if (accountChanged) {
+      userName = null;
+      userAvatar = null;
+      userLogin = null;
+    }
 
     try {
       final svc = context.read<SessionService>();
       if (svc.isRefreshing) {
-        setState(() {});
+        if (accountChanged) setState(() {});
         return;
       }
     } catch (_) {}
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
+    if (!accountChanged && _initialLoadComplete) return;
+
+    _handlingSessionChange = true;
+    _loadedAccountKey = newAccountKey;
+
+    _sessionChangeTimer?.cancel();
+    _sessionChangeTimer = Timer(const Duration(milliseconds: 350), () {
+      if (!mounted) {
+        _handlingSessionChange = false;
+        return;
+      }
       try {
         setState(() {
           isLoadingDashboardAll = true;
