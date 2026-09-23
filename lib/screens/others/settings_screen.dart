@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:hugeicons/hugeicons.dart';
 import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'package:provider/provider.dart';
-import 'package:shimmer/shimmer.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../main.dart';
 import 'in_app_webview_screen.dart';
@@ -112,28 +111,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else {
       _openInAppWebPage(uri, title: title);
     }
-  }
-
-  Widget _buildShimmerBox({
-    required double width,
-    required double height,
-    double borderRadius = 8,
-  }) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final baseColor = isDark ? Colors.grey.shade800 : Colors.grey.shade300;
-
-    return Shimmer.fromColors(
-      baseColor: baseColor,
-      highlightColor: isDark ? Colors.grey.shade600 : Colors.grey.shade100,
-      child: Container(
-        width: width,
-        height: height,
-        decoration: BoxDecoration(
-          color: isDark ? Colors.grey.shade700 : Colors.white,
-          borderRadius: BorderRadius.circular(borderRadius),
-        ),
-      ),
-    );
   }
 
   Future<void> _initializeSettings() async {
@@ -491,132 +468,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   'Language & Region',
                   HugeIcons.strokeRoundedSettings02,
                   [
-                    _buildOdooDropdownTile(
+                    _buildViewOnlyTile(
                       context,
                       'Language',
                       'Select your preferred language',
                       HugeIcons.strokeRoundedTranslate,
-                      settingsProvider.selectedLanguage,
-                      settingsProvider.availableLanguages,
-                      settingsProvider.isLoadingLanguages,
-                      (value) async {
-                        await settingsProvider.updateLanguage(value!);
-                        if (!mounted) return;
-                        if (settingsProvider.error != null) {
-                          CustomSnackbar.showError(
-                            context,
-                            'Failed to update language: ${settingsProvider.error}',
-                          );
-                        } else {
-                          CustomSnackbar.showSuccess(
-                            context,
-                            'Language updated to ${settingsProvider.getLanguageDisplayName(value)}',
-                          );
-                        }
-                      },
-                      displayKey: 'name',
-                      valueKey: 'code',
-                      lastUpdated: settingsProvider.languagesUpdatedAt,
+                      settingsProvider.selectedLanguage.isEmpty
+                          ? ''
+                          : settingsProvider.getLanguageDisplayName(
+                              settingsProvider.selectedLanguage,
+                            ),
                     ),
-                    _buildOdooDropdownTile(
+                    _buildViewOnlyTile(
                       context,
                       'Currency',
                       'Default currency for transactions',
                       HugeIcons.strokeRoundedDollar01,
-                      settingsProvider.selectedCurrency,
-                      settingsProvider.availableCurrencies,
-                      settingsProvider.isLoadingCurrencies,
-                      (value) async {
-                        await settingsProvider.updateCurrency(value!);
-                        if (!mounted) return;
-                        if (settingsProvider.error != null) {
-                          CustomSnackbar.showError(
-                            context,
-                            'Failed to update currency: ${settingsProvider.error}',
-                          );
-                        } else {
-                          CustomSnackbar.showSuccess(
-                            context,
-                            'Currency updated to ${settingsProvider.getCurrencyDisplayName(value)}',
-                          );
-                        }
-                      },
-                      displayKey: 'full_name',
-                      valueKey: 'name',
-                      lastUpdated: settingsProvider.currenciesUpdatedAt,
+                      settingsProvider.selectedCurrency.isEmpty
+                          ? ''
+                          : settingsProvider.getCurrencyDisplayName(
+                              settingsProvider.selectedCurrency,
+                            ),
                     ),
-                    _buildOdooDropdownTile(
+                    _buildViewOnlyTile(
                       context,
                       'Timezone',
                       'Your local timezone',
                       HugeIcons.strokeRoundedClock01,
-                      settingsProvider.selectedTimezone,
-                      settingsProvider.availableTimezones,
-                      settingsProvider.isLoadingTimezones,
-                      (value) async {
-                        await settingsProvider.updateTimezone(value!);
-                        if (!mounted) return;
-                        if (settingsProvider.error != null) {
-                          CustomSnackbar.showError(
-                            context,
-                            'Failed to update timezone: ${settingsProvider.error}',
-                          );
-                        } else {
-                          CustomSnackbar.showSuccess(
-                            context,
-                            'Timezone updated to ${settingsProvider.getTimezoneDisplayName(value)}',
-                          );
-                        }
-                      },
-                      displayKey: 'name',
-                      valueKey: 'code',
-                      lastUpdated: settingsProvider.timezonesUpdatedAt,
+                      settingsProvider.selectedTimezone.isEmpty
+                          ? ''
+                          : settingsProvider.getTimezoneDisplayName(
+                              settingsProvider.selectedTimezone,
+                            ),
                     ),
                   ],
-                  headerTrailing: Builder(
-                    builder: (ctx) {
-                      final isDark =
-                          Theme.of(ctx).brightness == Brightness.dark;
-                      final sectionLoading =
-                          settingsProvider.isLoadingLanguages ||
-                          settingsProvider.isLoadingCurrencies ||
-                          settingsProvider.isLoadingTimezones;
-
-                      return IconButton(
-                        tooltip: 'Refresh',
-                        onPressed: () async {
-                          await Future.wait([
-                            settingsProvider.fetchAvailableLanguages(
-                              markManual: true,
-                            ),
-                            settingsProvider.fetchAvailableCurrencies(
-                              markManual: true,
-                            ),
-                            settingsProvider.fetchAvailableTimezones(
-                              markManual: true,
-                            ),
-                          ]);
-                          if (!mounted) return;
-
-                          CustomSnackbar.showInfo(
-                            ctx,
-                            'Language & Region refreshed',
-                          );
-                        },
-                        icon: Icon(
-                          Icons.refresh,
-                          size: 18,
-                          color: isDark ? Colors.grey[300] : Colors.grey[600],
-                        ),
-                        constraints: const BoxConstraints(
-                          minWidth: 32,
-                          minHeight: 32,
-                        ),
-                        padding: const EdgeInsets.all(4),
-                        splashRadius: 16,
-                      );
-                    },
-                  ),
                 ),
               ),
 
@@ -920,16 +805,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  String _formatLastUpdated(DateTime? dt) {
-    if (dt == null) return '';
-    final now = DateTime.now();
-    final diff = now.difference(dt);
-    if (diff.inMinutes < 1) return 'Just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
-    if (diff.inHours < 24) return '${diff.inHours} hr ago';
-    return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
-  }
-
   Widget _buildBiometricTile(BuildContext context) {
     final IconData icon = _isBiometricAvailable
         ? HugeIcons.strokeRoundedFingerprintScan
@@ -954,29 +829,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildOdooDropdownTile(
+  /// Read-only row for a value Odoo already reports, matching mobo Discuss:
+  /// tappable but inert (`onTap: () {}`), not editable from this screen.
+  Widget _buildViewOnlyTile(
     BuildContext context,
     String title,
     String subtitle,
     IconData icon,
-    String value,
-    List<Map<String, dynamic>> options,
-    bool isLoading,
-    Function(String?) onChanged, {
-    required String displayKey,
-    required String valueKey,
-    DateTime? lastUpdated,
-    VoidCallback? onRefresh,
-  }) {
+    String displayValue,
+  ) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    final bool hasCurrent = options.any((option) => option[valueKey] == value);
-    final List<Map<String, dynamic>> effectiveOptions = hasCurrent
-        ? options
-        : [
-            {valueKey: value, displayKey: value},
-            ...options,
-          ];
 
     return ListTile(
       leading: Icon(
@@ -984,116 +846,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
         color: isDark ? Colors.grey[400] : Colors.black,
         size: 22,
       ),
-      title: Row(
-        children: [
-          Expanded(
-            child: Text(
-              title,
-              style: TextStyle(
-                fontWeight: FontWeight.w500,
-                color: isDark ? Colors.white : Colors.black87,
-              ),
-              overflow: TextOverflow.ellipsis,
-              maxLines: 1,
-            ),
-          ),
-          if (onRefresh != null)
-            IconButton(
-              tooltip: 'Refresh',
-              onPressed: isLoading ? null : onRefresh,
-              icon: Icon(
-                Icons.refresh,
-                size: 18,
-                color: isLoading
-                    ? (isDark ? Colors.grey[700] : Colors.grey[400])
-                    : (isDark ? Colors.grey[300] : Colors.grey[600]),
-              ),
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-              padding: const EdgeInsets.all(4),
-              splashRadius: 16,
-            ),
-        ],
+      title: Text(
+        title,
+        style: TextStyle(
+          fontWeight: FontWeight.w500,
+          color: isDark ? Colors.white : Colors.black87,
+        ),
+        overflow: TextOverflow.ellipsis,
+        maxLines: 1,
       ),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            subtitle,
-            style: TextStyle(
-              fontSize: 12,
-              color: isDark ? Colors.grey[400] : Colors.grey[600],
-            ),
-          ),
-          if (lastUpdated != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Text(
-                'Last updated • ${_formatLastUpdated(lastUpdated)}',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: isDark ? Colors.grey[500] : Colors.grey[500],
-                ),
-              ),
-            ),
-        ],
+      subtitle: Text(
+        subtitle,
+        style: TextStyle(
+          fontSize: 12,
+          color: isDark ? Colors.grey[400] : Colors.grey[600],
+        ),
       ),
-      trailing: (isLoading && options.isEmpty)
-          ? _buildShimmerBox(width: 140, height: 32, borderRadius: 8)
-          : SizedBox(
-              width: MediaQuery.of(context).size.width * .35,
-              child: DropdownButton<String>(
-                isExpanded: true,
-                value:
-                    effectiveOptions.any((option) => option[valueKey] == value)
-                    ? value
-                    : null,
-                onChanged: onChanged,
-                underline: const SizedBox(),
-                selectedItemBuilder: (context) {
-                  return effectiveOptions.map((option) {
-                    final String displayText =
-                        (option[displayKey] ?? option[valueKey] ?? '')
-                            .toString();
-                    return Align(
-                      alignment: Alignment.centerRight,
-                      child: Text(
-                        displayText,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: isDark ? Colors.white : Colors.black87,
-                        ),
-                      ),
-                    );
-                  }).toList();
-                },
-                items: effectiveOptions.map((Map<String, dynamic> option) {
-                  final String displayText =
-                      (option[displayKey] ?? option[valueKey] ?? '').toString();
-                  final String optionValue = option[valueKey];
-
-                  final bool isLanguageDropdown = title == 'Language';
-                  final bool isEnglish = optionValue == 'en_US';
-                  final bool isEnabled = !isLanguageDropdown || isEnglish;
-
-                  return DropdownMenuItem<String>(
-                    value: option[valueKey],
-                    enabled: isEnabled,
-                    child: Text(
-                      displayText,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: isEnabled
-                            ? (isDark ? Colors.white : Colors.black87)
-                            : (isDark ? Colors.grey[600] : Colors.grey[400]),
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-            ),
+      trailing: Text(
+        displayValue,
+        style: TextStyle(
+          color: isDark ? Colors.grey[400] : Colors.grey[600],
+        ),
+      ),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      onTap: () {},
     );
   }
 
