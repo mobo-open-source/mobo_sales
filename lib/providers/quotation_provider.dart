@@ -14,6 +14,7 @@ import 'package:odoo_rpc/odoo_rpc.dart';
 import '../models/quote.dart';
 import '../services/field_validation_service.dart';
 import '../services/odoo_error_classifier.dart';
+import '../utils/guarded_action.dart';
 
 class QuotationProvider with ChangeNotifier {
   final QuotationService _quotationService;
@@ -481,13 +482,13 @@ class QuotationProvider with ChangeNotifier {
         'method': 'read_group',
         'args': [domain],
         'kwargs': {
-          'fields': ['id'],
+          'fields': <String>[],
           'groupby': [
             granularity != null ? '$groupByField:$granularity' : groupByField,
           ],
           'lazy': false,
         },
-      });
+      }).timeout(const Duration(seconds: 30));
 
       if (result is List) {
         _groupSummary.clear();
@@ -528,7 +529,10 @@ class QuotationProvider with ChangeNotifier {
 
         notifyListeners();
       }
-    } catch (e) {}
+    } catch (e) {
+      _errorMessage = describeActionFailure(e, "Could not group quotations");
+      notifyListeners();
+    }
   }
 
   String _getGroupKeyFromReadGroup(

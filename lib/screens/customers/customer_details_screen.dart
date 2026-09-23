@@ -25,6 +25,7 @@ import 'package:flutter/rendering.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:math' as math;
 import '../../widgets/location_map_widget.dart';
+import '../../utils/guarded_action.dart';
 import '../../utils/customer_location_helper.dart';
 import '../../providers/contact_provider.dart';
 import '../../providers/last_opened_provider.dart';
@@ -1792,107 +1793,45 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
       return;
     }
 
-    final sessionService = Provider.of<SessionService>(context, listen: false);
-    final client = await sessionService.client;
-    if (client == null) {
-      CustomSnackbar.showError(
-        context,
-        'No active session. Please log in again.',
-      );
-      return;
-    }
-
     final confirmArchive = await _showArchiveCustomerDialog(context, customer);
+    if (confirmArchive != true || !context.mounted) return;
 
-    if (confirmArchive != true) {
-      return;
-    }
+    final sessionService = Provider.of<SessionService>(context, listen: false);
 
-    bool isLoadingDialogOpen = true;
-    showDialog(
+    final archived = await runGuardedAction<bool>(
       context: context,
-      barrierDismissible: false,
-      builder: (BuildContext dialogContext) {
-        final isDark = Theme.of(context).brightness == Brightness.dark;
-        final primaryColor = Theme.of(context).primaryColor;
-        return Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                CircularProgressIndicator(color: isDark ? primaryColor : null),
-                const SizedBox(width: 16),
-                Text(
-                  'Archiving customer...',
-                  style: TextStyle(
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
+      message: 'Archiving customer...',
+      successMessage: 'Customer archived successfully',
+      failurePrefix: 'Failed to archive customer',
+      action: () async {
+        final client = await sessionService.client;
+        if (client == null) {
+          throw Exception('Session expired. Please log in again.');
+        }
+        final result = await client.callKw({
+          'model': 'res.partner',
+          'method': 'write',
+          'args': [
+            [customer.id],
+            {'active': false},
+          ],
+          'kwargs': {},
+        });
+        if (result != true) throw Exception('The server rejected the change');
+        return true;
       },
-    ).then((_) {
-      isLoadingDialogOpen = false;
-    });
+    );
 
-    try {
-      final result = await client.callKw({
-        'model': 'res.partner',
-        'method': 'write',
-        'args': [
-          [customer.id],
-          {'active': false},
-        ],
-        'kwargs': {},
-      });
+    if (archived != true || !context.mounted) return;
 
-      if (result == true) {
-        final contactProvider = Provider.of<ContactProvider>(
-          context,
-          listen: false,
-        );
-        contactProvider.contacts.removeWhere((c) => c.id == customer.id);
-        contactProvider.notifyListeners();
+    final contactProvider = Provider.of<ContactProvider>(
+      context,
+      listen: false,
+    );
+    contactProvider.contacts.removeWhere((c) => c.id == customer.id);
+    contactProvider.notifyListeners();
 
-        if (isLoadingDialogOpen && context.mounted) {
-          Navigator.of(context).pop();
-          isLoadingDialogOpen = false;
-        }
-
-        if (context.mounted) {
-          CustomSnackbar.showSuccess(context, 'Customer archived successfully');
-          Navigator.of(context).pop(true);
-        }
-      } else {
-        throw Exception('Failed to archive customer');
-      }
-    } catch (e) {
-      if (isLoadingDialogOpen && context.mounted) {
-        Navigator.of(context).pop();
-        isLoadingDialogOpen = false;
-      }
-
-      if (context.mounted) {
-        if (e.toString().contains(
-          'Record does not exist or has been deleted',
-        )) {
-          CustomSnackbar.showWarning(
-            context,
-            'This customer has already been deleted or archived.',
-          );
-          Navigator.of(context).pop(true);
-        } else {
-          CustomSnackbar.showError(context, 'Failed to archive customer: $e');
-        }
-      }
-    }
+    Navigator.of(context).pop(true);
   }
 
   @override
@@ -4391,21 +4330,38 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
     }
 
     final sessionService = Provider.of<SessionService>(context, listen: false);
-    final client = await sessionService.client;
+    final client = await sessionService.client.timeout(
+      kActionTimeout,
+      onTimeout: () => null,
+    );
     if (client == null) {
-      CustomSnackbar.showError(
-        context,
-        'No active session. Please log in again.',
-      );
+      if (context.mounted) {
+        CustomSnackbar.showError(
+          context,
+          'Could not reach the server. Please try again.',
+        );
+      }
       return;
     }
 
     bool isLoadingDialogOpen = true;
     String dialogMessage = 'Checking dependencies...';
+    BuildContext? loadingDialogContext;
+    void closeLoadingDialog() {
+      if (!isLoadingDialogOpen) return;
+      isLoadingDialogOpen = false;
+      final ctx = loadingDialogContext;
+      loadingDialogContext = null;
+      if (ctx == null) return;
+      final navigator = Navigator.of(ctx);
+      if (navigator.canPop()) navigator.pop();
+    }
+
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (BuildContext dialogContext) {
+        loadingDialogContext = dialogContext;
         final isDark = Theme.of(context).brightness == Brightness.dark;
         final primaryColor = Theme.of(context).primaryColor;
         return StatefulBuilder(
@@ -4437,8 +4393,9 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
           },
         );
       },
-    ).then((_) {
+    ).whenComplete(() {
       isLoadingDialogOpen = false;
+      loadingDialogContext = null;
     });
 
     bool hasDependencies = false;
@@ -4510,10 +4467,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
             'Found $vehicleLogsCount vehicle assignation log(s).\n';
       }
     } catch (e) {
-      if (isLoadingDialogOpen && context.mounted) {
-        Navigator.of(context).pop();
-        isLoadingDialogOpen = false;
-      }
+      closeLoadingDialog();
       if (context.mounted) {
         CustomSnackbar.showError(context, 'Error checking dependencies: $e');
       }
@@ -4521,10 +4475,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
     }
 
     if (hasDependencies) {
-      if (isLoadingDialogOpen && context.mounted) {
-        Navigator.of(context).pop();
-        isLoadingDialogOpen = false;
-      }
+      closeLoadingDialog();
       if (context.mounted) {
         CustomSnackbar.showWarning(
           context,
@@ -4541,14 +4492,16 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
     }
 
     try {
-      final result = await client.callKw({
-        'model': 'res.partner',
-        'method': 'unlink',
-        'args': [
-          [customer.id],
-        ],
-        'kwargs': {},
-      });
+      final result = await client
+          .callKw({
+            'model': 'res.partner',
+            'method': 'unlink',
+            'args': [
+              [customer.id],
+            ],
+            'kwargs': {},
+          })
+          .timeout(kActionTimeout);
 
       if (result == true) {
         final contactProvider = Provider.of<ContactProvider>(
@@ -4557,10 +4510,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
         );
         contactProvider.contacts.removeWhere((c) => c.id == customer.id);
         contactProvider.notifyListeners();
-        if (isLoadingDialogOpen && context.mounted) {
-          Navigator.of(context).pop();
-          isLoadingDialogOpen = false;
-        }
+        closeLoadingDialog();
 
         if (context.mounted) {
           CustomSnackbar.showSuccess(context, 'Customer deleted successfully');
@@ -4570,10 +4520,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
         throw Exception('Failed to delete customer');
       }
     } catch (e) {
-      if (isLoadingDialogOpen && context.mounted) {
-        Navigator.of(context).pop();
-        isLoadingDialogOpen = false;
-      }
+      closeLoadingDialog();
 
       String errorMessage = 'Failed to delete customer.';
       bool shouldArchiveFallback = false;

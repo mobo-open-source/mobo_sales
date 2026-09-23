@@ -10,6 +10,8 @@ import 'package:provider/provider.dart';
 import 'package:mobo_sales/screens/others/settings_screen.dart';
 import 'package:mobo_sales/utils/app_theme.dart';
 import 'package:shimmer/shimmer.dart';
+import 'package:mobo_sales/utils/odoo_version.dart';
+import 'package:mobo_sales/utils/server_url_utils.dart';
 import 'package:mobo_sales/services/session_service.dart';
 import 'package:mobo_sales/widgets/custom_text_field.dart';
 import 'package:mobo_sales/widgets/custom_dropdown.dart';
@@ -922,6 +924,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return;
     }
 
+    _supportsMobile = odooHasPartnerMobile(
+      odooMajorVersion(session.serverVersion),
+    );
+
     final client = await sessionService.client;
     if (client == null) {
       if (mounted) {
@@ -989,6 +995,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             'email',
             'image_1920',
             'phone',
+            if (_supportsMobile) 'mobile',
             'website',
             'function',
             'company_id',
@@ -1201,8 +1208,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
             : _phoneController.text.trim();
       }
 
-      if (_mobileController.text.trim() !=
-          _normalizeForEdit(_userData!['mobile'])) {
+      if (_supportsMobile &&
+          _mobileController.text.trim() !=
+              _normalizeForEdit(_userData!['mobile'])) {
         updateData['mobile'] = _mobileController.text.trim().isEmpty
             ? false
             : _mobileController.text.trim();
@@ -1652,7 +1660,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
         ],
       ),
-      child: Column(children: children),
+      child: Material(
+        type: MaterialType.transparency,
+        borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        child: Column(children: children),
+      ),
     );
   }
 
@@ -2299,6 +2312,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  /// Whether this server still has `res.partner.mobile` (removed in Odoo 19).
+  bool _supportsMobile = true;
+
   bool _isCurrentAccount(
     Map<String, dynamic> account,
     SessionService sessionService,
@@ -2307,7 +2323,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (currentSession == null) return false;
 
     return account['userId']?.toString() == currentSession.userId.toString() &&
-        account['serverUrl'] == currentSession.serverUrl &&
+        normalizeServerUrl(
+              (account['serverUrl'] ?? account['url'])?.toString(),
+            ) ==
+            normalizeServerUrl(currentSession.serverUrl) &&
         account['database'] == currentSession.database;
   }
 
@@ -2483,12 +2502,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return _buildDefaultAvatarInProfile(isDark, account);
     }
 
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
     final avatarUrl =
-        '$serverUrl/web/image?model=res.users&id=$userId&field=image_128&unique=$timestamp';
+        '$serverUrl/web/image?model=res.users&id=$userId&field=image_128';
+    final rowSessionId = account?['sessionId']?.toString();
+    final rowDatabase = account?['database']?.toString() ?? '';
 
     return CachedNetworkImage(
       imageUrl: avatarUrl,
+      cacheKey: '${serverUrl}_${rowDatabase}_${userId}_avatar',
+      httpHeaders: (rowSessionId != null && rowSessionId.isNotEmpty)
+          ? {'Cookie': 'session_id=$rowSessionId'}
+          : null,
       fit: BoxFit.cover,
       fadeInDuration: const Duration(milliseconds: 200),
       placeholder: (context, url) {
@@ -2722,7 +2746,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     if (confirmed == true) {
       final accountIndex = sessionService.storedAccounts.indexWhere(
-        (stored) => stored['userId'] == account['userId'],
+        (stored) =>
+            SessionService.storedAccountKey(stored) ==
+            SessionService.storedAccountKey(account),
       );
 
       if (accountIndex != -1) {
@@ -3277,7 +3303,9 @@ class _AccountDrawer extends StatelessWidget {
 
     try {
       final accountIndex = sessionService.storedAccounts.indexWhere(
-        (stored) => stored['userId'] == account['userId'],
+        (stored) =>
+            SessionService.storedAccountKey(stored) ==
+            SessionService.storedAccountKey(account),
       );
 
       if (accountIndex == -1) {
@@ -3448,7 +3476,9 @@ class _AccountDrawer extends StatelessWidget {
     );
     if (confirmed == true) {
       final accountIndex = sessionService.storedAccounts.indexWhere(
-        (stored) => stored['userId'] == account['userId'],
+        (stored) =>
+            SessionService.storedAccountKey(stored) ==
+            SessionService.storedAccountKey(account),
       );
       if (accountIndex != -1) {
         await sessionService.removeStoredAccount(accountIndex);
@@ -3473,7 +3503,10 @@ class _AccountDrawer extends StatelessWidget {
     if (currentSession == null) return false;
 
     return account['userId']?.toString() == currentSession.userId.toString() &&
-        account['serverUrl'] == currentSession.serverUrl &&
+        normalizeServerUrl(
+              (account['serverUrl'] ?? account['url'])?.toString(),
+            ) ==
+            normalizeServerUrl(currentSession.serverUrl) &&
         account['database'] == currentSession.database;
   }
 }

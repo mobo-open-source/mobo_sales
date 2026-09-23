@@ -159,6 +159,85 @@ class CustomerService {
     }
   }
 
+  Map<String, Map<String, dynamic>>? _partnerFieldsCache;
+  String? _partnerFieldsAccountKey;
+
+  /// This server's `res.partner` schema, cached per account.
+  ///
+  /// Asked for rather than assumed. Odoo rejects a write naming a field the
+  /// model does not define, and it rejects the *entire* call — so one stale
+  /// field name loses every other value in the same request. Which fields
+  /// exist genuinely differs: Odoo 19 dropped both `mobile` and `title` from
+  /// `res.partner`, and `currency_id` is computed and cannot be written.
+  Future<Map<String, Map<String, dynamic>>> _partnerFields() async {
+    final session = await OdooSessionManager.getCurrentSession();
+    final accountKey = session == null
+        ? null
+        : '${session.serverUrl}|${session.database}|${session.userId}';
+    if (_partnerFieldsAccountKey != accountKey) {
+      _partnerFieldsAccountKey = accountKey;
+      _partnerFieldsCache = null;
+    }
+    final cached = _partnerFieldsCache;
+    if (cached != null) return cached;
+
+    try {
+      final result = await OdooSessionManager.safeCallKw({
+        'model': 'res.partner',
+        'method': 'fields_get',
+        'args': [
+          <String>[],
+          ['type', 'readonly'],
+        ],
+        'kwargs': const {},
+      }).timeout(const Duration(seconds: 30));
+
+      if (result is Map && result.isNotEmpty) {
+        final described = result.map(
+          (key, value) => MapEntry(
+            '$key',
+            value is Map
+                ? Map<String, dynamic>.from(value)
+                : <String, dynamic>{},
+          ),
+        );
+        _partnerFieldsCache = described;
+        return described;
+      }
+    } catch (_) {}
+    return const {};
+  }
+
+  /// Drops values this server will not accept, so one of them cannot take the
+  /// whole write down with it.
+  Future<Map<String, dynamic>> _writableValues(
+    Map<String, dynamic> values,
+  ) async {
+    final fields = await _partnerFields();
+    if (fields.isEmpty) return values;
+
+    final accepted = <String, dynamic>{};
+    values.forEach((key, value) {
+      final describe = fields[key];
+      if (describe == null) return;
+      if (describe['readonly'] == true) return;
+      accepted[key] = value;
+    });
+    return accepted;
+  }
+
+  /// Whether this server defines [field] on `res.partner` and will accept a
+  /// value for it, so a screen can leave out an input the server cannot store.
+  ///
+  /// Defaults to true while the schema is unknown, so a failed probe shows the
+  /// form as it always was rather than hiding fields at random.
+  Future<bool> isPartnerFieldWritable(String field) async {
+    final fields = await _partnerFields();
+    if (fields.isEmpty) return true;
+    final describe = fields[field];
+    return describe != null && describe['readonly'] != true;
+  }
+
   Future<Contact?> createCustomer(Map<String, dynamic> customerData) async {
     try {
       final canCreate = await PermissionService.instance.canCreate(
@@ -175,7 +254,7 @@ class CustomerService {
       final result = await OdooSessionManager.safeCallKw({
         'model': 'res.partner',
         'method': 'create',
-        'args': [customerData],
+        'args': [await _writableValues(customerData)],
         'kwargs': {},
       });
 
@@ -207,7 +286,7 @@ class CustomerService {
         'method': 'write',
         'args': [
           [customerId],
-          customerData,
+          await _writableValues(customerData),
         ],
         'kwargs': {},
       });

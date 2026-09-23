@@ -23,6 +23,7 @@ import '../../providers/last_opened_provider.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
+import '../../utils/guarded_action.dart';
 
 class EditCustomerScreen extends StatefulWidget {
   final Contact? contact;
@@ -301,9 +302,68 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
 
   bool get _isNameFilled => _nameController.text.trim().isNotEmpty;
 
+  /// Which optional inputs this server can actually store.
+  ///
+  /// Asked of the server rather than derived from its version number. Odoo 19
+  /// dropped both `mobile` and `title` from `res.partner`, and an unknown
+  /// field rejects the *entire* create — which is why saving worked until
+  /// those boxes were filled in, since empty values were never sent. A
+  /// version check would only ever cover the cases someone thought to add.
+  bool _supportsMobile = true;
+  bool _supportsTitle = true;
+
+  /// Converts a dropdown value to what Odoo expects for an id or integer
+  /// field.
+  ///
+  /// The dropdowns carry `id.toString()`, so `title`, `currency_id` and
+  /// `customer_rank` were being sent as strings. Those are a many2one,
+  /// a many2one and an integer — a string can be rejected, and a rejection
+  /// fails the whole create, which is why saving broke only once the optional
+  /// dropdowns were filled in. Left untouched when it is not numeric.
+  static dynamic _asOdooId(String? value) {
+    if (value == null) return value;
+    return int.tryParse(value.trim()) ?? value;
+  }
+
+  /// Looks up the `res.partner.industry` record matching [name].
+  Future<int?> _resolveIndustryId(String name) async {
+    try {
+      final result = await OdooSessionManager.safeCallKw({
+        'model': 'res.partner.industry',
+        'method': 'search_read',
+        'args': [
+          [
+            ['name', '=ilike', name],
+          ],
+          ['id'],
+        ],
+        'kwargs': {'limit': 1},
+      }).timeout(kActionTimeout);
+      if (result is List && result.isNotEmpty) {
+        final id = (result.first as Map)['id'];
+        if (id is int) return id;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> _resolveOptionalFieldSupport() async {
+    final service = CustomerService.instance;
+    final mobile = await service.isPartnerFieldWritable('mobile');
+    final title = await service.isPartnerFieldWritable('title');
+    if (!mounted) return;
+    if (mobile != _supportsMobile || title != _supportsTitle) {
+      setState(() {
+        _supportsMobile = mobile;
+        _supportsTitle = title;
+      });
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    _resolveOptionalFieldSupport();
     _isEditMode = widget.contact != null;
     if (_isEditMode && widget.contact != null) {
       _trackCustomerAccess();
@@ -526,7 +586,9 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
       addField('name', _nameController.text);
       addField('email', _emailController.text);
       addField('phone', _phoneController.text);
-      addField('mobile', _mobileController.text);
+      if (_supportsMobile) {
+        addField('mobile', _mobileController.text);
+      }
       addField('website', _websiteController.text);
       addField('function', _functionController.text);
       addField('street', _streetController.text);
@@ -540,8 +602,10 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
       addField('company_name', _companyNameController.text);
       addField('vat', _vatController.text);
 
-      if (_industryController.text.trim().isNotEmpty) {
-        data['industry'] = _industryController.text.trim();
+      final industryName = _industryController.text.trim();
+      if (industryName.isNotEmpty) {
+        final industryId = await _resolveIndustryId(industryName);
+        if (industryId != null) data['industry_id'] = industryId;
       }
 
       if (_creditLimitController.text.trim().isNotEmpty) {
@@ -552,20 +616,20 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
       addField('comment', _commentController.text);
       data['is_company'] = _isCompany;
       if (_selectedTitle != null && _selectedTitle!.isNotEmpty) {
-        data['title'] = _selectedTitle;
+        if (_supportsTitle) data['title'] = _asOdooId(_selectedTitle);
       }
       if (_selectedCompanyType != null && _selectedCompanyType!.isNotEmpty) {
         data['company_type'] = _selectedCompanyType;
       }
 
       if (_selectedCustomerRank != null && _selectedCustomerRank!.isNotEmpty) {
-        data['customer_rank'] = _selectedCustomerRank;
+        data['customer_rank'] = _asOdooId(_selectedCustomerRank);
       } else if (!_isEditMode) {
         data['customer_rank'] = 1;
       }
 
       if (_selectedCurrency != null && _selectedCurrency!.isNotEmpty) {
-        data['currency_id'] = _selectedCurrency;
+        data['currency_id'] = _asOdooId(_selectedCurrency);
       }
       if (_selectedLanguage != null && _selectedLanguage!.isNotEmpty) {
         data['lang'] = _selectedLanguage;
@@ -655,7 +719,9 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
             addField('name', _nameController.text);
             addField('email', _emailController.text);
             addField('phone', _phoneController.text);
-            addField('mobile', _mobileController.text);
+            if (_supportsMobile) {
+              addField('mobile', _mobileController.text);
+            }
             addField('website', _websiteController.text);
             addField('function', _functionController.text);
             addField('street', _streetController.text);
@@ -677,7 +743,7 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
             addField('comment', _commentController.text);
             data['is_company'] = _isCompany;
             if (_selectedTitle != null && _selectedTitle!.isNotEmpty) {
-              data['title'] = _selectedTitle;
+              if (_supportsTitle) data['title'] = _asOdooId(_selectedTitle);
             }
             if (_selectedCompanyType != null &&
                 _selectedCompanyType!.isNotEmpty) {
@@ -686,13 +752,13 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
 
             if (_selectedCustomerRank != null &&
                 _selectedCustomerRank!.isNotEmpty) {
-              data['customer_rank'] = _selectedCustomerRank;
+              data['customer_rank'] = _asOdooId(_selectedCustomerRank);
             } else if (!_isEditMode) {
               data['customer_rank'] = 1;
             }
 
             if (_selectedCurrency != null && _selectedCurrency!.isNotEmpty) {
-              data['currency_id'] = _selectedCurrency;
+              data['currency_id'] = _asOdooId(_selectedCurrency);
             }
             if (_selectedLanguage != null && _selectedLanguage!.isNotEmpty) {
               data['lang'] = _selectedLanguage;
@@ -1826,15 +1892,17 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
                   keyboardType: TextInputType.phone,
                   validator: (v) => null,
                 ),
-                const SizedBox(height: 12),
-                CustomTextField(
-                  controller: _mobileController,
-                  labelText: 'Mobile',
-                  hintText: 'Enter mobile number',
-                  isDark: isDark,
-                  keyboardType: TextInputType.phone,
-                  validator: (v) => null,
-                ),
+                if (_supportsMobile) ...[
+                  const SizedBox(height: 12),
+                  CustomTextField(
+                    controller: _mobileController,
+                    labelText: 'Mobile',
+                    hintText: 'Enter mobile number',
+                    isDark: isDark,
+                    keyboardType: TextInputType.phone,
+                    validator: (v) => null,
+                  ),
+                ],
                 const SizedBox(height: 12),
                 CustomTextField(
                   controller: _websiteController,
@@ -2039,34 +2107,37 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
                   isDark: isDark,
                   validator: (v) => null,
                 ),
-                const SizedBox(height: 12),
-                CustomDropdownField(
-                  value: _titleOptions.any((m) => m['value'] == _selectedTitle)
-                      ? _selectedTitle
-                      : null,
-                  labelText: 'Title',
-                  hintText: 'Select title',
-                  isDark: isDark,
-                  items: _dropdownsLoading
-                      ? [
-                          DropdownMenuItem(
-                            value: null,
-                            child: Text('Loading...'),
-                          ),
-                        ]
-                      : _titleOptions
-                            .map(
-                              (m) => DropdownMenuItem(
-                                value: m['value'],
-                                child: Text(m['label']!),
-                              ),
-                            )
-                            .toList(),
-                  onChanged: _dropdownsLoading
-                      ? null
-                      : (v) => setState(() => _selectedTitle = v),
-                  validator: (v) => null,
-                ),
+                if (_supportsTitle) ...[
+                  const SizedBox(height: 12),
+                  CustomDropdownField(
+                    value:
+                        _titleOptions.any((m) => m['value'] == _selectedTitle)
+                        ? _selectedTitle
+                        : null,
+                    labelText: 'Title',
+                    hintText: 'Select title',
+                    isDark: isDark,
+                    items: _dropdownsLoading
+                        ? [
+                            DropdownMenuItem(
+                              value: null,
+                              child: Text('Loading...'),
+                            ),
+                          ]
+                        : _titleOptions
+                              .map(
+                                (m) => DropdownMenuItem(
+                                  value: m['value'],
+                                  child: Text(m['label']!),
+                                ),
+                              )
+                              .toList(),
+                    onChanged: _dropdownsLoading
+                        ? null
+                        : (v) => setState(() => _selectedTitle = v),
+                    validator: (v) => null,
+                  ),
+                ],
                 const SizedBox(height: 12),
                 CustomDropdownField(
                   value:

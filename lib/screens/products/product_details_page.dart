@@ -25,6 +25,7 @@ import '../../widgets/full_image_screen.dart';
 import 'create_product_screen.dart';
 import '../../services/permission_service.dart';
 import '../../services/field_validation_service.dart';
+import '../../utils/guarded_action.dart';
 
 class ProductDetailsPage extends StatefulWidget {
   final Product product;
@@ -99,7 +100,10 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
 
   Future<void> _checkInventoryModule() async {
     try {
-      final client = await OdooSessionManager.getClient();
+      final client = await OdooSessionManager.getClient().timeout(
+        kActionTimeout,
+        onTimeout: () => null,
+      );
       if (client == null) {
         if (mounted) {
           CustomSnackbar.showError(
@@ -1397,7 +1401,10 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
 
   Future<bool> _archiveProduct(BuildContext context, int productId) async {
     try {
-      final client = await OdooSessionManager.getClient();
+      final client = await OdooSessionManager.getClient().timeout(
+        kActionTimeout,
+        onTimeout: () => null,
+      );
       if (client == null) {
         throw Exception('No active Odoo session. Please log in again.');
       }
@@ -2631,7 +2638,10 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
         );
       }
 
-      final client = await OdooSessionManager.getClient();
+      final client = await OdooSessionManager.getClient().timeout(
+        kActionTimeout,
+        onTimeout: () => null,
+      );
       if (client == null) {
         if (mounted) {
           CustomSnackbar.show(
@@ -2719,12 +2729,14 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
         }
         return;
       }
-      final result = await client.callKw({
-        'model': 'sale.order',
-        'method': 'create',
-        'args': [quoteData],
-        'kwargs': {},
-      });
+      final result = await client
+          .callKw({
+            'model': 'sale.order',
+            'method': 'create',
+            'args': [quoteData],
+            'kwargs': {},
+          })
+          .timeout(kActionTimeout);
 
       if (result != null && mounted) {
         final total =
@@ -2763,7 +2775,10 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
         );
       }
 
-      final client = await OdooSessionManager.getClient();
+      final client = await OdooSessionManager.getClient().timeout(
+        kActionTimeout,
+        onTimeout: () => null,
+      );
       if (client == null) {
         if (mounted) {
           CustomSnackbar.show(
@@ -2846,12 +2861,14 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
         }
         return;
       }
-      final result = await client.callKw({
-        'model': 'sale.order.line',
-        'method': 'create',
-        'args': [lineData],
-        'kwargs': {},
-      });
+      final result = await client
+          .callKw({
+            'model': 'sale.order.line',
+            'method': 'create',
+            'args': [lineData],
+            'kwargs': {},
+          })
+          .timeout(kActionTimeout);
 
       if (result != null && mounted) {
         final total =

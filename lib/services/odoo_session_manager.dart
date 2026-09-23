@@ -216,8 +216,24 @@ class _TimeoutHttpClient extends http.BaseClient {
   final Duration _timeout;
 
   @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) {
-    return _inner.send(request).timeout(_timeout);
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final response = await _inner.send(request).timeout(_timeout);
+
+    return http.StreamedResponse(
+      response.stream.timeout(
+        _timeout,
+        onTimeout: (sink) => sink.addError(
+          TimeoutException('The server stopped responding', _timeout),
+        ),
+      ),
+      response.statusCode,
+      contentLength: response.contentLength,
+      request: response.request,
+      headers: response.headers,
+      isRedirect: response.isRedirect,
+      persistentConnection: response.persistentConnection,
+      reasonPhrase: response.reasonPhrase,
+    );
   }
 
   @override
@@ -702,20 +718,22 @@ class OdooSessionManager {
           )) {
             try {
               final uri = Uri.parse('$normalizedUrl/web/session/authenticate');
-              final response = await http.post(
-                uri,
-                headers: {'Content-Type': 'application/json'},
-                body: jsonEncode({
-                  'jsonrpc': '2.0',
-                  'method': 'call',
-                  'params': {
-                    'db': database,
-                    'login': username,
-                    'password': password,
-                  },
-                  'id': DateTime.now().millisecondsSinceEpoch,
-                }),
-              );
+              final response = await http
+                  .post(
+                    uri,
+                    headers: {'Content-Type': 'application/json'},
+                    body: jsonEncode({
+                      'jsonrpc': '2.0',
+                      'method': 'call',
+                      'params': {
+                        'db': database,
+                        'login': username,
+                        'password': password,
+                      },
+                      'id': DateTime.now().millisecondsSinceEpoch,
+                    }),
+                  )
+                  .timeout(_requestTimeout);
 
               if (response.statusCode == 200) {
                 final authBody = jsonDecode(response.body);
@@ -849,12 +867,20 @@ class OdooSessionManager {
     final kwargs = Map<String, dynamic>.from(payload['kwargs'] ?? {});
     final context = Map<String, dynamic>.from(kwargs['context'] ?? {});
 
-    if (session.allowedCompanyIds.isNotEmpty) {
-      context['allowed_company_ids'] = session.allowedCompanyIds;
+    final selectedCompany = session.selectedCompanyId;
+    final hasSelection = selectedCompany != null && selectedCompany != 0;
+
+    if (hasSelection) {
+      context['company_id'] = selectedCompany;
     }
 
-    if (session.selectedCompanyId != null && session.selectedCompanyId != 0) {
-      context['company_id'] = session.selectedCompanyId;
+    if (session.allowedCompanyIds.isNotEmpty) {
+      if (hasSelection && session.allowedCompanyIds.contains(selectedCompany)) {
+        final rest = {...session.allowedCompanyIds}..remove(selectedCompany);
+        context['allowed_company_ids'] = <int>[selectedCompany, ...rest];
+      } else {
+        context['allowed_company_ids'] = session.allowedCompanyIds;
+      }
     }
 
     context['db'] = session.database;

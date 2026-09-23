@@ -9,6 +9,7 @@ import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'package:provider/provider.dart';
 import 'package:mobo_sales/utils/app_theme.dart';
 import 'package:mobo_sales/services/session_service.dart';
+import 'package:mobo_sales/utils/odoo_version.dart';
 import 'package:mobo_sales/widgets/custom_text_field.dart';
 import 'package:mobo_sales/widgets/custom_dropdown.dart';
 import 'package:mobo_sales/widgets/data_loss_warning_dialog.dart';
@@ -168,6 +169,38 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     }
   }
 
+  /// Upper bound on any single profile write or refetch.
+  ///
+  /// Every one of these runs behind a non-dismissible loading dialog that is
+  /// only closed once the await returns, so an unbounded call leaves the user
+  /// staring at a spinner with no way out. `odoo_rpc` applies no timeout of
+  /// its own.
+  static const Duration _networkTimeout = Duration(seconds: 30);
+
+  /// A short, accurate reason for a failed write.
+  static String _saveFailureMessage(Object error, String fallbackPrefix) {
+    if (error is TimeoutException) {
+      return 'The server did not respond in time. Please check your '
+          'connection and try again.';
+    }
+    final message = error.toString().toLowerCase();
+    if (message.contains('session expired') ||
+        message.contains('session invalid')) {
+      return 'Session expired. Please log in again.';
+    }
+    return '$fallbackPrefix: $error';
+  }
+
+  /// The dialog route's own context, captured when it is built.
+  ///
+  /// Dismissal goes through this rather than `Navigator.of(screenContext)`.
+  /// That call pops whatever route happens to be on top of the nearest
+  /// navigator, which is not necessarily this dialog — and `showDialog`
+  /// pushes onto the root navigator by default, so the two can disagree
+  /// entirely. Popping the dialog's own context always closes exactly this
+  /// dialog and nothing else.
+  BuildContext? _loadingDialogContext;
+
   void _showLoadingDialog(BuildContext context, String message) {
     if (_isShowingLoadingDialog || !mounted) return;
     _isShowingLoadingDialog = true;
@@ -176,47 +209,71 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        backgroundColor: isDark ? const Color(0xFF212121) : Colors.white,
-        elevation: 8,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? Colors.white.withOpacity(0.12)
-                      : const Color(0xFF1E88E5).withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: LoadingAnimationWidget.fourRotatingDots(
-                  color: isDark ? Colors.white : const Color(0xFF1E88E5),
-                  size: 32,
-                ),
+      builder: (ctx) {
+        _loadingDialogContext = ctx;
+        return _buildLoadingDialogBody(ctx, message, isDark);
+      },
+    ).whenComplete(() {
+      _isShowingLoadingDialog = false;
+      _loadingDialogContext = null;
+    });
+  }
+
+  /// Closes the loading dialog if one is up. Safe to call more than once.
+  void _dismissLoadingDialog() {
+    final ctx = _loadingDialogContext;
+    _isShowingLoadingDialog = false;
+    _loadingDialogContext = null;
+    if (ctx == null) return;
+    final navigator = Navigator.of(ctx);
+    if (navigator.canPop()) navigator.pop();
+  }
+
+  Widget _buildLoadingDialogBody(
+    BuildContext ctx,
+    String message,
+    bool isDark,
+  ) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      backgroundColor: isDark ? const Color(0xFF212121) : Colors.white,
+      elevation: 8,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                color: isDark
+                    ? Colors.white.withOpacity(0.12)
+                    : const Color(0xFF1E88E5).withOpacity(0.1),
+                shape: BoxShape.circle,
               ),
-              const SizedBox(height: 16),
-              Text(
-                message,
-                style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: isDark ? Colors.white : Colors.grey[900],
-                ),
+              child: LoadingAnimationWidget.fourRotatingDots(
+                color: isDark ? Colors.white : const Color(0xFF1E88E5),
+                size: 32,
               ),
-              const SizedBox(height: 8),
-              Text(
-                'Please wait while we process your request',
-                style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
-                  color: isDark ? Colors.grey[400] : Colors.grey[600],
-                ),
-                textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              message,
+              style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: isDark ? Colors.white : Colors.grey[900],
               ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Please wait while we process your request',
+              style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                color: isDark ? Colors.grey[400] : Colors.grey[600],
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
         ),
       ),
     );
@@ -413,6 +470,9 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     }
   }
 
+  /// Whether this server still has `res.partner.mobile` (removed in Odoo 19).
+  bool _supportsMobile = true;
+
   Future<void> _fetchUserProfile({bool forceRefresh = false}) async {
     if (!mounted) return;
     setState(() => _isLoading = _userData == null);
@@ -427,6 +487,10 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
       }
       return;
     }
+
+    _supportsMobile = odooHasPartnerMobile(
+      odooMajorVersion(session.serverVersion),
+    );
 
     final client = await sessionService.client;
     if (client == null) {
@@ -460,6 +524,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
             'email',
             'image_1920',
             'phone',
+            if (_supportsMobile) 'mobile',
             'website',
             'function',
             'company_id',
@@ -516,19 +581,19 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   Future<void> _saveImage() async {
     if (_pickedImageBase64 == null || !mounted) return;
 
-    final navigator = Navigator.of(context);
     _showLoadingDialog(context, 'Saving Image');
     try {
-      await _updateProfileField('image_1920', _pickedImageBase64);
+      await _updateProfileField(
+        'image_1920',
+        _pickedImageBase64,
+      ).timeout(_networkTimeout);
     } catch (e) {
+      _dismissLoadingDialog();
       if (mounted) {
-        _showErrorSnackBar('Failed to update image: $e');
+        _showErrorSnackBar(_saveFailureMessage(e, 'Failed to update image'));
       }
     } finally {
-      if (mounted) {
-        _isShowingLoadingDialog = false;
-        navigator.pop();
-      }
+      _dismissLoadingDialog();
     }
   }
 
@@ -542,77 +607,85 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     _showLoadingDialog(context, 'Saving Changes');
 
     try {
-      final updates = <String, dynamic>{};
-
-      if (_nameController.text.trim() !=
-          _normalizeForEdit(_userData!['name'])) {
-        updates['name'] = _nameController.text.trim();
-      }
-      if (_emailController.text.trim() !=
-          _normalizeForEdit(_userData!['email'])) {
-        updates['email'] = _emailController.text.trim();
-      }
-      if (_phoneController.text.trim() !=
-          _normalizeForEdit(_userData!['phone'])) {
-        updates['phone'] = _phoneController.text.trim();
-      }
-      if (_mobileController.text.trim() !=
-          _normalizeForEdit(_userData!['mobile'])) {
-        updates['mobile'] = _mobileController.text.trim();
-      }
-      if (_websiteController.text.trim() !=
-          _normalizeForEdit(_userData!['website'])) {
-        updates['website'] = _websiteController.text.trim();
-      }
-      if (_functionController.text.trim() !=
-          _normalizeForEdit(_userData!['function'])) {
-        updates['function'] = _functionController.text.trim();
-      }
-
-      if (updates.isNotEmpty) {
-        final sessionService = Provider.of<SessionService>(
-          context,
-          listen: false,
-        );
-        final client = await sessionService.client;
-        final uid = client?.sessionId?.userId;
-
-        if (client != null && uid != null) {
-          await client.callKw({
-            'model': 'res.users',
-            'method': 'write',
-            'args': [
-              [uid],
-              updates,
-            ],
-            'kwargs': {},
-          });
-        }
-      }
-
-      await _fetchUserProfile();
-
-      if (mounted) {
-        final settingsProvider = Provider.of<SettingsProvider>(
-          context,
-          listen: false,
-        );
-        await settingsProvider.fetchUserProfile();
-      }
-
-      setState(() => _isEditMode = false);
-      _showSuccessSnackBar('Profile updated successfully');
+      await _writeProfileChanges().timeout(_networkTimeout);
+      _dismissLoadingDialog();
+      if (!mounted) return;
+      setState(() {
+        _isEditMode = false;
+        _isSaving = false;
+      });
       _saveSuccess = true;
+      _showSuccessSnackBar('Profile updated successfully');
     } catch (e) {
-      _showErrorSnackBar('Failed to save changes: $e');
+      _dismissLoadingDialog();
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      _showErrorSnackBar(_saveFailureMessage(e, 'Failed to save changes'));
     } finally {
-      if (mounted) {
-        setState(() => _isSaving = false);
-        _isShowingLoadingDialog = false;
-
-        Navigator.of(context).pop();
-      }
+      _dismissLoadingDialog();
+      if (mounted && _isSaving) setState(() => _isSaving = false);
     }
+  }
+
+  /// Sends the edited fields and refreshes what the screen shows.
+  Future<void> _writeProfileChanges() async {
+    final updates = <String, dynamic>{};
+
+    if (_nameController.text.trim() != _normalizeForEdit(_userData!['name'])) {
+      updates['name'] = _nameController.text.trim();
+    }
+    if (_emailController.text.trim() !=
+        _normalizeForEdit(_userData!['email'])) {
+      updates['email'] = _emailController.text.trim();
+    }
+    if (_phoneController.text.trim() !=
+        _normalizeForEdit(_userData!['phone'])) {
+      updates['phone'] = _phoneController.text.trim();
+    }
+    if (_mobileController.text.trim() !=
+            _normalizeForEdit(_userData!['mobile']) &&
+        _supportsMobile) {
+      updates['mobile'] = _mobileController.text.trim();
+    }
+    if (_websiteController.text.trim() !=
+        _normalizeForEdit(_userData!['website'])) {
+      updates['website'] = _websiteController.text.trim();
+    }
+    if (_functionController.text.trim() !=
+        _normalizeForEdit(_userData!['function'])) {
+      updates['function'] = _functionController.text.trim();
+    }
+
+    if (updates.isNotEmpty) {
+      if (!mounted) return;
+      final sessionService = Provider.of<SessionService>(
+        context,
+        listen: false,
+      );
+      final client = await sessionService.client;
+      final uid = client?.sessionId?.userId;
+      if (client == null || uid == null) {
+        throw Exception('Session expired. Please log in again.');
+      }
+
+      await client.callKw({
+        'model': 'res.users',
+        'method': 'write',
+        'args': [
+          [uid],
+          updates,
+        ],
+        'kwargs': {},
+      });
+    }
+
+    await _fetchUserProfile();
+
+    if (!mounted) return;
+    await Provider.of<SettingsProvider>(
+      context,
+      listen: false,
+    ).fetchUserProfile();
   }
 
   Future<void> _handleBack() async {
@@ -1202,17 +1275,19 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
 
                   _showLoadingDialog(context, 'Updating Address');
                   try {
-                    await _updateAddressFields(addressData);
+                    await _updateAddressFields(
+                      addressData,
+                    ).timeout(_networkTimeout);
+                    _dismissLoadingDialog();
                     if (mounted) {
-                      _isShowingLoadingDialog = false;
-                      navigator.pop();
                       _showSuccessSnackBar('Address updated successfully');
                     }
                   } catch (e) {
+                    _dismissLoadingDialog();
                     if (mounted) {
-                      _isShowingLoadingDialog = false;
-                      navigator.pop();
-                      _showErrorSnackBar('Failed to update address: $e');
+                      _showErrorSnackBar(
+                        _saveFailureMessage(e, 'Failed to update address'),
+                      );
                     }
                   }
                 },
@@ -1599,38 +1674,42 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     ).then((selected) async {
       if (selected is Map<String, dynamic>) {
         try {
-          final sessionService = Provider.of<SessionService>(
-            context,
-            listen: false,
-          );
-          final client = await sessionService.client;
-          if (client == null) throw Exception('Client not initialized');
           _showLoadingDialog(context, 'Updating Related Company');
-          await client.callKw({
-            'model': 'res.partner',
-            'method': 'write',
-            'args': [
-              [_partnerId],
-              {'parent_id': selected['id'] ?? false},
-            ],
-            'kwargs': {},
-          });
+          await _writeRelatedCompany(selected).timeout(_networkTimeout);
+          _dismissLoadingDialog();
           if (!mounted) return;
-          _isShowingLoadingDialog = false;
-          Navigator.of(context).pop();
           setState(() {
             _relatedCompanyId = selected['id'] as int?;
             _relatedCompanyName = selected['name']?.toString();
           });
           _showSuccessSnackBar('Related Company updated');
         } catch (e) {
+          _dismissLoadingDialog();
           if (mounted) {
-            _isShowingLoadingDialog = false;
-            Navigator.of(context).pop();
-            _showErrorSnackBar('Failed to update related company: $e');
+            _showErrorSnackBar(
+              _saveFailureMessage(e, 'Failed to update related company'),
+            );
           }
         }
       }
+    });
+  }
+
+  Future<void> _writeRelatedCompany(Map<String, dynamic> selected) async {
+    if (!mounted) return;
+    final sessionService = Provider.of<SessionService>(context, listen: false);
+    final client = await sessionService.client;
+    if (client == null) {
+      throw Exception('Session expired. Please log in again.');
+    }
+    await client.callKw({
+      'model': 'res.partner',
+      'method': 'write',
+      'args': [
+        [_partnerId],
+        {'parent_id': selected['id'] ?? false},
+      ],
+      'kwargs': {},
     });
   }
 
@@ -1954,16 +2033,18 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
                                 controller: _phoneController,
                                 keyboardType: TextInputType.phone,
                               ),
-                              const SizedBox(height: 16),
-                              _buildCustomTextField(
-                                context,
-                                'Mobile',
-                                _userData!['mobile']?.toString(),
-                                HugeIcons.strokeRoundedSmartPhone01,
-                                disabled: isEditingDisabled,
-                                controller: _mobileController,
-                                keyboardType: TextInputType.phone,
-                              ),
+                              if (_supportsMobile) ...[
+                                const SizedBox(height: 16),
+                                _buildCustomTextField(
+                                  context,
+                                  'Mobile',
+                                  _userData!['mobile']?.toString(),
+                                  HugeIcons.strokeRoundedSmartPhone01,
+                                  disabled: isEditingDisabled,
+                                  controller: _mobileController,
+                                  keyboardType: TextInputType.phone,
+                                ),
+                              ],
                               const SizedBox(height: 16),
                               _buildCustomTextField(
                                 context,

@@ -24,6 +24,8 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>mailto</string>
@@ -45,14 +47,12 @@
 	<string>This app needs camera access to take photos and scan barcodes/documents.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>This app uses Face ID for secure authentication.</string>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>This app uses your location to show maps and location-based information while using the app.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>This app uses your location to show maps and location-based information, even when the app is in the background.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
 	<string>This app uses your location to show maps and location-based information.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>This app uses your location to show maps and location-based information while using the app.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app needs access to the microphone for voice search functionality.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

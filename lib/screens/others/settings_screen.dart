@@ -276,9 +276,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
 
     if (context.mounted) {
-      Navigator.of(
-        context,
-      ).pushNamedAndRemoveUntil('/login', (route) => false);
+      Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
     }
     final rootContext = navigatorKey.currentContext;
     if (rootContext != null && rootContext.mounted) {
@@ -591,31 +589,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    title,
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white : Colors.black,
+      child: Material(
+        type: MaterialType.transparency,
+        borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white : Colors.black,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
                     ),
-                    overflow: TextOverflow.ellipsis,
-                    maxLines: 1,
                   ),
-                ),
-                if (headerTrailing != null) headerTrailing,
-              ],
+                  if (headerTrailing != null) headerTrailing,
+                ],
+              ),
             ),
-          ),
-          ...children,
-        ],
+            ...children,
+          ],
+        ),
       ),
     );
   }
@@ -864,9 +867,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       trailing: Text(
         displayValue,
-        style: TextStyle(
-          color: isDark ? Colors.grey[400] : Colors.grey[600],
-        ),
+        style: TextStyle(color: isDark ? Colors.grey[400] : Colors.grey[600]),
       ),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       onTap: () {},

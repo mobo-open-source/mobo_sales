@@ -47,7 +47,9 @@ class AuthService {
     final client = OdooClient(baseUrl, httpClient: ioClient);
 
     try {
-      final response = await client.callRPC('/web/database/list', 'call', {});
+      final response = await client
+          .callRPC('/web/database/list', 'call', {})
+          .timeout(const Duration(seconds: 30));
       return (response as List<dynamic>).map((db) => db.toString()).toList();
     } finally {
       client.close();

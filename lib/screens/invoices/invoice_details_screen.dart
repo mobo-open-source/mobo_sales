@@ -4051,19 +4051,17 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                               }
                             }
                           } else if (value == 'send_whatsapp') {
-                            await PDFGenerator.sendInvoiceViaWhatsApp(
-                              dialogContext,
-                              provider.invoice!,
-                            );
-
                             try {
-                              if (mounted && Navigator.of(context).canPop()) {
-                                Navigator.of(
-                                  context,
-                                  rootNavigator: true,
-                                ).pop();
+                              await PDFGenerator.sendInvoiceViaWhatsApp(
+                                dialogContext,
+                                provider.invoice!,
+                              );
+                            } finally {
+                              if (dialogContext.mounted) {
+                                final navigator = Navigator.of(dialogContext);
+                                if (navigator.canPop()) navigator.pop();
                               }
-                            } catch (e) {}
+                            }
                           } else {
                             try {
                               await PDFGenerator.generateInvoicePdf(

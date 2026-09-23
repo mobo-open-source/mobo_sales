@@ -1987,7 +1987,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
               ..onTap = () async {
                 if (await canLaunchUrl(launchUri!)) {
                   await launchUrl(
-                    launchUri,
+                    launchUri!,
                     mode: LaunchMode.externalApplication,
                   );
                 } else {

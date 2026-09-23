@@ -43,6 +43,33 @@ class _TotpPageState extends State<TotpPage> {
   bool _credentialsInjected = false;
   bool _isSessionExtracted = false;
   bool _loginSuccess = false;
+  bool _cookiesCleared = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _clearStaleCookies();
+  }
+
+  /// Drops any cookie this device already holds for the target server before
+  /// the login page loads.
+  ///
+  /// `clearCache` on the WebView settings clears the HTTP cache, not cookies.
+  /// Odoo's "remember this device" sets a long-lived `td_id` that lets the
+  /// TOTP step finalize a session without asking for a code, and a stale
+  /// `session_id` can land the WebView straight on an authenticated page. In
+  /// either case this screen would report a verified sign-in for a code it
+  /// never actually checked.
+  Future<void> _clearStaleCookies() async {
+    try {
+      final manager = CookieManager.instance();
+      final uri = WebUri(widget.serverUrl);
+      for (final cookie in await manager.getCookies(url: uri)) {
+        await manager.deleteCookie(url: uri, name: cookie.name);
+      }
+    } catch (_) {}
+    if (mounted) setState(() => _cookiesCleared = true);
+  }
 
   /// Whether [url] is a signed-in Odoo page.
   ///
@@ -88,88 +115,97 @@ class _TotpPageState extends State<TotpPage> {
           Positioned.fill(
             child: Opacity(
               opacity: 0.0,
-              child: InAppWebView(
-                initialUrlRequest: URLRequest(
-                  url: WebUri(
-                    '${widget.serverUrl}/web/login?db=${widget.database}',
-                  ),
-                ),
-                initialSettings: InAppWebViewSettings(
-                  javaScriptEnabled: true,
-                  cacheEnabled: false,
-                  clearCache: true,
-                  userAgent: OdooSessionManager.USER_AGENT,
-                  useHybridComposition: true,
-                  allowContentAccess: true,
-                  allowFileAccess: true,
-                  mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
-                  forceDark: ForceDark.AUTO,
-                  disableDefaultErrorPage: true,
-                ),
-                onWebViewCreated: (controller) {
-                  _webController = controller;
-                },
-                onReceivedServerTrustAuthRequest:
-                    (controller, challenge) async {
-                      return ServerTrustAuthResponse(
-                        action: ServerTrustAuthResponseAction.PROCEED,
-                      );
-                    },
-                onReceivedError: (controller, request, error) {
-                  if (mounted) {
-                    setState(() {
-                      _loading = false;
-                      _error = 'Failed to load: ${error.description}';
-                    });
-                  }
-                },
-                onLoadStop: (controller, url) async {
-                  final urlStr = url?.toString() ?? '';
+              child: !_cookiesCleared
+                  ? const SizedBox.shrink()
+                  : InAppWebView(
+                      initialUrlRequest: URLRequest(
+                        url: WebUri(
+                          '${widget.serverUrl}/web/login?db=${widget.database}',
+                        ),
+                      ),
+                      initialSettings: InAppWebViewSettings(
+                        javaScriptEnabled: true,
+                        cacheEnabled: false,
+                        clearCache: true,
+                        userAgent: OdooSessionManager.USER_AGENT,
+                        useHybridComposition: true,
+                        allowContentAccess: true,
+                        allowFileAccess: true,
+                        mixedContentMode:
+                            MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+                        forceDark: ForceDark.AUTO,
+                        disableDefaultErrorPage: true,
+                      ),
+                      onWebViewCreated: (controller) {
+                        _webController = controller;
+                      },
+                      onReceivedServerTrustAuthRequest:
+                          (controller, challenge) async {
+                            return ServerTrustAuthResponse(
+                              action: ServerTrustAuthResponseAction.PROCEED,
+                            );
+                          },
+                      onReceivedError: (controller, request, error) {
+                        if (mounted) {
+                          setState(() {
+                            _loading = false;
+                            _error = 'Failed to load: ${error.description}';
+                          });
+                        }
+                      },
+                      onLoadStop: (controller, url) async {
+                        final urlStr = url?.toString() ?? '';
 
-                  if (urlStr.contains('/web/database/selector') ||
-                      urlStr.contains('/web/database/manager')) {
-                    await _handleDatabaseSelector();
-                    return;
-                  }
+                        if (urlStr.contains('/web/database/selector') ||
+                            urlStr.contains('/web/database/manager')) {
+                          await _handleDatabaseSelector();
+                          return;
+                        }
 
-                  if (urlStr.contains('/web/login') && !_credentialsInjected) {
-                    await Future.delayed(const Duration(milliseconds: 800));
-                    await _injectCredentials();
-                    return;
-                  }
+                        if (urlStr.contains('/web/login') &&
+                            !_credentialsInjected) {
+                          await Future.delayed(
+                            const Duration(milliseconds: 800),
+                          );
+                          await _injectCredentials();
+                          return;
+                        }
 
-                  if (urlStr.contains('/web/login/totp') ||
-                      urlStr.contains('totp_token')) {
-                    if (mounted) {
-                      setState(() {
-                        _loading = false;
-                      });
-                    }
-                    await Future.delayed(const Duration(milliseconds: 600));
-                    await _focusTotpField();
-                    return;
-                  }
+                        if (urlStr.contains('/web/login/totp') ||
+                            urlStr.contains('totp_token')) {
+                          if (mounted) {
+                            setState(() {
+                              _loading = false;
+                            });
+                          }
+                          await Future.delayed(
+                            const Duration(milliseconds: 600),
+                          );
+                          await _focusTotpField();
+                          return;
+                        }
 
-                  if (_isSignedInUrl(urlStr)) {
-                    final sessionInfo = await controller.evaluateJavascript(
-                      source: """
+                        if (_isSignedInUrl(urlStr)) {
+                          final sessionInfo = await controller
+                              .evaluateJavascript(
+                                source: """
                       (function () {
                         return odoo && odoo.session_info ? odoo.session_info : null;
                       })();
                       """,
-                    );
-                    final success = await _saveSessionData(
-                      sessionInfo: sessionInfo,
-                    );
-                    if (success && mounted) {
-                      setState(() {
-                        _loginSuccess = true;
-                        _loading = false;
-                      });
-                    }
-                  }
-                },
-              ),
+                              );
+                          final success = await _saveSessionData(
+                            sessionInfo: sessionInfo,
+                          );
+                          if (success && mounted) {
+                            setState(() {
+                              _loginSuccess = true;
+                              _loading = false;
+                            });
+                          }
+                        }
+                      },
+                    ),
             ),
           ),
 

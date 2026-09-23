@@ -155,6 +155,14 @@ class InvoiceDetailsService {
   }
 
   /// Resets the invoice with [invoiceId] back to draft state.
+  ///
+  /// `button_draft` is the method on every supported release. The
+  /// `action_draft` retry exists only for a server that does not define it,
+  /// so any other failure is rethrown rather than retried: Odoo refuses this
+  /// for real reasons — a reconciled payment, a posted entry lock date,
+  /// missing rights — and swallowing that to call a second method replaced
+  /// the actual explanation with an unrelated one, leaving the user with an
+  /// error that named a method they had never heard of.
   Future<void> resetToDraft(int invoiceId) async {
     try {
       await OdooSessionManager.safeCallKw({
@@ -166,6 +174,7 @@ class InvoiceDetailsService {
         'kwargs': {},
       });
     } catch (e) {
+      if (!_isMissingMethodError(e)) rethrow;
       await OdooSessionManager.safeCallKw({
         'model': 'account.move',
         'method': 'action_draft',
@@ -175,6 +184,15 @@ class InvoiceDetailsService {
         'kwargs': {},
       });
     }
+  }
+
+  /// Whether [error] means the server does not define the method at all.
+  static bool _isMissingMethodError(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('has no attribute') ||
+        message.contains('object has no method') ||
+        message.contains('is not a valid action') ||
+        message.contains('attributeerror');
   }
 
   /// Cancels the invoice with [invoiceId].

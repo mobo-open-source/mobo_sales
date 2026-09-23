@@ -58,11 +58,22 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
   DateTime? _initialValidityDate;
   Timer? _debounce;
 
+  /// Set once the quotation has been written to the server.
+  ///
+  /// Without it the discard prompt fired after a *successful* save: the
+  /// customer and lines are naturally still populated at that point, and the
+  /// check below reads any content at all as unsaved work.
+  bool _savedSuccessfully = false;
+
   @override
   bool get hasUnsavedData {
-    if (_isInitialLoad) return false;
+    if (_isInitialLoad || _savedSuccessfully) return false;
 
-    return _selectedCustomer != null ||
+    final customerChanged =
+        _selectedCustomer != null &&
+        _selectedCustomer?.id != widget.customer?.id;
+
+    return customerChanged ||
         _quoteLines.isNotEmpty ||
         _notesController.text.trim().isNotEmpty ||
         _selectedPaymentTerm != null ||
@@ -171,6 +182,11 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
     _initialValidityDate = _validityDate;
 
     _isInitialLoad = widget.customer != null;
+
+    if (widget.customer != null && widget.quotationToEdit == null) {
+      _selectedCustomer = widget.customer;
+      _customerSearchController.text = widget.customer!.name;
+    }
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final futures = <Future<void>>[];
@@ -1411,6 +1427,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                     });
 
                     await Future.delayed(const Duration(milliseconds: 100));
+                    _savedSuccessfully = true;
                     Navigator.pop(context, true);
                   }
                   return;
@@ -1510,6 +1527,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
           Navigator.of(dialogContext!).pop();
         }
         if (mounted) {
+          _savedSuccessfully = true;
           Navigator.pop(context, true);
         }
       } else {
@@ -1631,6 +1649,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
             await showQuotationCreatedConfettiDialog(context, quotationName);
 
             if (mounted) {
+              _savedSuccessfully = true;
               ReviewService().checkAndShowRating(context);
               Navigator.pop(context, true);
             }

@@ -84,9 +84,20 @@ class _DashboardScreenState extends State<DashboardScreen>
   /// while leaving the account untouched.
   String? _loadedAccountKey;
 
+  /// Identity of the data currently on screen: account, active company and
+  /// the allowed-companies set.
+  ///
+  /// The allowed set is part of the scope because Odoo filters records by it,
+  /// so picking extra companies in the multi-company sheet changes every
+  /// figure here without changing the active company. Keying on the active
+  /// company alone made that look like "nothing changed" and the dashboard
+  /// kept showing the previous selection's numbers. Sorted so a reordering —
+  /// the active company is sent first — is not mistaken for a real change.
   static String _currentDataScopeKey() {
     final session = SessionService.instance.currentSession;
-    return '${_getCurrentAccountKey()}_c${session?.selectedCompanyId ?? ''}';
+    final allowed = [...?session?.allowedCompanyIds]..sort();
+    return '${_getCurrentAccountKey()}_c${session?.selectedCompanyId ?? ''}'
+        '_a${allowed.join(',')}';
   }
 
   bool isLoadingDashboardAll = true;
@@ -496,11 +507,14 @@ class _DashboardScreenState extends State<DashboardScreen>
           _isOffline = offline;
           _hasSession = hasSession;
 
-          if ((offline || !hasSession) && !(hasCounts || hasMetrics)) {
+          if (offline || !hasSession) {
             isLoadingDashboardAll = false;
-            _dashboardErrorMessage = offline
-                ? 'No internet connection. Please check your network and try again.'
-                : 'Session expired. Please log in again.';
+            isLoadingCharts = false;
+            if (!(hasCounts || hasMetrics)) {
+              _dashboardErrorMessage = offline
+                  ? 'No internet connection. Please check your network and try again.'
+                  : 'Session expired. Please log in again.';
+            }
           } else if (!offline && hasSession) {
             if (!hasUserData || !hasCounts || !hasMetrics) {
               isLoadingDashboardAll = !hasCounts;
@@ -536,8 +550,9 @@ class _DashboardScreenState extends State<DashboardScreen>
         } catch (e) {
           if (mounted) {
             setState(() {
-              _dashboardErrorMessage =
-                  'Failed to load dashboard data. Please try again.';
+              _dashboardErrorMessage = _isSessionExpiredError(e)
+                  ? 'Session expired. Please log in again.'
+                  : 'Failed to load dashboard data. Please try again.';
             });
           }
         } finally {
@@ -554,6 +569,17 @@ class _DashboardScreenState extends State<DashboardScreen>
     } finally {
       _isCheckingConnectivity = false;
     }
+  }
+
+  /// Whether [error] is the server telling us the session is no longer good.
+  ///
+  /// Matched on the message because the RPC layer surfaces it as a plain
+  /// `Exception('Odoo Session Expired: ...')` rather than a typed error.
+  static bool _isSessionExpiredError(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('session expired') ||
+        message.contains('session invalid') ||
+        message.contains('sessionexpired');
   }
 
   void _cacheDashboardCounts() {
@@ -1335,8 +1361,7 @@ class _DashboardScreenState extends State<DashboardScreen>
 
             final rawTotal =
                 _safeToNum(group['price_total'])?.toDouble() ?? 0.0;
-            final qty =
-                _safeToNum(group['product_uom_qty'])?.toDouble() ?? 0.0;
+            final qty = _safeToNum(group['product_uom_qty'])?.toDouble() ?? 0.0;
 
             final entry = byProduct.putIfAbsent(
               productId,
@@ -1356,9 +1381,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         }
 
         final ranked = byProduct.values.toList()
-          ..sort(
-            (a, b) => (b['qty'] as double).compareTo(a['qty'] as double),
-          );
+          ..sort((a, b) => (b['qty'] as double).compareTo(a['qty'] as double));
         final items = ranked.take(limit).toList();
 
         for (final item in items) {

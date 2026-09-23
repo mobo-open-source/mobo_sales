@@ -17,6 +17,7 @@ import '../providers/settings_provider.dart';
 import '../providers/last_opened_provider.dart';
 import '../providers/product_provider.dart';
 import '../providers/login_provider.dart';
+import '../utils/server_url_utils.dart';
 import 'field_validation_service.dart';
 import 'odoo_session_manager.dart';
 import 'odoo_api_service.dart';
@@ -137,13 +138,21 @@ class SessionService extends ChangeNotifier {
     return hasValidSession;
   }
 
+  /// Identity of the account the company list was last loaded for.
+  String? _companiesLoadedFor;
+
   Future<void> updateSession(OdooSessionModel newSession) async {
     _currentSession = newSession;
     _isServerUnreachable = false;
 
-    final context = navigatorKey.currentContext;
-    if (context != null && context.mounted) {
-      context.read<CompanyProvider>().initialize();
+    final accountKey =
+        '${newSession.serverUrl}|${newSession.database}|${newSession.userId}';
+    if (_companiesLoadedFor != accountKey) {
+      _companiesLoadedFor = accountKey;
+      final context = navigatorKey.currentContext;
+      if (context != null && context.mounted) {
+        context.read<CompanyProvider>().initialize();
+      }
     }
 
     _updateNamespacedProviders();
@@ -151,6 +160,7 @@ class SessionService extends ChangeNotifier {
   }
 
   Future<void> clearSession() async {
+    _companiesLoadedFor = null;
     _currentSession = null;
     _isServerUnreachable = false;
 
@@ -170,7 +180,7 @@ class SessionService extends ChangeNotifier {
 
       await _clearStoredAccountsData();
       await _clearPasswordCaches();
-      await _clearAllProviderData();
+      await _clearAllProviderData(clearCompanies: true);
       await clearSession();
     } finally {
       _isLoggingOut = false;
@@ -194,7 +204,14 @@ class SessionService extends ChangeNotifier {
     });
   }
 
-  Future<void> _clearAllProviderData() async {
+  /// Clears per-account cached data from every provider.
+  ///
+  /// [clearCompanies] belongs only to logout and account switching. The
+  /// company list is scoped to the *user*, not to the active company, so
+  /// wiping it on an ordinary data refresh empties the company selector —
+  /// which is exactly what a company switch did, since `switchCompany` ends
+  /// by calling `refreshAllData`.
+  Future<void> _clearAllProviderData({bool clearCompanies = false}) async {
     BiometricContextService().reset();
 
     final context = navigatorKey.currentContext;
@@ -238,10 +255,12 @@ class SessionService extends ChangeNotifier {
         await settingsProvider.clearData();
       } catch (e) {}
 
-      try {
-        final companyProvider = context.read<CompanyProvider>();
-        companyProvider.clearData();
-      } catch (e) {}
+      if (clearCompanies) {
+        try {
+          final companyProvider = context.read<CompanyProvider>();
+          companyProvider.clearData();
+        } catch (e) {}
+      }
 
       try {
         final settingsProvider = context.read<SettingsProvider>();
@@ -522,12 +541,29 @@ class SessionService extends ChangeNotifier {
     }
   }
 
+  /// Identity of a stored account: user, server and database.
+  ///
+  /// Every place that upserts, de-duplicates, matches or removes an account
+  /// builds its key through this, so they cannot disagree about whether two
+  /// rows are the same account. The URL is normalised because the same server
+  /// reaches storage spelled differently depending on which screen saved it.
+  static String storedAccountKey(Map<String, dynamic> account) {
+    final userId = account['userId']?.toString() ?? '';
+    final serverUrl = normalizeServerUrl(
+      (account['serverUrl'] ?? account['url'])?.toString(),
+    );
+    final database = account['database']?.toString() ?? '';
+    return '${userId}_${serverUrl}_$database';
+  }
+
   Future<void> _cleanupDuplicateAccounts() async {
     final uniqueAccounts = <String, Map<String, dynamic>>{};
 
     for (final account in _storedAccounts) {
       final userId = account['userId']?.toString() ?? '';
-      final serverUrl = account['serverUrl']?.toString() ?? '';
+      final serverUrl = normalizeServerUrl(
+        (account['serverUrl'] ?? account['url'])?.toString(),
+      );
       final database = account['database']?.toString() ?? '';
 
       if (userId.isEmpty || serverUrl.isEmpty || database.isEmpty) {
@@ -565,17 +601,20 @@ class SessionService extends ChangeNotifier {
       String userDisplayName = session.userLogin;
 
       try {
-        final client = await getClient();
-
-        if (client != null && session.userId != null) {
-          final userDetails = await client.callKw({
-            'model': 'res.users',
-            'method': 'read',
-            'args': [
-              [session.userId],
-              ['name', 'image_1920'],
-            ],
-          });
+        if (session.userId != null && session.sessionId.isNotEmpty) {
+          final userDetails = await OdooSessionManager.callKwWithSession(
+            url: normalizeServerUrl(session.serverUrl),
+            sessionId: session.sessionId,
+            payload: {
+              'model': 'res.users',
+              'method': 'read',
+              'args': [
+                [session.userId],
+                ['name', 'image_1920'],
+              ],
+              'kwargs': const {},
+            },
+          ).timeout(const Duration(seconds: 20));
 
           if (userDetails is List && userDetails.isNotEmpty) {
             final user = userDetails.first as Map;
@@ -595,7 +634,7 @@ class SessionService extends ChangeNotifier {
         'id': (session.userId ?? 0).toString(),
         'name': userDisplayName,
         'email': session.userLogin,
-        'url': session.serverUrl.trim(),
+        'url': normalizeServerUrl(session.serverUrl),
         'database': session.database,
         'username': session.userLogin,
         'isCurrent': true,
@@ -604,7 +643,7 @@ class SessionService extends ChangeNotifier {
 
         'userId': (session.userId ?? 0).toString(),
         'userName': userDisplayName,
-        'serverUrl': session.serverUrl,
+        'serverUrl': normalizeServerUrl(session.serverUrl),
         'password': password,
         'sessionId': session.sessionId,
       };
@@ -613,15 +652,10 @@ class SessionService extends ChangeNotifier {
         account['isCurrent'] = false;
       }
 
-      _storedAccounts.removeWhere((account) {
-        final sameUrlDb =
-            account['url'] == accountData['url'] &&
-            account['database'] == accountData['database'];
-        if (!sameUrlDb) return false;
-
-        final accId = account['id']?.toString() ?? '0';
-        return accId == '0' || accId == accountData['id'];
-      });
+      final incomingKey = storedAccountKey(accountData);
+      _storedAccounts.removeWhere(
+        (account) => storedAccountKey(account) == incomingKey,
+      );
 
       if (_storedAccounts.isEmpty) {
         _storedAccounts.add(accountData);
@@ -1021,7 +1055,7 @@ class SessionService extends ChangeNotifier {
 
       await _storeCurrentSessionIfNeeded(accountData);
 
-      await _clearAllProviderData();
+      await _clearAllProviderData(clearCompanies: true);
 
       String? password = await _retrievePasswordWithMultiplePatterns(
         accountData,

@@ -254,12 +254,56 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
     }
   }
 
+  SessionService? _sessionService;
+  String? _companyScopeKey;
+
+  /// Identity of the company scope this list's data belongs to.
+  ///
+  /// Both the active company and the allowed-companies set are included,
+  /// because Odoo filters `account.move` by both. Sorted so the active
+  /// company being sent first is not mistaken for a real change.
+  static String _currentCompanyScopeKey() {
+    final session = SessionService.instance.currentSession;
+    final allowed = [...?session?.allowedCompanyIds]..sort();
+    return 'c${session?.selectedCompanyId ?? ''}_a${allowed.join(',')}';
+  }
+
+  /// Refetches when the company scope changes.
+  ///
+  /// Unlike the customer, quotation and product lists, this screen holds its
+  /// own state instead of a provider, so `SessionService.refreshAllData()` —
+  /// which only refreshes those providers — never reached it. Switching
+  /// company left the previous company's invoices on screen until a manual
+  /// pull-to-refresh.
+  void _onCompanyScopeChanged() {
+    if (!mounted) return;
+    final key = _currentCompanyScopeKey();
+    if (key == _companyScopeKey) return;
+    _companyScopeKey = key;
+    if (!_isInitialized) return;
+    _cachedInvoices.clear();
+    _lastFetchTime = null;
+    setState(() {
+      _isLoading = true;
+      _currentPage = 0;
+      _hasMoreData = true;
+      _invoices = null;
+    });
+    _fetchInvoices();
+  }
+
   @override
   void initState() {
     super.initState();
 
     _scrollController.addListener(_onScroll);
     _searchController.addListener(_onSearchChanged);
+
+    try {
+      _sessionService = context.read<SessionService>();
+      _sessionService?.addListener(_onCompanyScopeChanged);
+      _companyScopeKey = _currentCompanyScopeKey();
+    } catch (_) {}
   }
 
   @override
@@ -343,6 +387,7 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
 
   @override
   void dispose() {
+    _sessionService?.removeListener(_onCompanyScopeChanged);
     _debounce?.cancel();
     _scrollController.dispose();
     _searchController.dispose();
