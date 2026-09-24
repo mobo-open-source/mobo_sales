@@ -2287,31 +2287,29 @@ class CustomerListScreenState extends State<CustomerListScreen>
         (key, value) => !provider.groupSummary.containsKey(key),
       );
 
-      return Expanded(
-        child: ListView.builder(
-          controller: _scrollController,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          itemCount: provider.groupSummary.keys.length,
-          itemBuilder: (context, index) {
-            try {
-              final groupKey = provider.groupSummary.keys.elementAt(index);
-              final count = provider.groupSummary[groupKey]!;
-              final isExpanded = _expandedGroups[groupKey] ?? false;
-              final loadedContacts = provider.loadedGroups[groupKey] ?? [];
+      return ListView.builder(
+        controller: _scrollController,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: provider.groupSummary.keys.length,
+        itemBuilder: (context, index) {
+          try {
+            final groupKey = provider.groupSummary.keys.elementAt(index);
+            final count = provider.groupSummary[groupKey]!;
+            final isExpanded = _expandedGroups[groupKey] ?? false;
+            final loadedContacts = provider.loadedGroups[groupKey] ?? [];
 
-              return _buildOdooStyleGroupTile(
-                groupKey,
-                count,
-                isExpanded,
-                loadedContacts,
-                provider,
-                isDark,
-              );
-            } catch (e) {
-              return const SizedBox.shrink();
-            }
-          },
-        ),
+            return _buildOdooStyleGroupTile(
+              groupKey,
+              count,
+              isExpanded,
+              loadedContacts,
+              provider,
+              isDark,
+            );
+          } catch (e) {
+            return const SizedBox.shrink();
+          }
+        },
       );
     } catch (e) {
       return Center(
@@ -2611,167 +2609,176 @@ class CustomerListScreenState extends State<CustomerListScreen>
                     top: Radius.circular(16),
                   ),
                 ),
-                child: SafeArea(
-                  child: Column(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 16,
-                        ),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                'Filter & Group By',
-                                style: theme.textTheme.titleMedium?.copyWith(
-                                  color: isDark ? Colors.white : Colors.black87,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w600,
+                child: Material(
+                  type: MaterialType.transparency,
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(16),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: SafeArea(
+                    child: Column(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 16,
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Filter & Group By',
+                                  style: theme.textTheme.titleMedium?.copyWith(
+                                    color: isDark
+                                        ? Colors.white
+                                        : Colors.black87,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                                 ),
                               ),
-                            ),
-                            IconButton(
-                              onPressed: () => Navigator.of(context).pop(),
-                              icon: Icon(
-                                Icons.close,
-                                color: isDark ? Colors.white : Colors.black54,
-                              ),
-                              splashRadius: 20,
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 16),
-                        decoration: BoxDecoration(
-                          color: isDark ? Colors.grey[800] : Colors.grey[100],
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: TabBar(
-                          indicator: BoxDecoration(
-                            color: theme.primaryColor,
-                            borderRadius: BorderRadius.circular(10),
-                            boxShadow: [
-                              BoxShadow(
-                                color: theme.primaryColor.withOpacity(0.3),
-                                blurRadius: 8,
-                                offset: const Offset(0, 2),
+                              IconButton(
+                                onPressed: () => Navigator.of(context).pop(),
+                                icon: Icon(
+                                  Icons.close,
+                                  color: isDark ? Colors.white : Colors.black54,
+                                ),
+                                splashRadius: 20,
                               ),
                             ],
                           ),
-                          indicatorPadding: const EdgeInsets.all(4),
-                          indicatorSize: TabBarIndicatorSize.tab,
-                          dividerColor: Colors.transparent,
-                          labelColor: Colors.white,
-                          unselectedLabelColor: isDark
-                              ? Colors.grey[400]
-                              : Colors.grey[600],
-                          labelStyle: const TextStyle(
-                            fontWeight: FontWeight.w600,
-                            fontSize: 14,
-                          ),
-                          unselectedLabelStyle: const TextStyle(
-                            fontWeight: FontWeight.w500,
-                            fontSize: 14,
-                          ),
-                          tabs: const [
-                            Tab(height: 48, text: 'Filter'),
-                            Tab(height: 48, text: 'Group By'),
-                          ],
                         ),
-                      ),
-                      const SizedBox(height: 16),
 
-                      Expanded(
-                        child: TabBarView(
-                          children: [
-                            _buildCustomerFilterTab(
-                              context,
-                              setDialogState,
-                              isDark,
-                              theme,
-                              provider,
-                              tempState,
+                        Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 16),
+                          decoration: BoxDecoration(
+                            color: isDark ? Colors.grey[800] : Colors.grey[100],
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: TabBar(
+                            indicator: BoxDecoration(
+                              color: theme.primaryColor,
+                              borderRadius: BorderRadius.circular(10),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: theme.primaryColor.withOpacity(0.3),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
                             ),
-                            _buildCustomerGroupByTab(
-                              context,
-                              setDialogState,
-                              isDark,
-                              theme,
-                              provider,
-                              tempState,
+                            indicatorPadding: const EdgeInsets.all(4),
+                            indicatorSize: TabBarIndicatorSize.tab,
+                            dividerColor: Colors.transparent,
+                            labelColor: Colors.white,
+                            unselectedLabelColor: isDark
+                                ? Colors.grey[400]
+                                : Colors.grey[600],
+                            labelStyle: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14,
                             ),
-                          ],
-                        ),
-                      ),
-
-                      Container(
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: isDark ? Colors.grey[850] : Colors.grey[50],
-                          border: Border(
-                            top: BorderSide(
-                              color: isDark
-                                  ? Colors.grey[700]!
-                                  : Colors.grey[200]!,
+                            unselectedLabelStyle: const TextStyle(
+                              fontWeight: FontWeight.w500,
+                              fontSize: 14,
                             ),
+                            tabs: const [
+                              Tab(height: 48, text: 'Filter'),
+                              Tab(height: 48, text: 'Group By'),
+                            ],
                           ),
                         ),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: () => _clearAllFilters(
-                                  setDialogState,
-                                  tempState,
-                                  provider,
-                                ),
-                                style: OutlinedButton.styleFrom(
-                                  foregroundColor: isDark
-                                      ? Colors.white
-                                      : Colors.black87,
-                                  side: BorderSide(
-                                    color: isDark
-                                        ? Colors.grey[600]!
-                                        : Colors.grey[300]!,
-                                  ),
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 12,
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                ),
-                                child: const Text('Clear All'),
+                        const SizedBox(height: 16),
+
+                        Expanded(
+                          child: TabBarView(
+                            children: [
+                              _buildCustomerFilterTab(
+                                context,
+                                setDialogState,
+                                isDark,
+                                theme,
+                                provider,
+                                tempState,
+                              ),
+                              _buildCustomerGroupByTab(
+                                context,
+                                setDialogState,
+                                isDark,
+                                theme,
+                                provider,
+                                tempState,
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            color: isDark ? Colors.grey[850] : Colors.grey[50],
+                            border: Border(
+                              top: BorderSide(
+                                color: isDark
+                                    ? Colors.grey[700]!
+                                    : Colors.grey[200]!,
                               ),
                             ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              flex: 2,
-                              child: ElevatedButton(
-                                onPressed: () => _applyFiltersAndGroupBy(
-                                  tempState,
-                                  provider,
-                                ),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: theme.primaryColor,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 12,
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: () => _clearAllFilters(
+                                    setDialogState,
+                                    tempState,
+                                    provider,
                                   ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: isDark
+                                        ? Colors.white
+                                        : Colors.black87,
+                                    side: BorderSide(
+                                      color: isDark
+                                          ? Colors.grey[600]!
+                                          : Colors.grey[300]!,
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 12,
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
                                   ),
+                                  child: const Text('Clear All'),
                                 ),
-                                child: const Text('Apply'),
                               ),
-                            ),
-                          ],
+                              const SizedBox(width: 12),
+                              Expanded(
+                                flex: 2,
+                                child: ElevatedButton(
+                                  onPressed: () => _applyFiltersAndGroupBy(
+                                    tempState,
+                                    provider,
+                                  ),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: theme.primaryColor,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 12,
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ),
+                                  child: const Text('Apply'),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               );
