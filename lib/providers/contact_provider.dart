@@ -5,10 +5,12 @@ import 'package:flutter/material.dart';
 import '../models/contact.dart';
 import '../services/odoo_session_manager.dart';
 import '../services/connectivity_service.dart';
+import '../services/data_change_bus.dart';
 import '../services/session_service.dart';
 import '../services/customer_service.dart';
 import '../services/field_validation_service.dart';
 import '../services/odoo_error_classifier.dart';
+import '../utils/quiet_reload_gate.dart';
 
 /// Manages the customer/contact list with pagination, filtering, grouping, and search.
 class ContactProvider with ChangeNotifier {
@@ -16,14 +18,46 @@ class ContactProvider with ChangeNotifier {
   final SessionService _sessionService;
   final CustomerService _customerService;
 
+  /// The Odoo generation of the connected server (see `odooGeneration`). The
+  /// list asks for different `res.partner` fields, and searches different
+  /// ones, from one generation to the next.
+  final Future<int> Function() _serverGeneration;
+
+  /// How long the provider lets customer changes settle before it re-reads the
+  /// list, so a burst of them (a create followed by an edit) is one read.
+  static const Duration changeDebounce = Duration(milliseconds: 350);
+
   ContactProvider({
     ConnectivityService? connectivityService,
     SessionService? sessionService,
     CustomerService? customerService,
+    Future<int> Function()? serverGeneration,
+    DataChangeBus? bus,
   }) : _connectivityService =
            connectivityService ?? ConnectivityService.instance,
        _sessionService = sessionService ?? SessionService.instance,
-       _customerService = customerService ?? CustomerService.instance;
+       _customerService = customerService ?? CustomerService.instance,
+       _serverGeneration =
+           serverGeneration ?? OdooSessionManager.serverGeneration {
+    _gate = QuietReloadGate(_refreshInPlace);
+    // A customer created, edited or archived anywhere in the app: bring the
+    // list up to date wherever it is shown, without a loading state.
+    _busSubscription = (bus ?? DataChangeBus.instance).listen(
+      where: (change) => change.entity == DataEntity.customer,
+      debounce: changeDebounce,
+      onChange: (_) => _gate.changed(debounce: changeDebounce),
+    );
+  }
+
+  late final QuietReloadGate _gate;
+  DataChangeSubscription? _busSubscription;
+  bool _disposed = false;
+
+  /// The search and filters the rows in [contacts] were read with. Kept apart
+  /// from the current ones, which [clearSearchState] resets without reading:
+  /// a quiet refresh must read what is on screen, not what was last asked for.
+  String _loadedQuery = '';
+  Map<String, dynamic>? _loadedFilters;
 
   List<Contact> _contacts = [];
   bool _isLoading = false;
@@ -67,7 +101,16 @@ class ContactProvider with ChangeNotifier {
   final Map<int, String> _categoryNameCache = {};
 
   final Set<String> _activeFilters = {};
-  bool _showActiveOnly = true;
+
+  /// Odoo hides archived partners on its own, so the list needs no "active"
+  /// filter; the one filter it does have is Odoo's "Archived" (`active = False`).
+  bool _showArchivedOnly = false;
+
+  /// Odoo's Customers list opens with the "Customer Invoices" facet
+  /// (`customer_rank > 0`) on, and lets the user take it off to see every
+  /// contact. It is a filter like any other: on shows it as active, off shows
+  /// nothing, and clearing the filters takes it off with the rest.
+  bool _showCustomersOnly = true;
   bool _showCompaniesOnly = false;
   bool _showIndividualsOnly = false;
   bool _showCreditBreachesOnly = false;
@@ -87,7 +130,8 @@ class ContactProvider with ChangeNotifier {
   DateTime? get lastFetchTime => _lastFetchTime;
 
   Set<String> get activeFilters => _activeFilters;
-  bool get showActiveOnly => _showActiveOnly;
+  bool get showArchivedOnly => _showArchivedOnly;
+  bool get showCustomersOnly => _showCustomersOnly;
   bool get showCompaniesOnly => _showCompaniesOnly;
   bool get showIndividualsOnly => _showIndividualsOnly;
   bool get showCreditBreachesOnly => _showCreditBreachesOnly;
@@ -106,7 +150,8 @@ class ContactProvider with ChangeNotifier {
 
   /// Applies one or more filter values to the current state without fetching.
   void setFilterState({
-    bool? showActiveOnly,
+    bool? showArchivedOnly,
+    bool? showCustomersOnly,
     bool? showCompaniesOnly,
     bool? showIndividualsOnly,
     bool? showCreditBreachesOnly,
@@ -115,7 +160,8 @@ class ContactProvider with ChangeNotifier {
     DateTime? startDate,
     DateTime? endDate,
   }) {
-    if (showActiveOnly != null) _showActiveOnly = showActiveOnly;
+    if (showArchivedOnly != null) _showArchivedOnly = showArchivedOnly;
+    if (showCustomersOnly != null) _showCustomersOnly = showCustomersOnly;
     if (showCompaniesOnly != null) _showCompaniesOnly = showCompaniesOnly;
     if (showIndividualsOnly != null) _showIndividualsOnly = showIndividualsOnly;
     if (showCreditBreachesOnly != null) {
@@ -131,7 +177,8 @@ class ContactProvider with ChangeNotifier {
   /// Resets all active filters to their defaults.
   void clearFilters() {
     _activeFilters.clear();
-    _showActiveOnly = true;
+    _showArchivedOnly = false;
+    _showCustomersOnly = false;
     _showCompaniesOnly = false;
     _showIndividualsOnly = false;
     _showCreditBreachesOnly = false;
@@ -192,7 +239,9 @@ class ContactProvider with ChangeNotifier {
     await _fetchSpecificPage();
   }
 
-  Future<void> _fetchSpecificPage() async {
+  Future<void> _fetchSpecificPage() => _gate.run(_fetchSpecificPageNow);
+
+  Future<void> _fetchSpecificPageNow() async {
     if (_isLoading || _isLoadingMore) return;
 
     if (!_connectivityService.isConnected || !_sessionService.hasValidSession) {
@@ -206,46 +255,19 @@ class ContactProvider with ChangeNotifier {
     notifyListeners();
 
     try {
-      List<dynamic> domain = _buildDomain(_currentSearchQuery, _currentFilters);
+      final generation = await _serverGeneration();
+      List<dynamic> domain = _buildDomain(
+        _currentSearchQuery,
+        _currentFilters,
+        generation,
+      );
 
-      final List<String> fieldsToFetch = [
-        'id',
-        'name',
-        'phone',
-        'email',
-        'street',
-        'street2',
-        'city',
-        'state_id',
-        'zip',
-        'country_id',
-        'image_128',
-        'is_company',
-        'company_name',
-        'company_id',
-        'active',
-        'type',
-        'user_id',
-        'category_id',
-        'create_date',
-        'write_date',
-        'credit_limit',
-        'credit',
-      ];
-
-      final result =
-          await FieldValidationService.executeWithFieldValidation<
-            List<Map<String, dynamic>>
-          >(
-            model: 'res.partner',
-            initialFields: fieldsToFetch,
-            apiCall: (currentFields) => _customerService.fetchContacts(
-              domain: domain,
-              fields: currentFields,
-              limit: _pageSize,
-              offset: _currentPage * _pageSize,
-            ),
-          );
+      final result = await _readContacts(
+        domain: domain,
+        generation: generation,
+        limit: _pageSize,
+        offset: _currentPage * _pageSize,
+      );
 
       final fetchedContacts = result
           .map((contactData) {
@@ -260,6 +282,8 @@ class ContactProvider with ChangeNotifier {
           .toList();
 
       _contacts = fetchedContacts;
+      _loadedQuery = _currentSearchQuery;
+      _loadedFilters = _currentFilters;
 
       if (_totalContacts > 0) {
         _hasMoreData = (_currentPage + 1) * _pageSize < _totalContacts;
@@ -306,6 +330,9 @@ class ContactProvider with ChangeNotifier {
         'kwargs': {
           'fields': ['id', 'credit', 'credit_limit'],
           'limit': _creditBreachScanLimit,
+          // Archived partners too: the list's own domain decides which of
+          // these ids may show, and "Archived + Credit Breaches" needs them.
+          'context': {'active_test': false},
         },
       });
 
@@ -331,15 +358,45 @@ class ContactProvider with ChangeNotifier {
     }
   }
 
+  /// One page of contacts as raw rows.
+  ///
+  /// The field list is the one this server generation has (see
+  /// [partnerReadFieldsFor]), and is pruned further when the server rejects a
+  /// field or the user may not read it (the credit fields need accounting
+  /// rights).
+  Future<List<Map<String, dynamic>>> _readContacts({
+    required List<dynamic> domain,
+    required int generation,
+    required int limit,
+    int offset = 0,
+  }) {
+    return FieldValidationService.executeWithFieldValidation<
+      List<Map<String, dynamic>>
+    >(
+      model: 'res.partner',
+      initialFields: partnerReadFieldsFor(kContactListFields, generation),
+      apiCall: (currentFields) => _customerService.fetchContacts(
+        domain: domain,
+        fields: currentFields,
+        limit: limit,
+        offset: offset,
+      ),
+    );
+  }
+
   List<dynamic> _buildDomain(
     String searchQuery,
     Map<String, dynamic>? filters,
+    int generation,
   ) {
     final List<dynamic> domain = [];
 
     if (filters != null) {
-      if (filters['showActiveOnly'] == true) {
-        domain.add(['active', '=', true]);
+      // No leaf at all for the normal list: with no `active` in the domain the
+      // server hides archived partners itself, and a leaf naming `active` is
+      // what switches that off (so the Archived filter can reach them).
+      if (filters['showArchivedOnly'] == true) {
+        domain.add(['active', '=', false]);
       }
       if (filters['showCompaniesOnly'] == true) {
         domain.add(['is_company', '=', true]);
@@ -384,10 +441,14 @@ class ContactProvider with ChangeNotifier {
       domain.add(['email', 'ilike', q]);
       domain.add('|');
       domain.add(['phone', 'ilike', q]);
-      domain.add(['company_name', 'ilike', q]);
+      domain.add(partnerCompanyLeaf(q, generation));
     }
 
-    domain.add(['customer_rank', '>', 0]);
+    // On by default, as in Odoo: no key at all (a read nobody filtered) is
+    // customers only, and only an explicit `false` takes the facet off.
+    if (filters?['showCustomersOnly'] != false) {
+      domain.add(['customer_rank', '>', 0]);
+    }
 
     return domain;
   }
@@ -415,11 +476,13 @@ class ContactProvider with ChangeNotifier {
         } catch (_) {}
       }
       if (requestId != _fetchSequence) return;
-      await _performFetchContacts(
-        requestId: requestId,
-        forceRefresh: forceRefresh,
-        searchQuery: searchQuery,
-        filters: filters,
+      await _gate.run(
+        () => _performFetchContacts(
+          requestId: requestId,
+          forceRefresh: forceRefresh,
+          searchQuery: searchQuery,
+          filters: filters,
+        ),
       );
     } finally {
       if (!completer.isCompleted) completer.complete();
@@ -481,48 +544,21 @@ class ContactProvider with ChangeNotifier {
     _contacts = [];
 
     try {
+      final generation = await _serverGeneration();
       await _resolveCreditBreachIds(_currentFilters);
       if (requestId != _fetchSequence) return;
-      List<dynamic> domain = _buildDomain(_currentSearchQuery, _currentFilters);
+      List<dynamic> domain = _buildDomain(
+        _currentSearchQuery,
+        _currentFilters,
+        generation,
+      );
 
-      final List<String> fieldsToFetch = [
-        'id',
-        'name',
-        'phone',
-        'email',
-        'street',
-        'street2',
-        'city',
-        'state_id',
-        'zip',
-        'country_id',
-        'image_128',
-        'is_company',
-        'company_name',
-        'company_id',
-        'active',
-        'type',
-        'user_id',
-        'category_id',
-        'create_date',
-        'write_date',
-        'credit_limit',
-        'credit',
-      ];
-
-      final listFuture =
-          FieldValidationService.executeWithFieldValidation<
-            List<Map<String, dynamic>>
-          >(
-            model: 'res.partner',
-            initialFields: fieldsToFetch,
-            apiCall: (currentFields) => _customerService.fetchContacts(
-              domain: domain,
-              fields: currentFields,
-              limit: _pageSize,
-              offset: _currentPage * _pageSize,
-            ),
-          );
+      final listFuture = _readContacts(
+        domain: domain,
+        generation: generation,
+        limit: _pageSize,
+        offset: _currentPage * _pageSize,
+      );
 
       (() async {
         try {
@@ -549,6 +585,8 @@ class ContactProvider with ChangeNotifier {
           .toList();
 
       _contacts = fetchedContacts;
+      _loadedQuery = _currentSearchQuery;
+      _loadedFilters = _currentFilters;
 
       if (_totalContacts > 0) {
         _hasMoreData = (_currentPage + 1) * _pageSize < _totalContacts;
@@ -599,6 +637,146 @@ class ContactProvider with ChangeNotifier {
     );
   }
 
+  /// Re-reads what the list shows, in place, with no loading state.
+  ///
+  /// The same search, filters, page (or groups) are read again and the rows are
+  /// swapped in one step when they arrive, so the list neither blanks out nor
+  /// jumps, and the scroll position stays where it was. A read that fails
+  /// leaves the rows as they are. Nothing happens before the first load, or
+  /// while a full load is running (which replaces the rows itself).
+  ///
+  /// Customer changes announced on the [DataChangeBus] call this by themselves;
+  /// a screen calls it directly to be sure, after it has changed one.
+  Future<void> refreshQuietly() => _gate.run(_refreshInPlace);
+
+  Future<void> _refreshInPlace() async {
+    if (_disposed || !_hasInitiallyLoaded) return;
+    if (_isLoading || _isSearching) return;
+    if (!_connectivityService.isConnected || !_sessionService.hasValidSession) {
+      return;
+    }
+
+    final sequence = _fetchSequence;
+    final page = _currentPage;
+    final groupBy = _isGrouped ? _selectedGroupBy : null;
+    bool superseded() =>
+        _disposed ||
+        sequence != _fetchSequence ||
+        _isLoading ||
+        _isSearching ||
+        page != _currentPage ||
+        groupBy != (_isGrouped ? _selectedGroupBy : null);
+
+    try {
+      final generation = await _serverGeneration();
+      await _resolveCreditBreachIds(_loadedFilters);
+      final domain = _buildDomain(_loadedQuery, _loadedFilters, generation);
+
+      int? total;
+      try {
+        total = await _customerService.getContactCount(domain);
+      } catch (_) {}
+
+      if (groupBy != null) {
+        await _refreshGroupsInPlace(
+          domain: domain,
+          generation: generation,
+          groupBy: groupBy,
+          total: total,
+          superseded: superseded,
+        );
+        return;
+      }
+
+      var shownPage = page;
+      var rows = await _readContacts(
+        domain: domain,
+        generation: generation,
+        limit: _pageSize,
+        offset: page * _pageSize,
+      );
+      if (rows.isEmpty && page > 0 && total != null && total > 0) {
+        // The customers on this page were archived or deleted: show the last
+        // page that is left rather than an empty one.
+        shownPage = (total - 1) ~/ _pageSize;
+        rows = await _readContacts(
+          domain: domain,
+          generation: generation,
+          limit: _pageSize,
+          offset: shownPage * _pageSize,
+        );
+      }
+      if (superseded()) return;
+
+      _contacts = _contactsFrom(rows);
+      _currentPage = shownPage;
+      if (total != null) _totalContacts = total;
+      if (_totalContacts > 0) {
+        _hasMoreData = (_currentPage + 1) * _pageSize < _totalContacts;
+      } else {
+        _hasMoreData = _contacts.length == _pageSize;
+      }
+      _lastFetchTime = DateTime.now();
+      notifyListeners();
+    } catch (_) {
+      // Quiet: the rows already shown stay.
+    }
+  }
+
+  Future<void> _refreshGroupsInPlace({
+    required List<dynamic> domain,
+    required int generation,
+    required String groupBy,
+    required int? total,
+    required bool Function() superseded,
+  }) async {
+    if (total != null) _totalContacts = total;
+    await _fetchGroupSummary();
+
+    final keys = _loadedGroups.keys
+        .where(_groupSummary.containsKey)
+        .toList(growable: false);
+    final fresh = <String, List<Contact>>{};
+    for (final key in keys) {
+      final groupDomain = [...domain, ..._buildGroupDomain(key, groupBy)];
+      final rows = await _readContacts(
+        domain: groupDomain,
+        generation: generation,
+        limit: 1000,
+      );
+      fresh[key] = _contactsFrom(rows);
+    }
+    if (superseded()) return;
+
+    _loadedGroups
+      ..clear()
+      ..addAll(fresh);
+    notifyListeners();
+  }
+
+  List<Contact> _contactsFrom(List<Map<String, dynamic>> rows) {
+    final out = <Contact>[];
+    for (final row in rows) {
+      try {
+        out.add(Contact.fromJson(row));
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  /// Takes the customer with [id] out of the loaded rows at once, for a screen
+  /// that has just archived or deleted it; the quiet refresh that follows the
+  /// announcement settles the page and the totals.
+  void removeContact(int id) {
+    final before = _contacts.length;
+    _contacts.removeWhere((c) => c.id == id);
+    for (final rows in _loadedGroups.values) {
+      rows.removeWhere((c) => c.id == id);
+    }
+    if (_contacts.length != before && _totalContacts > 0) _totalContacts--;
+    notifyListeners();
+  }
+
   /// Loads the next page of contacts (alias for [goToNextPage]).
   Future<void> loadMoreContacts() async {
     await goToNextPage();
@@ -630,7 +808,12 @@ class ContactProvider with ChangeNotifier {
     if (!_isGrouped || _selectedGroupBy == null) return;
 
     try {
-      List<dynamic> domain = _buildDomain(_currentSearchQuery, _currentFilters);
+      final generation = await _serverGeneration();
+      List<dynamic> domain = _buildDomain(
+        _currentSearchQuery,
+        _currentFilters,
+        generation,
+      );
 
       final result = await _customerService.fetchGroupSummary(
         domain: domain,
@@ -678,37 +861,19 @@ class ContactProvider with ChangeNotifier {
     if (_loadedGroups.containsKey(groupKey)) return;
 
     try {
-      List<dynamic> domain = _buildDomain(_currentSearchQuery, _currentFilters);
+      final generation = await _serverGeneration();
+      List<dynamic> domain = _buildDomain(
+        _currentSearchQuery,
+        _currentFilters,
+        generation,
+      );
 
       final groupDomain = _buildGroupDomain(groupKey, _selectedGroupBy!);
       domain.addAll(groupDomain);
 
-      final result = await _customerService.fetchContacts(
+      final result = await _readContacts(
         domain: domain,
-        fields: [
-          'id',
-          'name',
-          'phone',
-          'email',
-          'street',
-          'street2',
-          'city',
-          'state_id',
-          'zip',
-          'country_id',
-          'image_128',
-          'is_company',
-          'company_name',
-          'company_id',
-          'active',
-          'type',
-          'user_id',
-          'category_id',
-          'create_date',
-          'write_date',
-          'credit_limit',
-          'credit',
-        ],
+        generation: generation,
         limit: 1000,
       );
 
@@ -1028,6 +1193,15 @@ class ContactProvider with ChangeNotifier {
     }
   }
 
+  @override
+  void dispose() {
+    _disposed = true;
+    _busSubscription?.cancel();
+    _busSubscription = null;
+    _gate.dispose();
+    super.dispose();
+  }
+
   Future<void> clearData() async {
     _contacts = [];
     _isLoading = false;
@@ -1041,6 +1215,8 @@ class ContactProvider with ChangeNotifier {
     _lastFetchTime = null;
     _isServerUnreachable = false;
     _hasInitiallyLoaded = false;
+    _loadedQuery = '';
+    _loadedFilters = null;
     _accessErrorMessage = null;
     _base64ImageCache.clear();
     _groupByOptions = {};

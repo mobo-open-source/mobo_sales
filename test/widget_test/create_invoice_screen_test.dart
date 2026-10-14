@@ -114,4 +114,22 @@ void main() {
     expect(find.text('Customer'), findsWidgets);
     expect(find.text('Invoice Details'), findsOneWidget);
   });
+
+  testWidgets('the screen takes the shared form empty when it opens and gives '
+      'it back when it closes', (WidgetTester tester) async {
+    await tester.pumpWidget(createWidgetUnderTest());
+    await tester.pump();
+
+    // Opened: whatever the last invoice left in the app-wide provider is
+    // cleared before this one shows anything.
+    final owner = verify(
+      () => mockInvoiceProvider.claimForm(captureAny()),
+    ).captured.single;
+    verifyNever(() => mockInvoiceProvider.releaseForm(any()));
+
+    // Closed: the same screen releases it, a frame later.
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    verify(() => mockInvoiceProvider.releaseForm(owner)).called(1);
+  });
 }

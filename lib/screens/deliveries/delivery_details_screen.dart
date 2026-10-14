@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:hugeicons/hugeicons.dart';
 import 'package:intl/intl.dart';
 import 'package:shimmer/shimmer.dart';
+import '../../models/delivery.dart';
 import '../../services/odoo_session_manager.dart';
 
 class DeliveryDetailsScreen extends StatefulWidget {
@@ -39,6 +40,11 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
         throw Exception('No active Odoo session');
       }
 
+      // The list of a picking's moves is `move_ids_without_package` up to
+      // Odoo 18 and `move_ids` from 19, where the old field no longer exists.
+      final generation = await OdooSessionManager.serverGeneration();
+      final movesField = pickingMovesField(generation);
+
       List<String> fieldsToFetch = [
         'name',
         'state',
@@ -51,7 +57,7 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
         'picking_type_id',
         'location_id',
         'location_dest_id',
-        'move_ids_without_package',
+        movesField,
         'note',
         'priority',
         'user_id',
@@ -100,10 +106,10 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
         List<Map<String, dynamic>> moves = [];
 
         List<dynamic>? moveIds;
-        if (deliveryData['move_ids_without_package'] != null &&
-            deliveryData['move_ids_without_package'] is List &&
-            (deliveryData['move_ids_without_package'] as List).isNotEmpty) {
-          moveIds = deliveryData['move_ids_without_package'];
+        if (deliveryData[movesField] != null &&
+            deliveryData[movesField] is List &&
+            (deliveryData[movesField] as List).isNotEmpty) {
+          moveIds = deliveryData[movesField];
         } else {
           try {
             final moveSearchResult = await client.callKw({
@@ -123,26 +129,32 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
         }
 
         if (moveIds != null && moveIds.isNotEmpty) {
-          try {
-            final moveResult = await client.callKw({
-              'model': 'stock.move',
-              'method': 'read',
-              'args': [moveIds],
-              'kwargs': {
-                'fields': [
-                  'product_id',
-                  'product_uom_qty',
-                  'quantity',
-                  'product_uom',
-                  'state',
-                  'description_picking',
-                ],
-              },
-            });
-            if (moveResult is List) {
-              moves = moveResult.cast<Map<String, dynamic>>();
-            }
-          } catch (e) {}
+          // The unit of a move is `product_uom` up to Odoo 19 and `uom_id`
+          // from 20. A read naming a field the server lacks fails entirely,
+          // which left the product list empty, so try each candidate in turn.
+          for (final uomField in stockMoveUomFields(generation)) {
+            try {
+              final moveResult = await client.callKw({
+                'model': 'stock.move',
+                'method': 'read',
+                'args': [moveIds],
+                'kwargs': {
+                  'fields': [
+                    'product_id',
+                    'product_uom_qty',
+                    'quantity',
+                    uomField,
+                    'state',
+                    'description_picking',
+                  ],
+                },
+              });
+              if (moveResult is List) {
+                moves = moveResult.cast<Map<String, dynamic>>();
+              }
+              break;
+            } catch (e) {}
+          }
         }
 
         if (!mounted) return;
@@ -604,12 +616,9 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
     final productName = _safeString(move['product_id']);
     final demandQty = move['product_uom_qty'] ?? 0;
     final doneQty = move['quantity'] ?? 0;
-    final uom =
-        move['product_uom'] != null &&
-            move['product_uom'] is List &&
-            (move['product_uom'] as List).length > 1
-        ? (move['product_uom'] as List)[1]
-        : 'Units';
+    // `product_uom` up to Odoo 19, `uom_id` from 20.
+    final uomValue = move['product_uom'] ?? move['uom_id'];
+    final uom = uomValue is List && uomValue.length > 1 ? uomValue[1] : 'Units';
     final state = move['state'] ?? 'draft';
 
     Color stateColor;

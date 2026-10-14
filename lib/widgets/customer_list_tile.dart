@@ -74,7 +74,7 @@ class CustomerListTile extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          contact.name,
+                          contact.listName,
                           style: TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w600,

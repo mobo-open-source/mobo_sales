@@ -8,7 +8,9 @@ import '../../models/payment.dart';
 import '../../services/payment_service.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../widgets/custom_date_picker.dart';
-import '../../widgets/custom_dropdown.dart';
+import '../../shared/widgets/mobo/mobo_bottom_action_bar.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../../shared/widgets/mobo/mobo_select_form_field.dart';
 import '../../widgets/custom_text_field.dart';
 import '../../widgets/enhanced_payment_status_badge.dart';
 import '../../widgets/custom_snackbar.dart';
@@ -325,11 +327,7 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
             'args': [
               [
                 ['partner_id', '=', partnerId],
-                [
-                  'state',
-                  'in',
-                  ['posted', 'sent', 'reconciled'],
-                ],
+                ['state', 'in', Payment.confirmedStates],
                 ['payment_type', '=', 'inbound'],
               ],
               [
@@ -367,7 +365,7 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
             paymentData['reconciliation_status'] =
                 paymentData['is_reconciled'] == true ? 'complete' : 'pending';
             paymentData['requires_manual_reconciliation'] =
-                paymentData['state'] == 'posted' &&
+                Payment.isPostedState(paymentData['state']) &&
                 paymentData['is_reconciled'] != true;
             paymentData['reconciled_amount'] =
                 paymentData['is_reconciled'] == true
@@ -525,7 +523,15 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
               );
 
               if (mounted && !_isDisposed) {
-                Navigator.pop(context, {'success': true, 'forceRefresh': true});
+                // Not "success": the payment may not have gone through, so the
+                // invoice page must reload and report what it finds, not
+                // announce a recorded payment. The warning above is not a
+                // route, so it stays up over the page this pops back to.
+                Navigator.pop(context, {
+                  'success': false,
+                  'forceRefresh': true,
+                  'processing': true,
+                });
               }
             } else {
               _showErrorSnackBar(result.errorMessage ?? 'Payment failed');
@@ -684,37 +690,38 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
 
                         if (_showPaymentDifference)
                           _buildPaymentDifferenceCard(isDark),
-
-                        const SizedBox(height: 30),
-
-                        SizedBox(
-                          width: double.infinity,
-                          height: 50,
-                          child: ElevatedButton.icon(
-                            onPressed: _recordQuickPayment,
-                            icon: const Icon(HugeIcons.strokeRoundedPayment02),
-                            label: Text(
-                              'Record Payment',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                                color: isDark ? Colors.white70 : Colors.white,
-                              ),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: theme.primaryColor,
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                          ),
-                        ),
                       ],
                     ),
                   ),
                 ),
               ),
       ),
+      bottomNavigationBar: _isLoading
+          ? null
+          : MoboBottomActionBar(
+              child: SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton.icon(
+                  onPressed: _recordQuickPayment,
+                  icon: const Icon(HugeIcons.strokeRoundedPayment02),
+                  label: Text(
+                    'Record Payment',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: isDark ? Colors.white70 : Colors.white,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: theme.primaryColor,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ),
+            ),
     );
   }
 
@@ -989,33 +996,23 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
   }
 
   Widget _buildPaymentDetailsCard(bool isDark) {
-    List<DropdownMenuItem<String>> paymentItems = [
-      DropdownMenuItem(
+    final paymentItems = <MoboOption<String>>[
+      MoboOption<String>(
         value: 'bank',
-        child: Row(
-          children: [
-            Icon(
-              HugeIcons.strokeRoundedCreditCard,
-              color: isDark ? Colors.grey[400] : Colors.grey[600],
-              size: 20,
-            ),
-            const SizedBox(width: 8),
-            const Text('Bank Transfer'),
-          ],
+        label: 'Bank Transfer',
+        leading: Icon(
+          HugeIcons.strokeRoundedCreditCard,
+          color: isDark ? Colors.grey[400] : Colors.grey[600],
+          size: 20,
         ),
       ),
-      DropdownMenuItem(
+      MoboOption<String>(
         value: 'cash',
-        child: Row(
-          children: [
-            Icon(
-              HugeIcons.strokeRoundedMoney01,
-              color: isDark ? Colors.grey[400] : Colors.grey[600],
-              size: 20,
-            ),
-            const SizedBox(width: 8),
-            const Text('Cash'),
-          ],
+        label: 'Cash',
+        leading: Icon(
+          HugeIcons.strokeRoundedMoney01,
+          color: isDark ? Colors.grey[400] : Colors.grey[600],
+          size: 20,
         ),
       ),
     ];
@@ -1052,6 +1049,7 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
             showBorder: false,
             controller: _amountController,
             labelText: 'Payment Amount',
+            isRequired: true,
             validator: (value) {
               if (value == null || value.isEmpty) {
                 return 'Please enter an amount';
@@ -1066,10 +1064,10 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
           ),
           const SizedBox(height: 16),
 
-          CustomDropdownField(
-            showBorder: false,
+          MoboSelectFormField<String>(
             value: _paymentMethod,
-            labelText: 'Payment Method',
+            label: 'Payment Method',
+            isRequired: true,
             onChanged: (value) {
               if (value != null) {
                 setState(() => _paymentMethod = value);
@@ -1081,8 +1079,7 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
               }
               return null;
             },
-            items: paymentItems,
-            isDark: false,
+            options: paymentItems,
           ),
           const SizedBox(height: 16),
 
@@ -1429,57 +1426,11 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
                     ),
                     const SizedBox(height: 24),
 
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextButton(
-                            onPressed: () => Navigator.of(context).pop(false),
-                            style: TextButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                                side: BorderSide(
-                                  color: isDark
-                                      ? Colors.grey[600]!
-                                      : Colors.grey[300]!,
-                                ),
-                              ),
-                            ),
-                            child: Text(
-                              'Cancel',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                color: isDark
-                                    ? Colors.grey[300]
-                                    : Colors.grey[700],
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: () => Navigator.of(context).pop(true),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: theme.primaryColor,
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              elevation: 2,
-                            ),
-                            child: Text(
-                              'Confirm',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
+                    MoboDialogButtons(
+                      secondaryLabel: 'Cancel',
+                      onSecondary: () => Navigator.of(context).pop(false),
+                      primaryLabel: 'Confirm',
+                      onPrimary: () => Navigator.of(context).pop(true),
                     ),
                   ],
                 ),

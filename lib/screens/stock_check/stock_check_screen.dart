@@ -9,6 +9,7 @@ import 'package:hugeicons/hugeicons.dart';
 import 'package:odoo_rpc/odoo_rpc.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:provider/provider.dart';
+import '../../models/product.dart' show productSearchDomain;
 import '../../services/odoo_session_manager.dart';
 import '../../services/connectivity_service.dart';
 import '../../services/session_service.dart';
@@ -22,6 +23,7 @@ import '../../widgets/product_list_tile.dart';
 import 'package:flutter/services.dart';
 import '../../services/odoo_error_classifier.dart';
 import '../../widgets/list_search_bar.dart';
+import 'inventory_details_screen.dart';
 
 class StockCheckPage extends StatefulWidget {
   const StockCheckPage({super.key});
@@ -669,367 +671,329 @@ class _StockCheckPageState extends State<StockCheckPage> {
     }
   }
 
+  /// Reads the stock of one variant. A failure is thrown, not answered with
+  /// zeros: the details page shows it and offers a retry.
   Future<Map<String, dynamic>> _fetchInventory(int productId) async {
-    try {
-      final client = await OdooSessionManager.getClient();
-      if (client == null) {
-        throw Exception('Failed to get Odoo client');
+    final client = await OdooSessionManager.getClient();
+    if (client == null) {
+      throw Exception('Failed to get Odoo client');
+    }
+
+    final locationResult = await client.callKw({
+      'model': 'stock.location',
+      'method': 'search_read',
+      'args': [[]],
+      'kwargs': {
+        'fields': ['id', 'complete_name', 'usage'],
+      },
+      'context': _companyId != null ? {'company_id': _companyId} : {},
+    });
+
+    final locationUsageMap = <String, String>{};
+    final internalLocations = <String>[];
+
+    for (var loc in locationResult) {
+      final locationName = loc['complete_name'] as String;
+      final usage = loc['usage'] as String;
+      locationUsageMap[locationName] = usage;
+
+      if (usage == 'internal') {
+        internalLocations.add(locationName);
       }
+    }
 
-      final locationResult = await client.callKw({
-        'model': 'stock.location',
-        'method': 'search_read',
-        'args': [[]],
-        'kwargs': {
-          'fields': ['id', 'complete_name', 'usage'],
-        },
-        'context': _companyId != null ? {'company_id': _companyId} : {},
-      });
-
-      final locationUsageMap = <String, String>{};
-      final internalLocations = <String>[];
-
-      for (var loc in locationResult) {
-        final locationName = loc['complete_name'] as String;
-        final usage = loc['usage'] as String;
-        locationUsageMap[locationName] = usage;
-
-        if (usage == 'internal') {
-          internalLocations.add(locationName);
-        }
-      }
-
-      final stockQuantResult = await client.callKw({
-        'model': 'stock.quant',
-        'method': 'search_read',
-        'args': [
-          [
-            ['product_id', '=', productId],
-          ],
+    final stockQuantResult = await client.callKw({
+      'model': 'stock.quant',
+      'method': 'search_read',
+      'args': [
+        [
+          ['product_id', '=', productId],
         ],
-        'kwargs': {
-          'fields': ['location_id', 'quantity', 'reserved_quantity'],
-        },
-        'context': _companyId != null ? {'company_id': _companyId} : {},
-      });
+      ],
+      'kwargs': {
+        'fields': ['location_id', 'quantity', 'reserved_quantity'],
+      },
+      'context': _companyId != null ? {'company_id': _companyId} : {},
+    });
 
-      List<Map<String, dynamic>> stockDetails = [];
-      double quantTotalInStock = 0.0;
-      double totalAvailable = 0.0;
-      double totalReserved = 0.0;
+    List<Map<String, dynamic>> stockDetails = [];
+    double quantTotalInStock = 0.0;
+    double totalAvailable = 0.0;
+    double totalReserved = 0.0;
 
-      for (var quant in stockQuantResult) {
-        final locationName =
-            quant['location_id'] is List && quant['location_id'].length > 1
-            ? quant['location_id'][1]
-            : 'Unknown';
-        final locationId =
-            quant['location_id'] is List && quant['location_id'].length > 0
-            ? quant['location_id'][0]
-            : 'Unknown';
-        final quantity = (quant['quantity'] as num?)?.toDouble() ?? 0.0;
-        final reserved =
-            (quant['reserved_quantity'] as num?)?.toDouble() ?? 0.0;
-        final available = quantity - reserved;
+    for (var quant in stockQuantResult) {
+      final locationName =
+          quant['location_id'] is List && quant['location_id'].length > 1
+          ? quant['location_id'][1]
+          : 'Unknown';
+      final locationId =
+          quant['location_id'] is List && quant['location_id'].length > 0
+          ? quant['location_id'][0]
+          : 'Unknown';
+      final quantity = (quant['quantity'] as num?)?.toDouble() ?? 0.0;
+      final reserved = (quant['reserved_quantity'] as num?)?.toDouble() ?? 0.0;
+      final available = quantity - reserved;
 
-        String usage = locationUsageMap[locationName] ?? 'unknown';
+      String usage = locationUsageMap[locationName] ?? 'unknown';
 
-        bool shouldCountInTotals = false;
+      bool shouldCountInTotals = false;
 
-        if (usage == 'unknown') {
-          try {
-            final specificLocationResult = await client.callKw({
-              'model': 'stock.location',
-              'method': 'search_read',
-              'args': [
-                [
-                  ['id', '=', locationId],
-                ],
+      if (usage == 'unknown') {
+        try {
+          final specificLocationResult = await client.callKw({
+            'model': 'stock.location',
+            'method': 'search_read',
+            'args': [
+              [
+                ['id', '=', locationId],
               ],
-              'kwargs': {
-                'fields': ['usage', 'complete_name', 'location_id'],
-              },
-              'context': _companyId != null ? {'company_id': _companyId} : {},
-            });
+            ],
+            'kwargs': {
+              'fields': ['usage', 'complete_name', 'location_id'],
+            },
+            'context': _companyId != null ? {'company_id': _companyId} : {},
+          });
 
-            if (specificLocationResult.isNotEmpty) {
-              usage =
-                  specificLocationResult[0]['usage'] as String? ?? 'unknown';
-              locationUsageMap[locationName] = usage;
+          if (specificLocationResult.isNotEmpty) {
+            usage = specificLocationResult[0]['usage'] as String? ?? 'unknown';
+            locationUsageMap[locationName] = usage;
 
-              if (usage == 'unknown') {
-                final parentLocationId =
-                    specificLocationResult[0]['location_id'];
-                if (parentLocationId is List && parentLocationId.isNotEmpty) {
-                  final parentName = parentLocationId[1] as String;
+            if (usage == 'unknown') {
+              final parentLocationId = specificLocationResult[0]['location_id'];
+              if (parentLocationId is List && parentLocationId.isNotEmpty) {
+                final parentName = parentLocationId[1] as String;
 
-                  if (internalLocations.contains(parentName)) {
-                    usage = 'internal';
-                    shouldCountInTotals = true;
-                  }
+                if (internalLocations.contains(parentName)) {
+                  usage = 'internal';
+                  shouldCountInTotals = true;
                 }
               }
             }
-          } catch (e) {}
-        }
-
-        final isInternal = usage == 'internal';
-
-        shouldCountInTotals = isInternal;
-
-        if (usage == 'unknown') {
-          final locationNameLower = locationName.toLowerCase();
-
-          if (locationNameLower.contains('stock')) {
-            shouldCountInTotals = true;
-          } else if (locationNameLower.contains('warehouse') ||
-              locationNameLower.contains('wh/')) {
-            shouldCountInTotals = true;
-          } else if (locationNameLower.contains('customer') ||
-              locationNameLower.contains('supplier') ||
-              locationNameLower.contains('vendor')) {
-          } else {}
-        }
-
-        if (shouldCountInTotals) {
-          quantTotalInStock += quantity;
-          totalAvailable += available;
-          totalReserved += reserved;
-        }
-
-        stockDetails.add({
-          'warehouse': locationName,
-          'quantity': quantity,
-          'reserved_quantity': reserved,
-          'available': available,
-          'is_external': !shouldCountInTotals,
-          'location_type': usage,
-          'is_counted_in_totals': shouldCountInTotals,
-        });
-
-        if (!shouldCountInTotals) {
-          final countStatus = shouldCountInTotals ? 'counted' : 'not counted';
-        }
-      }
-
-      final productResult = await client.callKw({
-        'model': 'product.product',
-        'method': 'read',
-        'args': [
-          [productId],
-        ],
-        'kwargs': {
-          'fields': ['qty_available', 'virtual_available'],
-        },
-        'context': _companyId != null ? {'company_id': _companyId} : {},
-      });
-
-      final expectedStock = productResult.isNotEmpty
-          ? (productResult[0]['qty_available'] as num?)?.toDouble() ?? 0.0
-          : 0.0;
-      final expectedVirtual = productResult.isNotEmpty
-          ? (productResult[0]['virtual_available'] as num?)?.toDouble() ?? 0.0
-          : 0.0;
-
-      final totalInStock = expectedStock;
-      final forecastedStock = expectedVirtual;
-
-      final stockDifference = expectedStock - quantTotalInStock;
-      if (stockDifference != 0) {
-        if (stockDifference.abs() > 0.1) {
-          for (var stock in stockDetails) {
-            if (stock['is_counted_in_totals'] == false &&
-                stock['location_type'] == 'unknown') {
-              final stockQuantity =
-                  (stock['quantity'] as num?)?.toDouble() ?? 0.0;
-            }
           }
-        }
-      } else {}
+        } catch (e) {}
+      }
 
-      final incomingMoveResult = await client.callKw({
-        'model': 'stock.move',
-        'method': 'search_read',
-        'args': [
-          [
-            ['product_id', '=', productId],
-            [
-              'state',
-              'in',
-              ['confirmed', 'waiting', 'assigned', 'partially_available'],
-            ],
-            ['location_dest_id.usage', '=', 'internal'],
-            ['location_id.usage', '!=', 'internal'],
-          ],
-        ],
-        'kwargs': {
-          'fields': [
-            'id',
-            'product_uom_qty',
-            'move_line_ids',
-            'quantity',
-            'date',
-            'location_id',
-            'location_dest_id',
-            'state',
-          ],
-        },
-        'context': _companyId != null ? {'company_id': _companyId} : {},
+      final isInternal = usage == 'internal';
+
+      shouldCountInTotals = isInternal;
+
+      if (usage == 'unknown') {
+        final locationNameLower = locationName.toLowerCase();
+
+        if (locationNameLower.contains('stock')) {
+          shouldCountInTotals = true;
+        } else if (locationNameLower.contains('warehouse') ||
+            locationNameLower.contains('wh/')) {
+          shouldCountInTotals = true;
+        } else if (locationNameLower.contains('customer') ||
+            locationNameLower.contains('supplier') ||
+            locationNameLower.contains('vendor')) {
+        } else {}
+      }
+
+      if (shouldCountInTotals) {
+        quantTotalInStock += quantity;
+        totalAvailable += available;
+        totalReserved += reserved;
+      }
+
+      stockDetails.add({
+        'warehouse': locationName,
+        'quantity': quantity,
+        'reserved_quantity': reserved,
+        'available': available,
+        'is_external': !shouldCountInTotals,
+        'location_type': usage,
+        'is_counted_in_totals': shouldCountInTotals,
       });
-
-      final outgoingMoveResult = await client.callKw({
-        'model': 'stock.move',
-        'method': 'search_read',
-        'args': [
-          [
-            ['product_id', '=', productId],
-            [
-              'state',
-              'in',
-              ['confirmed', 'waiting', 'assigned', 'partially_available'],
-            ],
-            ['location_id.usage', '=', 'internal'],
-            [
-              'location_dest_id.usage',
-              'in',
-              ['customer', 'production', 'inventory'],
-            ],
-          ],
-        ],
-        'kwargs': {
-          'fields': [
-            'id',
-            'product_uom_qty',
-            'move_line_ids',
-            'quantity',
-            'date',
-            'location_id',
-            'location_dest_id',
-            'state',
-          ],
-        },
-        'context': _companyId != null ? {'company_id': _companyId} : {},
-      });
-
-      final allMoveLineIds = <int>[];
-      for (var move in [...incomingMoveResult, ...outgoingMoveResult]) {
-        if (move['move_line_ids'] is List) {
-          allMoveLineIds.addAll(
-            (move['move_line_ids'] as List).whereType<int>(),
-          );
-        }
-      }
-
-      Map<int, double> moveLineQtyDone = {};
-      if (allMoveLineIds.isNotEmpty) {
-        final moveLineResult = await client.callKw({
-          'model': 'stock.move.line',
-          'method': 'search_read',
-          'args': [
-            [
-              ['id', 'in', allMoveLineIds],
-            ],
-            ['id', 'move_id', 'quantity'],
-          ],
-          'kwargs': {},
-          'context': _companyId != null ? {'company_id': _companyId} : {},
-        });
-        for (var line in moveLineResult) {
-          final moveId = (line['move_id'] is List && line['move_id'].isNotEmpty)
-              ? line['move_id'][0] as int
-              : null;
-          final qtyDone = (line['quantity'] as num?)?.toDouble() ?? 0.0;
-          if (moveId != null) {
-            moveLineQtyDone[moveId] =
-                (moveLineQtyDone[moveId] ?? 0.0) + qtyDone;
-          }
-        }
-      }
-
-      List<Map<String, dynamic>> incomingStock = [];
-      double totalIncoming = 0.0;
-      for (var move in incomingMoveResult) {
-        final moveId = move['id'] as int;
-        final quantityToReceive =
-            (move['product_uom_qty'] as num?)?.toDouble() ?? 0.0;
-        final qtyDone = moveLineQtyDone[moveId] ?? 0.0;
-        final remainingToReceive = quantityToReceive - qtyDone;
-        if (remainingToReceive > 0) {
-          totalIncoming += remainingToReceive;
-        }
-        incomingStock.add({
-          'quantity': remainingToReceive,
-          'expected_date': move['date'] ?? 'N/A',
-          'from_location':
-              move['location_id'] is List && move['location_id'].length > 1
-              ? move['location_id'][1]
-              : 'Unknown',
-          'to_location':
-              move['location_dest_id'] is List &&
-                  move['location_dest_id'].length > 1
-              ? move['location_dest_id'][1]
-              : 'Unknown',
-          'state': move['state'] ?? 'N/A',
-        });
-      }
-
-      List<Map<String, dynamic>> outgoingStock = [];
-      double totalOutgoing = 0.0;
-      for (var move in outgoingMoveResult) {
-        final moveId = move['id'] as int;
-        final quantityToDeliver =
-            (move['product_uom_qty'] as num?)?.toDouble() ?? 0.0;
-        final qtyDone = moveLineQtyDone[moveId] ?? 0.0;
-        final remainingToDeliver = quantityToDeliver - qtyDone;
-        if (remainingToDeliver > 0) {
-          totalOutgoing += remainingToDeliver;
-        }
-        outgoingStock.add({
-          'quantity': remainingToDeliver,
-          'date_expected': move['date'] ?? 'N/A',
-          'from_location':
-              move['location_id'] is List && move['location_id'].length > 1
-              ? move['location_id'][1]
-              : 'Unknown',
-          'to_location':
-              move['location_dest_id'] is List &&
-                  move['location_dest_id'].length > 1
-              ? move['location_dest_id'][1]
-              : 'Unknown',
-          'state': move['state'] ?? 'N/A',
-        });
-      }
-
-      return {
-        'stock_details': stockDetails,
-        'incoming_stock': incomingStock,
-        'outgoing_stock': outgoingStock,
-        'totalInStock': totalInStock,
-        'quantTotalInStock': quantTotalInStock,
-        'totalAvailable': totalAvailable,
-        'totalReserved': totalReserved,
-        'totalIncoming': totalIncoming,
-        'totalOutgoing': totalOutgoing,
-        'forecastedStock': forecastedStock,
-        'expectedStock': expectedStock,
-        'expectedVirtual': expectedVirtual,
-      };
-    } catch (e) {
-      return {
-        'stock_details': [],
-        'incoming_stock': [],
-        'outgoing_stock': [],
-        'totalInStock': 0.0,
-        'quantTotalInStock': 0.0,
-        'totalAvailable': 0.0,
-        'totalReserved': 0.0,
-        'totalIncoming': 0.0,
-        'totalOutgoing': 0.0,
-        'forecastedStock': 0.0,
-        'expectedStock': 0.0,
-        'expectedVirtual': 0.0,
-      };
     }
+
+    final productResult = await client.callKw({
+      'model': 'product.product',
+      'method': 'read',
+      'args': [
+        [productId],
+      ],
+      'kwargs': {
+        'fields': ['qty_available', 'virtual_available'],
+      },
+      'context': _companyId != null ? {'company_id': _companyId} : {},
+    });
+
+    final expectedStock = productResult.isNotEmpty
+        ? (productResult[0]['qty_available'] as num?)?.toDouble() ?? 0.0
+        : 0.0;
+    final expectedVirtual = productResult.isNotEmpty
+        ? (productResult[0]['virtual_available'] as num?)?.toDouble() ?? 0.0
+        : 0.0;
+
+    final totalInStock = expectedStock;
+    final forecastedStock = expectedVirtual;
+
+    final incomingMoveResult = await client.callKw({
+      'model': 'stock.move',
+      'method': 'search_read',
+      'args': [
+        [
+          ['product_id', '=', productId],
+          [
+            'state',
+            'in',
+            ['confirmed', 'waiting', 'assigned', 'partially_available'],
+          ],
+          ['location_dest_id.usage', '=', 'internal'],
+          ['location_id.usage', '!=', 'internal'],
+        ],
+      ],
+      'kwargs': {
+        'fields': [
+          'id',
+          'product_uom_qty',
+          'move_line_ids',
+          'quantity',
+          'date',
+          'location_id',
+          'location_dest_id',
+          'state',
+        ],
+      },
+      'context': _companyId != null ? {'company_id': _companyId} : {},
+    });
+
+    final outgoingMoveResult = await client.callKw({
+      'model': 'stock.move',
+      'method': 'search_read',
+      'args': [
+        [
+          ['product_id', '=', productId],
+          [
+            'state',
+            'in',
+            ['confirmed', 'waiting', 'assigned', 'partially_available'],
+          ],
+          ['location_id.usage', '=', 'internal'],
+          [
+            'location_dest_id.usage',
+            'in',
+            ['customer', 'production', 'inventory'],
+          ],
+        ],
+      ],
+      'kwargs': {
+        'fields': [
+          'id',
+          'product_uom_qty',
+          'move_line_ids',
+          'quantity',
+          'date',
+          'location_id',
+          'location_dest_id',
+          'state',
+        ],
+      },
+      'context': _companyId != null ? {'company_id': _companyId} : {},
+    });
+
+    final allMoveLineIds = <int>[];
+    for (var move in [...incomingMoveResult, ...outgoingMoveResult]) {
+      if (move['move_line_ids'] is List) {
+        allMoveLineIds.addAll((move['move_line_ids'] as List).whereType<int>());
+      }
+    }
+
+    Map<int, double> moveLineQtyDone = {};
+    if (allMoveLineIds.isNotEmpty) {
+      final moveLineResult = await client.callKw({
+        'model': 'stock.move.line',
+        'method': 'search_read',
+        'args': [
+          [
+            ['id', 'in', allMoveLineIds],
+          ],
+          ['id', 'move_id', 'quantity'],
+        ],
+        'kwargs': {},
+        'context': _companyId != null ? {'company_id': _companyId} : {},
+      });
+      for (var line in moveLineResult) {
+        final moveId = (line['move_id'] is List && line['move_id'].isNotEmpty)
+            ? line['move_id'][0] as int
+            : null;
+        final qtyDone = (line['quantity'] as num?)?.toDouble() ?? 0.0;
+        if (moveId != null) {
+          moveLineQtyDone[moveId] = (moveLineQtyDone[moveId] ?? 0.0) + qtyDone;
+        }
+      }
+    }
+
+    List<Map<String, dynamic>> incomingStock = [];
+    double totalIncoming = 0.0;
+    for (var move in incomingMoveResult) {
+      final moveId = move['id'] as int;
+      final quantityToReceive =
+          (move['product_uom_qty'] as num?)?.toDouble() ?? 0.0;
+      final qtyDone = moveLineQtyDone[moveId] ?? 0.0;
+      final remainingToReceive = quantityToReceive - qtyDone;
+      if (remainingToReceive > 0) {
+        totalIncoming += remainingToReceive;
+      }
+      incomingStock.add({
+        'quantity': remainingToReceive,
+        'expected_date': move['date'] ?? 'N/A',
+        'from_location':
+            move['location_id'] is List && move['location_id'].length > 1
+            ? move['location_id'][1]
+            : 'Unknown',
+        'to_location':
+            move['location_dest_id'] is List &&
+                move['location_dest_id'].length > 1
+            ? move['location_dest_id'][1]
+            : 'Unknown',
+        'state': move['state'] ?? 'N/A',
+      });
+    }
+
+    List<Map<String, dynamic>> outgoingStock = [];
+    double totalOutgoing = 0.0;
+    for (var move in outgoingMoveResult) {
+      final moveId = move['id'] as int;
+      final quantityToDeliver =
+          (move['product_uom_qty'] as num?)?.toDouble() ?? 0.0;
+      final qtyDone = moveLineQtyDone[moveId] ?? 0.0;
+      final remainingToDeliver = quantityToDeliver - qtyDone;
+      if (remainingToDeliver > 0) {
+        totalOutgoing += remainingToDeliver;
+      }
+      outgoingStock.add({
+        'quantity': remainingToDeliver,
+        'date_expected': move['date'] ?? 'N/A',
+        'from_location':
+            move['location_id'] is List && move['location_id'].length > 1
+            ? move['location_id'][1]
+            : 'Unknown',
+        'to_location':
+            move['location_dest_id'] is List &&
+                move['location_dest_id'].length > 1
+            ? move['location_dest_id'][1]
+            : 'Unknown',
+        'state': move['state'] ?? 'N/A',
+      });
+    }
+
+    return {
+      'stock_details': stockDetails,
+      'incoming_stock': incomingStock,
+      'outgoing_stock': outgoingStock,
+      'totalInStock': totalInStock,
+      'quantTotalInStock': quantTotalInStock,
+      'totalAvailable': totalAvailable,
+      'totalReserved': totalReserved,
+      'totalIncoming': totalIncoming,
+      'totalOutgoing': totalOutgoing,
+      'forecastedStock': forecastedStock,
+      'expectedStock': expectedStock,
+      'expectedVirtual': expectedVirtual,
+    };
   }
 
   Future<void> _performSearch(String searchQuery) async {
@@ -1114,6 +1078,9 @@ class _StockCheckPageState extends State<StockCheckPage> {
         throw Exception('No active Odoo session found. Please log in again.');
       }
 
+      // From Odoo 20 a template's own barcode no longer covers its variants,
+      // so the search domain also looks through them.
+      final generation = await OdooSessionManager.serverGeneration();
       List<dynamic> domain = [
         '&',
         '&',
@@ -1123,13 +1090,11 @@ class _StockCheckPageState extends State<StockCheckPage> {
           'in',
           ['product', 'consu'],
         ],
-        '|',
-        '|',
-        '|',
-        ['name', 'ilike', searchQuery],
-        ['default_code', 'ilike', searchQuery],
-        ['categ_id.name', 'ilike', searchQuery],
-        ['barcode', 'ilike', searchQuery],
+        ...productSearchDomain(
+          searchQuery,
+          generation: generation,
+          includeCategory: true,
+        ),
       ];
       final templateResult = await client.callKw({
         'model': 'product.template',
@@ -1423,7 +1388,7 @@ class _StockCheckPageState extends State<StockCheckPage> {
     }
   }
 
-  Future<List<Map<String, String>>> _fetchVariantAttributesForBottomSheet(
+  Future<List<Map<String, String>>> _fetchAttributesOfVariant(
     Map<String, dynamic> variant,
   ) async {
     try {
@@ -1668,7 +1633,7 @@ class _StockCheckPageState extends State<StockCheckPage> {
       actionButtons: null,
       onTap: () async {
         Navigator.of(dialogContext).pop();
-        await _showInventoryDetailsBottomSheet(context, variant);
+        await _openInventoryDetails(template, variant);
       },
       popupMenu: attributes.isNotEmpty
           ? Padding(
@@ -1881,10 +1846,7 @@ class _StockCheckPageState extends State<StockCheckPage> {
                                 await _showVariantsDialog(context, template);
                               } else {
                                 final variant = template['variants'][0];
-                                await _showInventoryDetailsBottomSheet(
-                                  context,
-                                  variant,
-                                );
+                                await _openInventoryDetails(template, variant);
                               }
                               setState(() => _isActionLoading = false);
                             },
@@ -1910,1044 +1872,20 @@ class _StockCheckPageState extends State<StockCheckPage> {
     );
   }
 
-  Future<void> _showInventoryDetailsBottomSheet(
-    BuildContext context,
+  /// Opens the stock of [variant] on a page of its own.
+  Future<void> _openInventoryDetails(
+    Map<String, dynamic> template,
     Map<String, dynamic> variant,
   ) async {
     if (!mounted) return;
-
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final colorScheme = Theme.of(context).colorScheme;
-
-    final handleColor = isDark
-        ? colorScheme.onSurface.withOpacity(0.2)
-        : Colors.grey[300];
-    final subtitleTextColor = isDark
-        ? colorScheme.onSurface.withOpacity(0.7)
-        : Colors.grey[600];
-    final iconBgColor = isDark
-        ? colorScheme.primaryContainer
-        : AppTheme.primaryColor.withOpacity(0.1);
-    final iconColor = isDark
-        ? colorScheme.onPrimaryContainer
-        : AppTheme.primaryColor;
-    final closeIconBg = isDark
-        ? colorScheme.surfaceContainerHighest.withOpacity(0.3)
-        : Colors.grey[100];
-
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.7,
-        minChildSize: 0.5,
-        maxChildSize: 0.95,
-        builder: (context, scrollController) => SafeArea(
-          top: false,
-          left: false,
-          right: false,
-          child: Container(
-            decoration: BoxDecoration(
-              color: isDark ? Colors.grey[900] : Colors.white,
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(24),
-              ),
-              boxShadow: [
-                if (!isDark)
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    blurRadius: 10,
-                    spreadRadius: 0,
-                  ),
-              ],
-            ),
-            child: Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  child: Column(
-                    children: [
-                      Container(
-                        width: 40,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: handleColor,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 20),
-                        child: Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: isDark
-                                    ? Colors.grey[800]
-                                    : Colors.grey.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Icon(
-                                HugeIcons.strokeRoundedPackage,
-                                color: isDark ? Colors.white : Colors.black,
-                                size: 20,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Inventory Details',
-                                    style: TextStyle(
-                                      fontSize: 20,
-                                      fontWeight: FontWeight.bold,
-                                      color: isDark
-                                          ? Colors.white
-                                          : Colors.black,
-                                    ),
-                                  ),
-                                  FutureBuilder<List<Map<String, String>>>(
-                                    future:
-                                        _fetchVariantAttributesForBottomSheet(
-                                          variant,
-                                        ),
-                                    builder: (context, snapshot) {
-                                      final hasSku =
-                                          variant["default_code"] != null &&
-                                          variant["default_code"] is String &&
-                                          variant["default_code"]
-                                              .toString()
-                                              .trim()
-                                              .isNotEmpty &&
-                                          variant["default_code"] != 'false';
-
-                                      final attributes = snapshot.data ?? [];
-                                      final hasAttributes =
-                                          attributes.isNotEmpty;
-
-                                      String displayText =
-                                          variant["name"] ?? 'Unknown Variant';
-
-                                      if (hasSku && hasAttributes) {
-                                        displayText +=
-                                            ' (SKU: ${variant["default_code"]})';
-                                        displayText +=
-                                            ' • ${attributes.map((attr) => '${attr['attribute_name']}: ${attr['value_name']}').join(', ')}';
-                                      } else if (hasSku) {
-                                        displayText +=
-                                            ' (SKU: ${variant["default_code"]})';
-                                      } else if (hasAttributes) {
-                                        displayText +=
-                                            ' • ${attributes.map((attr) => '${attr['attribute_name']}: ${attr['value_name']}').join(', ')}';
-                                      }
-
-                                      return Text(
-                                        displayText,
-                                        style: TextStyle(
-                                          fontSize: 14,
-                                          color: isDark
-                                              ? Colors.white
-                                              : Colors.black,
-                                        ),
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                      );
-                                    },
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Material(
-                              color: isDark
-                                  ? Colors.white.withOpacity(.1)
-                                  : Colors.grey.withOpacity(.1),
-                              borderRadius: BorderRadius.circular(8),
-                              child: IconButton(
-                                onPressed: () => Navigator.of(context).pop(),
-                                icon: Icon(
-                                  HugeIcons.strokeRoundedCancelCircleHalfDot,
-                                  color: isDark ? Colors.white : Colors.black,
-                                ),
-                                tooltip: 'Close',
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Divider(
-                  height: 1,
-                  color: isDark
-                      ? Colors.white.withOpacity(.5)
-                      : Colors.black.withOpacity(.5),
-                ),
-                Expanded(
-                  child: FutureBuilder<Map<String, dynamic>>(
-                    future: _fetchInventory(variant['id']),
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState == ConnectionState.waiting) {
-                        return _buildLoadingState(isDark: isDark);
-                      }
-                      if (snapshot.hasError) {
-                        return _buildErrorState(
-                          snapshot.error.toString(),
-                          isDark: isDark,
-                        );
-                      }
-
-                      return SingleChildScrollView(
-                        controller: scrollController,
-                        child: Padding(
-                          padding: const EdgeInsets.all(20),
-                          child: _buildInventoryContent(
-                            variant: variant,
-                            inventoryDetails: snapshot.data!,
-                            isDark: isDark,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => InventoryDetailsScreen(
+          variant: variant,
+          template: template,
+          loadInventory: () => _fetchInventory(variant['id']),
+          loadAttributes: () => _fetchAttributesOfVariant(variant),
         ),
-      ),
-    );
-  }
-
-  Widget _buildLoadingState({bool isDark = false}) {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        children: [
-          Shimmer.fromColors(
-            baseColor: isDark ? Colors.grey[700]! : Colors.grey[300]!,
-            highlightColor: isDark ? Colors.grey[600]! : Colors.grey[200]!,
-            child: Column(
-              children: [
-                _buildShimmerCard(height: 120, isDark: isDark),
-                const SizedBox(height: 16),
-                _buildShimmerCard(height: 80, isDark: isDark),
-                const SizedBox(height: 16),
-                _buildShimmerCard(height: 100, isDark: isDark),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildShimmerCard({required double height, bool isDark = false}) {
-    return Container(
-      width: double.infinity,
-      height: height,
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[700]! : Colors.grey[300]!,
-        borderRadius: BorderRadius.circular(12),
-      ),
-    );
-  }
-
-  Widget _buildErrorState(String error, {bool isDark = false}) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: isDark ? Colors.grey[700]! : Colors.grey[300]!,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(
-                Icons.error_outline,
-                size: 48,
-                color: isDark ? Colors.red[400] : Colors.grey[600],
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Unable to load inventory',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: isDark ? Colors.red[400] : Colors.grey[800],
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              error,
-              style: TextStyle(
-                color: isDark ? Colors.red[400] : Colors.grey[600],
-                fontSize: 14,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 12,
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildInventoryContent({
-    required Map<String, dynamic> variant,
-    required Map<String, dynamic> inventoryDetails,
-    bool isDark = false,
-  }) {
-    final stockDetails =
-        inventoryDetails['stock_details'] as List<Map<String, dynamic>>;
-    final incomingStock =
-        inventoryDetails['incoming_stock'] as List<Map<String, dynamic>>;
-    final outgoingStock =
-        inventoryDetails['outgoing_stock'] as List<Map<String, dynamic>>;
-
-    final totalInStock = inventoryDetails['totalInStock'] as double;
-    final totalReserved = inventoryDetails['totalReserved'] as double;
-    final totalIncoming = inventoryDetails['totalIncoming'] as double;
-    final totalOutgoing = inventoryDetails['totalOutgoing'] as double;
-    final forecastedStock = inventoryDetails['forecastedStock'] as double;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildStockOverview(
-          context: context,
-          totalInStock: totalInStock,
-          totalReserved: totalReserved,
-          forecastedStock: forecastedStock,
-          totalIncoming: totalIncoming,
-          totalOutgoing: totalOutgoing,
-        ),
-        const SizedBox(height: 16),
-        _buildStockCalculationExplanation(context, stockDetails),
-        const SizedBox(height: 24),
-        if (stockDetails.isNotEmpty) ...[
-          _buildSectionHeader(
-            context,
-            "Stock Locations",
-            HugeIcons.strokeRoundedWarehouse,
-          ),
-          const SizedBox(height: 12),
-          _buildStockLocationsCard(context, stockDetails),
-          const SizedBox(height: 24),
-        ],
-        if (incomingStock.isNotEmpty) ...[
-          _buildSectionHeader(
-            context,
-            "Incoming Shipments",
-            HugeIcons.strokeRoundedShippingLoading,
-          ),
-          const SizedBox(height: 12),
-          _buildShipmentsCard(context, incomingStock, isIncoming: true),
-          const SizedBox(height: 24),
-        ],
-        if (outgoingStock.isNotEmpty) ...[
-          _buildSectionHeader(
-            context,
-            'Outgoing Shipments',
-            HugeIcons.strokeRoundedShippingCenter,
-          ),
-          const SizedBox(height: 12),
-          _buildShipmentsCard(context, outgoingStock, isIncoming: false),
-        ],
-        const SizedBox(height: 40),
-      ],
-    );
-  }
-
-  Widget _buildStockOverview({
-    required BuildContext context,
-    required double totalInStock,
-    required double totalReserved,
-    required double forecastedStock,
-    required double totalIncoming,
-    required double totalOutgoing,
-  }) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[850] : Colors.grey[50],
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isDark ? Colors.grey[700]! : Colors.grey[300]!,
-          width: 1,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                HugeIcons.strokeRoundedAnalyticsUp,
-                color: isDark ? Colors.grey[300] : Colors.grey[700],
-                size: 20,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Stock Overview',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: isDark ? Colors.grey[200] : Colors.grey[800],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildMetricCard(
-                  context: context,
-                  label: 'On Hand',
-                  value: totalInStock.toStringAsFixed(1),
-                  color: isDark ? Colors.grey[400]! : Colors.grey[600]!,
-                  icon: HugeIcons.strokeRoundedPackaging,
-                  isDark: isDark,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildMetricCard(
-                  context: context,
-                  label: 'Reserved',
-                  value: totalReserved.toStringAsFixed(1),
-                  color: isDark ? Colors.grey[500]! : Colors.grey[700]!,
-                  icon: HugeIcons.strokeRoundedCircleLockCheck02,
-                  isDark: isDark,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildMetricCard(
-                  context: context,
-                  label: 'Forecasted',
-                  value: forecastedStock.toStringAsFixed(1),
-                  color: isDark ? Colors.grey[300]! : Colors.grey[800]!,
-                  icon: HugeIcons.strokeRoundedPackageProcess,
-                  isDark: isDark,
-                ),
-              ),
-            ],
-          ),
-          if (totalIncoming > 0 || totalOutgoing > 0) ...[
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                if (totalIncoming > 0) ...[
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: isDark ? Colors.grey[800] : Colors.grey[100],
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: isDark ? Colors.grey[600]! : Colors.grey[400]!,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            HugeIcons.strokeRoundedCircleArrowDownLeft,
-                            color: isDark ? Colors.grey[300] : Colors.grey[700],
-                            size: 16,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            '${totalIncoming.toStringAsFixed(1)} incoming',
-                            style: TextStyle(
-                              color: isDark
-                                  ? Colors.grey[300]
-                                  : Colors.grey[700],
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  if (totalOutgoing > 0) const SizedBox(width: 8),
-                ],
-                if (totalOutgoing > 0) ...[
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: isDark ? Colors.grey[800] : Colors.grey[200],
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: isDark ? Colors.grey[600]! : Colors.grey[500]!,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            HugeIcons.strokeRoundedCircleArrowUpRight,
-                            color: isDark ? Colors.grey[400] : Colors.grey[800],
-                            size: 16,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            '${totalOutgoing.toStringAsFixed(1)} outgoing',
-                            style: TextStyle(
-                              color: isDark
-                                  ? Colors.grey[400]
-                                  : Colors.grey[800],
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMetricCard({
-    required BuildContext context,
-    required String label,
-    required String value,
-    required Color color,
-    required IconData icon,
-    required bool isDark,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[800] : Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: isDark ? Colors.grey[600]! : Colors.grey[300]!,
-        ),
-      ),
-      child: Column(
-        children: [
-          Icon(
-            icon,
-            color: isDark ? Colors.grey[400] : Colors.grey[600],
-            size: 20,
-          ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: isDark ? Colors.grey[200] : Colors.grey[800],
-            ),
-          ),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 11,
-              color: isDark ? Colors.grey[400] : Colors.grey[600],
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSectionHeader(
-    BuildContext context,
-    String title,
-    IconData icon,
-  ) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Row(
-      children: [
-        Icon(icon, color: isDark ? Colors.white : Colors.grey[700], size: 20),
-        const SizedBox(width: 8),
-        Text(
-          title,
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w600,
-            color: isDark ? Colors.white : Colors.grey[800],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildStockLocationsCard(
-    BuildContext context,
-    List<Map<String, dynamic>> stockDetails,
-  ) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Container(
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[900]! : Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: isDark ? Colors.grey[800]! : Colors.grey[200]!,
-        ),
-      ),
-      child: Column(
-        children: stockDetails.asMap().entries.map((entry) {
-          final index = entry.key;
-          final stock = entry.value;
-          final isLast = index == stockDetails.length - 1;
-          final isExternal = stock['is_external'] == true;
-          final locationType = stock['location_type'] ?? 'unknown';
-          final isCounted = stock['is_counted_in_totals'] == true;
-
-          return Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: isDark
-                  ? (isExternal ? Colors.grey[850] : Colors.grey[900]!)
-                  : (isExternal ? Colors.orange[25] : null),
-              border: isLast
-                  ? null
-                  : Border(
-                      bottom: BorderSide(
-                        color: isDark
-                            ? Colors.grey[800]!
-                            : (isExternal
-                                  ? Colors.orange[100]!
-                                  : Colors.grey[100]!),
-                      ),
-                    ),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: isDark
-                        ? (isExternal ? Colors.grey[800] : Colors.grey[900]!)
-                        : (isExternal ? Colors.orange[100] : Colors.grey[100]),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(
-                    isExternal
-                        ? HugeIcons.strokeRoundedLocation01
-                        : HugeIcons.strokeRoundedBuilding01,
-                    color: isDark
-                        ? Colors.white
-                        : (isExternal ? Colors.orange[700] : Colors.grey[600]),
-                    size: 16,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        stock['warehouse'] ?? 'Unknown Location',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 14,
-                          color: isDark
-                              ? Colors.white
-                              : (isExternal
-                                    ? Colors.orange[800]
-                                    : Colors.grey[800]),
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Row(
-                        children: [
-                          Text(
-                            'Reserved: ${(stock['reserved_quantity'] as num?)?.toStringAsFixed(1) ?? '0'}',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: isDark
-                                  ? Colors.grey[400]
-                                  : Colors.grey[600],
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: isDark
-                                  ? Colors.grey[900]!
-                                  : (isExternal
-                                        ? Colors.orange[100]
-                                        : Colors.green[100]),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              isExternal ? locationType : 'internal',
-                              style: TextStyle(
-                                fontSize: 10,
-                                color: isDark
-                                    ? Colors.white
-                                    : (isExternal
-                                          ? Colors.orange[700]
-                                          : Colors.green[700]),
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 4,
-                              vertical: 1,
-                            ),
-                            decoration: BoxDecoration(
-                              color: isDark
-                                  ? (isCounted
-                                        ? Colors.grey[900]!
-                                        : Colors.grey[800]!)
-                                  : (isCounted
-                                        ? Colors.green[100]
-                                        : Colors.orange[100]),
-                              borderRadius: BorderRadius.circular(3),
-                            ),
-                            child: Text(
-                              isCounted ? 'counted' : 'not counted',
-                              style: TextStyle(
-                                fontSize: 9,
-                                color: isDark
-                                    ? Colors.white
-                                    : (isCounted
-                                          ? Colors.green[700]
-                                          : Colors.orange[700]),
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      (stock['available'] as num?)?.toStringAsFixed(1) ?? '0',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: isDark
-                            ? Colors.white
-                            : (((stock['available'] as num?)?.toDouble() ?? 0) >
-                                      0
-                                  ? Colors.green[700]
-                                  : Colors.red[700]),
-                      ),
-                    ),
-                    Text(
-                      'of ${(stock['quantity'] as num?)?.toStringAsFixed(1) ?? '0'}',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: isDark ? Colors.grey[400] : Colors.grey[600],
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          );
-        }).toList(),
-      ),
-    );
-  }
-
-  Widget _buildShipmentsCard(
-    BuildContext context,
-    List<Map<String, dynamic>> shipments, {
-    required bool isIncoming,
-  }) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final color = isIncoming ? Colors.blue : Colors.red;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[900]! : Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: isDark ? Colors.grey[800]! : Colors.grey[200]!,
-        ),
-      ),
-      child: Column(
-        children: shipments.asMap().entries.map((entry) {
-          final index = entry.key;
-          final shipment = entry.value;
-          final isLast = index == shipments.length - 1;
-
-          return Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              border: isLast
-                  ? null
-                  : Border(
-                      bottom: BorderSide(
-                        color: isDark ? Colors.grey[800]! : Colors.grey[100]!,
-                      ),
-                    ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: isDark ? Colors.grey[900]! : color[50],
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        '${(shipment['quantity'] as num?)?.toStringAsFixed(1) ?? '0'} items',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w600,
-                          color: isDark ? Colors.white : color[800],
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      _formatDate(
-                        shipment[isIncoming
-                            ? 'expected_date'
-                            : 'date_expected'],
-                      ),
-                      style: TextStyle(
-                        color: isDark ? Colors.grey[400] : Colors.grey[600],
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _buildLocationChip(
-                        label: 'From',
-                        location: shipment['from_location'] ?? 'Unknown',
-                        icon: Icons.arrow_circle_right_outlined,
-                        isDark: isDark,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _buildLocationChip(
-                        label: 'To',
-                        location: shipment['to_location'] ?? 'Unknown',
-                        icon: HugeIcons.strokeRoundedLocation05,
-                        isDark: isDark,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          );
-        }).toList(),
-      ),
-    );
-  }
-
-  Widget _buildLocationChip({
-    required String label,
-    required String location,
-    required IconData icon,
-    required bool isDark,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[900]! : Colors.grey[50],
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: isDark ? Colors.grey[800]! : Colors.grey[200]!,
-        ),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, size: 14, color: isDark ? Colors.white : Colors.grey[600]),
-          const SizedBox(width: 4),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: isDark ? Colors.grey[400] : Colors.grey[500],
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                Text(
-                  location,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _formatDate(String? date) {
-    if (date == null || date == 'N/A') return 'Not specified';
-    try {
-      final parsedDate = DateTime.parse(date);
-      final months = [
-        'Jan',
-        'Feb',
-        'Mar',
-        'Apr',
-        'May',
-        'Jun',
-        'Jul',
-        'Aug',
-        'Sep',
-        'Oct',
-        'Nov',
-        'Dec',
-      ];
-      return "${parsedDate.day} ${months[parsedDate.month - 1]} ${parsedDate.year}";
-    } catch (e) {
-      return date ?? 'Invalid date';
-    }
-  }
-
-  Widget _buildStockCalculationExplanation(
-    BuildContext context,
-    List<Map<String, dynamic>> stockDetails,
-  ) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final internalLocations = stockDetails
-        .where((s) => s['is_counted_in_totals'] == true)
-        .toList();
-    final externalLocations = stockDetails
-        .where((s) => s['is_counted_in_totals'] == false)
-        .toList();
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[800] : Colors.grey[100],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: isDark ? Colors.grey[600]! : Colors.grey[400]!,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                HugeIcons.strokeRoundedInformationCircle,
-                color: isDark ? Colors.grey[300] : Colors.grey[700],
-                size: 18,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Stock Calculation Info',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: isDark ? Colors.grey[200] : Colors.grey[800],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Stock totals include only internal warehouse locations. External locations (customer, supplier, etc.) are shown for reference but not counted in totals.',
-            style: TextStyle(
-              fontSize: 12,
-              color: isDark ? Colors.grey[400] : Colors.grey[600],
-              height: 1.4,
-            ),
-          ),
-          if (internalLocations.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              'Internal locations (${internalLocations.length}): ${internalLocations.map((s) => s['warehouse']).join(', ')}',
-              style: TextStyle(
-                fontSize: 11,
-                color: isDark ? Colors.grey[300] : Colors.grey[700],
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
-          if (externalLocations.isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text(
-              'External locations (${externalLocations.length}): ${externalLocations.map((s) => '${s['warehouse']} (${s['location_type']})').join(', ')}',
-              style: TextStyle(
-                fontSize: 11,
-                color: isDark ? Colors.grey[400] : Colors.grey[600],
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
-        ],
       ),
     );
   }

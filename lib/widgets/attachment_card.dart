@@ -3,6 +3,7 @@ import 'package:hugeicons/hugeicons.dart';
 import 'package:intl/intl.dart';
 import '../models/attachment.dart';
 import '../services/odoo_session_manager.dart';
+import '../utils/odoo_version.dart';
 
 class AttachmentCard extends StatelessWidget {
   final Attachment attachment;
@@ -274,7 +275,15 @@ class _AttachmentThumbnail extends StatelessWidget {
           clipBehavior: Clip.antiAlias,
           child: Image.network(
             fullUrl,
-            headers: {'Cookie': 'session_id=${session.sessionId}'},
+            headers: {
+              'Cookie': 'session_id=${session.sessionId}',
+              // Odoo 20 moves a session to a new id every few hours; this opts
+              // the request out, as the rest of the app's requests are.
+              if (OdooSessionManager.shouldSkipSessionRotation(
+                odooGeneration(session.serverVersion),
+              ))
+                OdooSessionManager.skipSessionRotationHeader: '1',
+            },
             fit: BoxFit.cover,
             errorBuilder: (context, error, stack) {
               return Container(

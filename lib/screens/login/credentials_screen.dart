@@ -8,10 +8,12 @@ import 'package:loading_animation_widget/loading_animation_widget.dart';
 import '../../providers/login_provider.dart';
 import 'reset_password_screen.dart';
 import 'login_layout.dart';
-import '../../core/session/database_expiry.dart';
 import '../../services/session_service.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../services/biometric_context_service.dart';
+import '../../services/sales_access.dart';
+import '../../widgets/access_denied_dialog.dart';
+import '../../utils/database_expiry.dart';
 
 class CredentialsScreen extends StatefulWidget {
   final String url;
@@ -76,6 +78,20 @@ class _CredentialsScreenState extends State<CredentialsScreen> {
     super.dispose();
   }
 
+  /// The database has expired: back to the server screen, which shows the
+  /// message where the server and the database were chosen.
+  void _backToServerScreenExpired() {
+    if (!mounted) return;
+    Navigator.of(context).pop(DatabaseExpiredException.message);
+  }
+
+  /// The account was refused and the popup has been answered: back to the
+  /// server screen, with nothing to say there.
+  void _backToServerScreen() {
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
   Future<bool> _addNewAccount(LoginProvider provider) async {
     try {
       final newSession = await OdooSessionManager.authenticate(
@@ -101,6 +117,19 @@ class _CredentialsScreenState extends State<CredentialsScreen> {
 
       return true;
     } catch (e) {
+      if (e is DatabaseExpiredException) {
+        provider.errorMessage = DatabaseExpiredException.message;
+        provider.databaseExpired = true;
+        return false;
+      }
+      if (await AccessDeniedDialog.showIfAccessError(
+        context,
+        e,
+        buttonLabel: 'OK',
+      )) {
+        provider.errorMessage = null;
+        return false;
+      }
       provider.errorMessage = 'Failed to add account: ${e.toString()}';
       return false;
     }
@@ -337,6 +366,9 @@ class _CredentialsScreenState extends State<CredentialsScreen> {
                                   ),
                                 );
                                 Navigator.of(context).pop();
+                              } else if (provider.databaseExpired) {
+                                // Said on the server screen, not here.
+                                _backToServerScreenExpired();
                               } else {
                                 await HapticFeedback.heavyImpact();
                                 if (!mounted) return;
@@ -371,14 +403,20 @@ class _CredentialsScreenState extends State<CredentialsScreen> {
                                 biometricContext.endAccountOperation(
                                   'account_add',
                                 );
-                              } else if (provider.errorMessage ==
-                                  DatabaseExpiredException.message) {
-                                await HapticFeedback.heavyImpact();
-                                if (!mounted) return;
+                              } else if (provider.databaseExpired) {
+                                // Said on the server screen, not here.
                                 biometricContext.endAccountOperation(
                                   'account_add',
                                 );
-                                Navigator.of(context).pop();
+                                _backToServerScreenExpired();
+                              } else if (provider.accessRefused) {
+                                // The popup has been answered: back to the
+                                // server screen, to pick another server or
+                                // database.
+                                biometricContext.endAccountOperation(
+                                  'account_add',
+                                );
+                                _backToServerScreen();
                               } else if (!ok && provider.errorMessage != null) {
                                 await HapticFeedback.heavyImpact();
                                 if (!mounted) return;

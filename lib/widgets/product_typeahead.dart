@@ -1,24 +1,32 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
-import 'package:flutter_typeahead/flutter_typeahead.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:hugeicons/hugeicons.dart';
-import 'dart:convert';
+
 import '../models/product.dart';
 import '../services/odoo_session_manager.dart';
+import '../shared/widgets/mobo/mobo_select_form_field.dart';
 import '../utils/app_theme.dart';
 
-class ProductTypeAhead extends StatelessWidget {
-  final TextEditingController controller;
+/// Server-searched "add a product" picker, built on [MoboSelectFormField].
+///
+/// This is a search-and-add box rather than a held value: the parent adds the
+/// chosen [Product] to its lines and the field goes back to empty, which is why
+/// its `value` is always null.
+class ProductTypeAhead extends StatefulWidget {
   final String labelText;
+
+  /// Draws a red ` *` after [labelText].
+  final bool isRequired;
   final String? hintText;
-  final bool isDark;
   final ValueChanged<Product> onProductSelected;
-  final String? Function(String?)? validator;
+  final String? Function(Product?)? validator;
 
   const ProductTypeAhead({
-    required this.controller,
     required this.labelText,
-    required this.isDark,
+    this.isRequired = false,
     required this.onProductSelected,
     this.hintText,
     this.validator,
@@ -26,210 +34,147 @@ class ProductTypeAhead extends StatelessWidget {
   });
 
   @override
+  State<ProductTypeAhead> createState() => _ProductTypeAheadState();
+}
+
+class _ProductTypeAheadState extends State<ProductTypeAhead> {
+  static const _debounce = Duration(milliseconds: 300);
+
+  List<Product> _results = const [];
+  bool _isLoading = false;
+  Timer? _debounceTimer;
+
+  /// Responses can arrive out of order; only the latest request may write.
+  int _requestSeq = 0;
+
+  @override
+  void dispose() {
+    _debounceTimer?.cancel();
+    super.dispose();
+  }
+
+  void _onSearchChanged(String query) {
+    _debounceTimer?.cancel();
+    // The unfiltered first page needs no debounce — nothing was typed.
+    if (query.isEmpty) {
+      _fetch(query);
+      return;
+    }
+    _debounceTimer = Timer(_debounce, () => _fetch(query));
+  }
+
+  Future<void> _fetch(String pattern) async {
+    final seq = ++_requestSeq;
+    setState(() => _isLoading = true);
+
+    final results = await _searchProducts(pattern);
+    if (!mounted || seq != _requestSeq) return;
+    setState(() {
+      _results = results;
+      _isLoading = false;
+    });
+  }
+
+  Future<List<Product>> _searchProducts(String pattern) async {
+    try {
+      final client = await OdooSessionManager.getClient();
+      if (client == null) return [];
+
+      final limit = pattern.isEmpty ? 6 : 100;
+      // Use safeCallKw (not the raw client) so the request carries the
+      // active company context and refreshes an expired session, instead
+      // of silently returning an empty list when the session has expired.
+      final results = await OdooSessionManager.safeCallKw({
+        'model': 'product.product',
+        'method': 'search_read',
+        'args': [
+          [
+            ['sale_ok', '=', true],
+            ['active', '=', true],
+            if (pattern.isNotEmpty) ...[
+              '|',
+              ['name', 'ilike', pattern],
+              ['default_code', 'ilike', pattern],
+            ],
+          ],
+        ],
+        'kwargs': {
+          'fields': [
+            'id',
+            'name',
+            'list_price',
+            'qty_available',
+            'default_code',
+            'barcode',
+            'image_128',
+            'image_1920',
+            'product_variant_count',
+            'uom_id',
+            'taxes_id',
+            'categ_id',
+            'description_sale',
+          ],
+          'limit': limit,
+        },
+      });
+
+      if (results is List) {
+        return results.map((data) => Product.fromJson(data)).toList();
+      }
+      return [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  void _onChanged(String? id) {
+    // Null is the field clearing itself after a pick; nothing to report.
+    if (id == null) return;
+    for (final product in _results) {
+      if (product.id == id) {
+        widget.onProductSelected(product);
+        return;
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          labelText,
-          style: GoogleFonts.manrope(
-            fontWeight: FontWeight.w500,
-            fontSize: 14,
-            color: isDark ? Colors.white70 : const Color(0xff7F7F7F),
-          ),
-        ),
-        const SizedBox(height: 8),
-        TypeAheadField<Product>(
-          controller: controller,
-          // Flip the suggestions box upward when there isn't enough room below
-          // (otherwise fields low on the screen open their options off-screen,
-          // hidden behind the keyboard / bottom bar).
-          autoFlipDirection: true,
-          constraints: const BoxConstraints(maxHeight: 320),
-          builder: (context, controller, focusNode) {
-            return TextFormField(
-              controller: controller,
-              focusNode: focusNode,
-              validator: validator,
-              style: GoogleFonts.manrope(
-                fontWeight: FontWeight.w600,
-                fontSize: 15,
-                color: isDark ? Colors.white : const Color(0xff000000),
-              ),
-              decoration: InputDecoration(
-                hintText: hintText ?? 'Search products...',
-                hintStyle: GoogleFonts.manrope(
-                  fontWeight: FontWeight.w400,
-                  color: isDark ? Colors.white54 : Colors.grey[600],
-                  fontSize: 15,
-                ),
-                prefixIcon: Padding(
-                  padding: const EdgeInsets.all(12.0),
-                  child: HugeIcon(
-                    icon: HugeIcons.strokeRoundedPackage,
-                    color: isDark ? Colors.white70 : const Color(0xff7F7F7F),
-                    size: 18,
-                  ),
-                ),
-                suffixIcon: Padding(
-                  padding: const EdgeInsets.all(12.0),
-                  child: HugeIcon(
-                    icon: HugeIcons.strokeRoundedArrowDown01,
-                    color: isDark ? Colors.white70 : const Color(0xff7F7F7F),
-                    size: 16,
-                  ),
-                ),
-                filled: true,
-                fillColor: isDark
-                    ? const Color(0xFF1E1E1E)
-                    : const Color(0xffF8FAFB),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(
-                    color: isDark ? Colors.white10 : Colors.grey[200]!,
-                    width: 1,
-                  ),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(
-                    color: AppTheme.primaryColor,
-                    width: 1.5,
-                  ),
-                ),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 16,
-                ),
-              ),
-            );
-          },
-          suggestionsCallback: (pattern) async {
-            try {
-              final client = await OdooSessionManager.getClient();
-              if (client == null) return [];
+    return MoboSelectFormField<String>(
+      label: widget.labelText,
+      isRequired: widget.isRequired,
+      hintText: widget.hintText ?? 'Search products...',
+      prefixHugeIcon: HugeIcons.strokeRoundedPackage,
+      allowClear: false,
+      options: [for (final product in _results) _optionFor(product)],
+      value: null,
+      isLoading: _isLoading,
+      emptyText: 'No products found',
+      onSearchChanged: _onSearchChanged,
+      onChanged: _onChanged,
+      validator: widget.validator == null
+          ? null
+          : (_) => widget.validator!(null),
+    );
+  }
 
-              final limit = pattern.isEmpty ? 6 : 100;
-              // Use safeCallKw (not the raw client) so the request carries the
-              // active company context and refreshes an expired session, instead
-              // of silently returning an empty list when the session has expired.
-              final results = await OdooSessionManager.safeCallKw({
-                'model': 'product.product',
-                'method': 'search_read',
-                'args': [
-                  [
-                    ['sale_ok', '=', true],
-                    ['active', '=', true],
-                    if (pattern.isNotEmpty) ...[
-                      '|',
-                      ['name', 'ilike', pattern],
-                      ['default_code', 'ilike', pattern],
-                    ],
-                  ],
-                ],
-                'kwargs': {
-                  'fields': [
-                    'id',
-                    'name',
-                    'list_price',
-                    'qty_available',
-                    'default_code',
-                    'barcode',
-                    'image_128',
-                    'image_1920',
-                    'product_variant_count',
-                    'uom_id',
-                    'taxes_id',
-                    'categ_id',
-                    'description_sale',
-                  ],
-                  'limit': limit,
-                },
-              });
-
-              if (results is List) {
-                return results.map((data) => Product.fromJson(data)).toList();
-              }
-              return [];
-            } catch (e) {
-              return [];
-            }
-          },
-          itemBuilder: (context, product) {
-            return ListTile(
-              leading: _buildProductImage(product),
-              title: Text(
-                product.name,
-                style: GoogleFonts.manrope(
-                  fontWeight: FontWeight.w600,
-                  fontSize: 14,
-                  color: isDark ? Colors.white : Colors.black87,
-                ),
-              ),
-              subtitle: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (product.defaultCode.isNotEmpty)
-                    Text(
-                      'SKU: ${product.defaultCode}',
-                      style: GoogleFonts.manrope(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        color: AppTheme.primaryColor,
-                      ),
-                    ),
-                  Text(
-                    'Price: ${product.listPrice.toStringAsFixed(2)}',
-                    style: GoogleFonts.manrope(
-                      fontSize: 12,
-                      color: isDark ? Colors.white60 : Colors.grey[600],
-                    ),
-                  ),
-                ],
-              ),
-              trailing: Text(
-                'Stock: ${product.qtyAvailable.toStringAsFixed(0)}',
-                style: GoogleFonts.manrope(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: product.qtyAvailable > 0 ? Colors.green : Colors.red,
-                ),
-              ),
-            );
-          },
-          onSelected: onProductSelected,
-          loadingBuilder: (context) => const Padding(
-            padding: EdgeInsets.all(16.0),
-            child: Center(
-              child: SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
-          ),
-          emptyBuilder: (context) => Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Text(
-              'No products found',
-              style: GoogleFonts.manrope(
-                color: isDark ? Colors.white60 : Colors.grey[600],
-              ),
-            ),
-          ),
-          decorationBuilder: (context, child) => Material(
-            type: MaterialType.card,
-            elevation: 8,
-            borderRadius: BorderRadius.circular(12),
-            color: isDark ? const Color(0xFF2A2A2A) : Colors.white,
-            child: child,
-          ),
+  MoboOption<String> _optionFor(Product product) {
+    return MoboOption<String>(
+      value: product.id,
+      label: product.name,
+      subtitle: [
+        if (product.defaultCode.isNotEmpty) 'SKU: ${product.defaultCode}',
+        'Price: ${product.listPrice.toStringAsFixed(2)}',
+      ].join('  •  '),
+      leading: _buildProductImage(product),
+      trailing: Text(
+        'Stock: ${product.qtyAvailable.toStringAsFixed(0)}',
+        style: GoogleFonts.manrope(
+          fontSize: 12,
+          fontWeight: FontWeight.w500,
+          color: product.qtyAvailable > 0 ? Colors.green : Colors.red,
         ),
-      ],
+      ),
     );
   }
 
@@ -241,8 +186,8 @@ class ProductTypeAhead extends StatelessWidget {
             : product.imageUrl!;
         final bytes = base64Decode(base64String);
         return Container(
-          width: 40,
-          height: 40,
+          width: 36,
+          height: 36,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(8),
             image: DecorationImage(
@@ -251,14 +196,16 @@ class ProductTypeAhead extends StatelessWidget {
             ),
           ),
         );
-      } catch (e) {}
+      } catch (e) {
+        // Fall through to the placeholder below.
+      }
     }
 
     return Container(
-      width: 40,
-      height: 40,
+      width: 36,
+      height: 36,
       decoration: BoxDecoration(
-        color: AppTheme.primaryColor.withOpacity(0.1),
+        color: AppTheme.primaryColor.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(8),
       ),
       child: const HugeIcon(

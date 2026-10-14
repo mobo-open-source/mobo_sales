@@ -5,11 +5,13 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:mobo_sales/widgets/custom_snackbar.dart';
 import 'package:mobo_sales/widgets/order_like_list_tile.dart';
+import '../../services/data_change_bus.dart';
 import '../../utils/app_theme.dart';
 import 'create_invoice_screen.dart';
 import '../../providers/currency_provider.dart';
 import 'invoice_details_screen.dart';
 import '../../services/field_validation_service.dart';
+import '../../services/odoo_compat.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../services/connectivity_service.dart';
 import '../../services/session_service.dart';
@@ -20,18 +22,26 @@ import '../../widgets/list_shimmer.dart';
 import '../../models/invoice.dart';
 import '../../services/odoo_error_classifier.dart';
 import '../../widgets/list_search_bar.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 
 class InvoiceListScreen extends StatefulWidget {
   final int? customerId;
   final bool overdueOnly;
   final bool unpaidOnly;
   final String? saleOrderName;
+
+  /// Where the invoices are read from; the Odoo session's call, unless a test
+  /// puts its own here.
+  @visibleForTesting
+  final Future<dynamic> Function(Map<String, dynamic> payload)? callKw;
+
   const InvoiceListScreen({
     super.key,
     this.customerId,
     this.overdueOnly = false,
     this.unpaidOnly = false,
     this.saleOrderName,
+    this.callKw,
   });
 
   static void clearInvoiceCache() {
@@ -134,6 +144,54 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
   static int _cachedTotalCount = 0;
   static DateTime? _lastFetchTime;
   static const Duration _cacheDuration = Duration(minutes: 5);
+
+  /// Whether [change] can alter what an invoice list shows: an invoice or a
+  /// payment, or a sale order (invoices are made from them).
+  static bool _affectsInvoiceList(DataChange change) =>
+      change.isInvoice ||
+      change.entity == DataEntity.payment ||
+      change.isQuotation;
+
+  /// Empties the cache above whenever an invoice, payment or sale order
+  /// changes, so that an invoice list opened later — one that is built fresh
+  /// and would otherwise show the cached page for up to five minutes — does not
+  /// show what the change made out of date. Started with the first list and
+  /// kept for the life of the app; it holds no screen.
+  static DataChangeSubscription? _cacheInvalidator;
+
+  static void _ensureCacheInvalidator() {
+    _cacheInvalidator ??= DataChangeBus.instance.listen(
+      where: _affectsInvoiceList,
+      debounce: Duration.zero,
+      onChange: (_) {
+        _cachedInvoices.clear();
+        _cachedTotalCount = 0;
+        _lastFetchTime = null;
+      },
+    );
+  }
+
+  /// Hears changes to invoices, payments and sale orders made anywhere in the
+  /// app and refreshes the list in place.
+  DataChangeSubscription? _changeSubscription;
+  static const Duration _changeDebounce = Duration(milliseconds: 350);
+
+  /// How many changes this list has heard, and how many it had heard when the
+  /// latest load began. A load that began after the last change already
+  /// includes it (the server had it before it was announced), so a refresh for
+  /// it can be skipped. Counted, not timed, so it does not depend on a clock.
+  int _changesHeard = 0;
+  int _changesHeardAtLoadStart = 0;
+
+  /// Loads begun so far; lets a screen tell whether any began since a moment.
+  int _loadsBegun = 0;
+
+  /// The first page the list on screen was loaded from: the page it was opened
+  /// or navigated to, before any pages were appended by scrolling.
+  int _firstLoadedPage = 0;
+
+  bool _isQuietRefreshing = false;
+  bool _quietRefreshQueued = false;
 
   static void clearStaticCache() {
     _cachedInvoices.clear();
@@ -299,6 +357,17 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
     _scrollController.addListener(_onScroll);
     _searchController.addListener(_onSearchChanged);
 
+    _ensureCacheInvalidator();
+    _changeSubscription = DataChangeBus.instance.listen(
+      where: (change) {
+        final concerns = _affectsInvoiceList(change);
+        if (concerns) _changesHeard++;
+        return concerns;
+      },
+      debounce: _changeDebounce,
+      onChange: (_) => _onDataChanged(),
+    );
+
     try {
       _sessionService = context.read<SessionService>();
       _sessionService?.addListener(_onCompanyScopeChanged);
@@ -387,6 +456,8 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
 
   @override
   void dispose() {
+    _changeSubscription?.cancel();
+    _changeSubscription = null;
     _sessionService?.removeListener(_onCompanyScopeChanged);
     _debounce?.cancel();
     _scrollController.dispose();
@@ -458,9 +529,134 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
     }
   }
 
-  Future<void> _fetchInvoices({bool isLoadMore = false}) async {
+  /// The domain for the invoices on this screen: the move types it lists, the
+  /// customer / sale order / overdue / unpaid scope it was opened for, the
+  /// status filters, the date range and the search text.
+  List<dynamic> _buildDomain() {
+    List<dynamic> domain = [
+      [
+        'move_type',
+        'in',
+        ['out_invoice', 'out_refund'],
+      ],
+    ];
+
+    if (widget.customerId != null) {
+      domain.add(['partner_id', '=', widget.customerId]);
+    }
+
+    if (widget.saleOrderName != null && widget.saleOrderName!.isNotEmpty) {
+      domain.add(['invoice_origin', 'ilike', widget.saleOrderName!.trim()]);
+    }
+
+    if (widget.overdueOnly) {
+      final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      domain.addAll([
+        ['state', '=', 'posted'],
+        [
+          'payment_state',
+          'in',
+          ['not_paid', 'partial'],
+        ],
+        ['invoice_date_due', '<', todayStr],
+      ]);
+    }
+
+    if (widget.unpaidOnly) {
+      domain.addAll([
+        ['state', '=', 'posted'],
+        [
+          'payment_state',
+          'in',
+          ['not_paid', 'partial'],
+        ],
+      ]);
+    }
+
+    if (_activeFilters.isNotEmpty) {
+      List<dynamic> statusConditions = [];
+
+      for (String filter in _activeFilters) {
+        switch (filter) {
+          case 'draft':
+            statusConditions.add(['state', '=', 'draft']);
+            break;
+          case 'posted':
+            statusConditions.add('&');
+            statusConditions.add(['state', '=', 'posted']);
+            statusConditions.add(['payment_state', '=', 'not_paid']);
+            break;
+          case 'paid':
+            statusConditions.add(['payment_state', '=', 'paid']);
+            break;
+          case 'partial':
+            statusConditions.add(['payment_state', '=', 'partial']);
+            break;
+          case 'not_paid':
+            statusConditions.add('&');
+            statusConditions.add(['state', '=', 'posted']);
+            statusConditions.add(['payment_state', '=', 'not_paid']);
+            break;
+          case 'in_payment':
+            statusConditions.add(['payment_state', '=', 'in_payment']);
+            break;
+          case 'reversed':
+            statusConditions.add(['payment_state', '=', 'reversed']);
+            break;
+          case 'blocked':
+            statusConditions.add(['payment_state', '=', 'blocked']);
+            break;
+          case 'cancelled':
+            statusConditions.add(['state', '=', 'cancel']);
+            break;
+        }
+      }
+
+      if (statusConditions.isNotEmpty) {
+        if (statusConditions.length > 1) {
+          List<dynamic> orConditions = [];
+          for (int i = 0; i < statusConditions.length - 1; i++) {
+            orConditions.add('|');
+          }
+          orConditions.addAll(statusConditions);
+          domain.addAll(orConditions);
+        } else {
+          domain.addAll(statusConditions);
+        }
+      }
+    }
+
+    if (_startDate != null) {
+      final startDateStr = DateFormat('yyyy-MM-dd').format(_startDate!);
+      domain.add(['invoice_date', '>=', startDateStr]);
+    }
+
+    if (_endDate != null) {
+      final endDateStr = DateFormat('yyyy-MM-dd').format(_endDate!);
+      domain.add(['invoice_date', '<=', endDateStr]);
+    }
+
+    if (_searchQuery.isNotEmpty) {
+      domain.add('|');
+      domain.add(['name', 'ilike', _searchQuery]);
+      domain.add(['partner_id.name', 'ilike', _searchQuery]);
+    }
+    return domain;
+  }
+
+  /// Loads invoices from the server into the list.
+  ///
+  /// [quiet] refreshes what is already on screen: the same filters, search and
+  /// pages, replaced in place, with no loading state in between, and a failure
+  /// leaves the list as it was. [isLoadMore] appends the next page instead.
+  Future<void> _fetchInvoices({
+    bool isLoadMore = false,
+    bool quiet = false,
+  }) async {
     try {
-      if (!isLoadMore) {
+      if (quiet) {
+        if (!mounted) return;
+      } else if (!isLoadMore) {
         if (!mounted) return;
         setState(() {
           _isLoading = true;
@@ -474,116 +670,24 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
         });
       }
 
-      List<dynamic> domain = [
-        [
-          'move_type',
-          'in',
-          ['out_invoice', 'out_refund'],
-        ],
-      ];
+      _loadsBegun++;
+      _changesHeardAtLoadStart = _changesHeard;
+      if (!isLoadMore && !quiet) _firstLoadedPage = _currentPage;
 
-      if (widget.customerId != null) {
-        domain.add(['partner_id', '=', widget.customerId]);
-      }
+      // A quiet refresh asks for every page the list shows, in one request:
+      // from the first it loaded to the current one.
+      final int offset = quiet
+          ? _firstLoadedPage * _pageSize
+          : _currentPage * _pageSize;
+      final int limit = quiet
+          ? (_currentPage - _firstLoadedPage + 1) * _pageSize
+          : _pageSize;
 
-      if (widget.saleOrderName != null && widget.saleOrderName!.isNotEmpty) {
-        domain.add(['invoice_origin', 'ilike', widget.saleOrderName!.trim()]);
-      }
+      final List<dynamic> domain = _buildDomain();
 
-      if (widget.overdueOnly) {
-        final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
-        domain.addAll([
-          ['state', '=', 'posted'],
-          [
-            'payment_state',
-            'in',
-            ['not_paid', 'partial'],
-          ],
-          ['invoice_date_due', '<', todayStr],
-        ]);
-      }
+      final callKw = widget.callKw ?? OdooSessionManager.callKwWithCompany;
 
-      if (widget.unpaidOnly) {
-        domain.addAll([
-          ['state', '=', 'posted'],
-          [
-            'payment_state',
-            'in',
-            ['not_paid', 'partial'],
-          ],
-        ]);
-      }
-
-      if (_activeFilters.isNotEmpty) {
-        List<dynamic> statusConditions = [];
-
-        for (String filter in _activeFilters) {
-          switch (filter) {
-            case 'draft':
-              statusConditions.add(['state', '=', 'draft']);
-              break;
-            case 'posted':
-              statusConditions.add('&');
-              statusConditions.add(['state', '=', 'posted']);
-              statusConditions.add(['payment_state', '=', 'not_paid']);
-              break;
-            case 'paid':
-              statusConditions.add(['payment_state', '=', 'paid']);
-              break;
-            case 'partial':
-              statusConditions.add(['payment_state', '=', 'partial']);
-              break;
-            case 'not_paid':
-              statusConditions.add('&');
-              statusConditions.add(['state', '=', 'posted']);
-              statusConditions.add(['payment_state', '=', 'not_paid']);
-              break;
-            case 'in_payment':
-              statusConditions.add(['payment_state', '=', 'in_payment']);
-              break;
-            case 'reversed':
-              statusConditions.add(['payment_state', '=', 'reversed']);
-              break;
-            case 'blocked':
-              statusConditions.add(['payment_state', '=', 'blocked']);
-              break;
-            case 'cancelled':
-              statusConditions.add(['state', '=', 'cancel']);
-              break;
-          }
-        }
-
-        if (statusConditions.isNotEmpty) {
-          if (statusConditions.length > 1) {
-            List<dynamic> orConditions = [];
-            for (int i = 0; i < statusConditions.length - 1; i++) {
-              orConditions.add('|');
-            }
-            orConditions.addAll(statusConditions);
-            domain.addAll(orConditions);
-          } else {
-            domain.addAll(statusConditions);
-          }
-        }
-      }
-
-      if (_startDate != null) {
-        final startDateStr = DateFormat('yyyy-MM-dd').format(_startDate!);
-        domain.add(['invoice_date', '>=', startDateStr]);
-      }
-
-      if (_endDate != null) {
-        final endDateStr = DateFormat('yyyy-MM-dd').format(_endDate!);
-        domain.add(['invoice_date', '<=', endDateStr]);
-      }
-
-      if (_searchQuery.isNotEmpty) {
-        domain.add('|');
-        domain.add(['name', 'ilike', _searchQuery]);
-        domain.add(['partner_id.name', 'ilike', _searchQuery]);
-      }
-
-      final countFuture = OdooSessionManager.callKwWithCompany({
+      final countFuture = callKw({
         'model': 'account.move',
         'method': 'search_count',
         'args': [domain],
@@ -613,15 +717,15 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
               'team_id',
               'company_id',
             ],
-            apiCall: (currentFields) => OdooSessionManager.callKwWithCompany({
+            apiCall: (currentFields) => callKw({
               'model': 'account.move',
               'method': 'search_read',
               'args': [domain],
               'kwargs': {
                 'fields': currentFields,
                 'order': 'invoice_date desc, name desc, id desc',
-                'limit': _pageSize,
-                'offset': _currentPage * _pageSize,
+                'limit': limit,
+                'offset': offset,
               },
             }).then((res) => (res as List).cast<Map<String, dynamic>>()),
           );
@@ -637,6 +741,18 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
             .toList();
 
         if (!mounted) return;
+
+        // The last page was emptied by the change (its only invoice deleted):
+        // step back to the new last page rather than show an empty list with
+        // pages behind it.
+        if (quiet &&
+            newInvoices.isEmpty &&
+            totalCount > 0 &&
+            offset >= totalCount) {
+          _currentPage = _firstLoadedPage = (totalCount - 1) ~/ _pageSize;
+          return _fetchInvoices(quiet: true);
+        }
+
         setState(() {
           _totalInvoices = totalCount;
           if (!isLoadMore) {
@@ -654,7 +770,8 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
           if (_selectedGroupBy != null) {
             _isGrouped = true;
 
-            _fetchGroupSummary();
+            // A quiet refresh brings the groups up to date itself, after this.
+            if (!quiet) _fetchGroupSummary();
           } else {
             _groupSummary.clear();
             _loadedGroups.clear();
@@ -679,6 +796,9 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
         throw Exception('Unexpected response format');
       }
     } catch (e) {
+      // A refresh nobody asked for must not replace a good list with an error.
+      if (quiet) return;
+
       if (e.toString().contains('AccessError')) {
         if (!mounted) return;
         setState(() {
@@ -707,6 +827,61 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
           _showErrorSnackBar('Failed to load invoices: ${_getErrorMessage(e)}');
         }
       }
+    } finally {
+      // A change arrived while this load was running, which may not include
+      // it: refresh again now that the list is free.
+      if (!quiet && _quietRefreshQueued && mounted && !_isQuietRefreshing) {
+        _refreshQuietly();
+      }
+    }
+  }
+
+  /// An invoice, payment or sale order changed somewhere in the app.
+  void _onDataChanged() {
+    if (!mounted) return;
+
+    // A load that began after the last change already carries it, as does one a
+    // screen made on purpose right after, like the list refreshing itself once
+    // an invoice is created.
+    if (_changesHeardAtLoadStart >= _changesHeard) return;
+
+    _refreshQuietly();
+  }
+
+  /// Brings the list up to date without a skeleton, a scroll jump or a message:
+  /// the same filters, search, pages and groups, replaced in place. One runs at
+  /// a time; a change that arrives during a load, or during a refresh that
+  /// began before it, runs once more when that finishes.
+  Future<void> _refreshQuietly() async {
+    if (!mounted || !_isInitialized) return;
+    if (_isQuietRefreshing || _isLoading || _isLoadingMore) {
+      _quietRefreshQueued = true;
+      return;
+    }
+
+    _isQuietRefreshing = true;
+    try {
+      do {
+        _quietRefreshQueued = false;
+        await _fetchInvoices(quiet: true);
+        if (!mounted) return;
+
+        if (_isGrouped && _selectedGroupBy != null) {
+          await _fetchGroupSummary();
+          // Groups the user has opened show their invoices; reload those too,
+          // and forget the ones that no longer exist.
+          _loadedGroups.removeWhere(
+            (key, _) => !_groupSummary.containsKey(key),
+          );
+          for (final key in _loadedGroups.keys.toList()) {
+            if (!mounted) return;
+            await loadGroupInvoices(key, force: true);
+          }
+          _cachedLoadedGroups = Map.from(_loadedGroups);
+        }
+      } while (_quietRefreshQueued && mounted);
+    } finally {
+      _isQuietRefreshing = false;
     }
   }
 
@@ -722,18 +897,8 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
       _invoices = null;
     });
 
+    // The list showing the new rows is the answer: no message says so.
     await _fetchInvoices();
-
-    if (mounted) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-
-        try {
-          Theme.of(context);
-          CustomSnackbar.showSuccess(context, 'Invoices refreshed');
-        } catch (e) {}
-      });
-    }
   }
 
   void _showErrorSnackBar(String message) {
@@ -1294,144 +1459,104 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
                             ),
                           ),
                         ),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: () async {
-                                  setDialogState(() {
-                                    _activeFilters.clear();
-                                    _startDate = null;
-                                    _endDate = null;
-                                    _selectedGroupBy = null;
-                                    _isGrouped = false;
-                                    _groupSummary.clear();
-                                    _loadedGroups.clear();
-                                    _currentPage = 0;
-                                    _hasMoreData = true;
-                                    _invoices = null;
-                                    _isManualRefresh = true;
-                                  });
+                        child: MoboDialogButtons(
+                          secondaryLabel: 'Clear All',
+                          onSecondary: () async {
+                            setDialogState(() {
+                              _activeFilters.clear();
+                              _startDate = null;
+                              _endDate = null;
+                              _selectedGroupBy = null;
+                              _isGrouped = false;
+                              _groupSummary.clear();
+                              _loadedGroups.clear();
+                              _currentPage = 0;
+                              _hasMoreData = true;
+                              _invoices = null;
+                              _isManualRefresh = true;
+                            });
 
-                                  Navigator.of(context).pop();
-                                  setState(() {
-                                    _isGrouped = false;
-                                    _groupSummary.clear();
-                                    _loadedGroups.clear();
-                                    _currentPage = 0;
-                                    _hasMoreData = true;
-                                    _invoices = null;
-                                    _isManualRefresh = true;
-                                  });
-                                  await _fetchInvoices();
+                            Navigator.of(context).pop();
+                            setState(() {
+                              _isGrouped = false;
+                              _groupSummary.clear();
+                              _loadedGroups.clear();
+                              _currentPage = 0;
+                              _hasMoreData = true;
+                              _invoices = null;
+                              _isManualRefresh = true;
+                            });
+                            await _fetchInvoices();
 
-                                  final isContextual =
-                                      widget.customerId != null ||
-                                      widget.overdueOnly ||
-                                      widget.unpaidOnly;
-                                  if (!isContextual) {
-                                    _savedFilters.clear();
-                                    _savedStartDate = null;
-                                    _savedEndDate = null;
-                                    _savedGroupBy = null;
-                                    _savedSearchQuery = '';
-                                  }
-                                  if (mounted) {
-                                    CustomSnackbar.showInfo(
-                                      context,
-                                      'All filters cleared',
-                                    );
-                                  }
-                                },
-                                style: OutlinedButton.styleFrom(
-                                  foregroundColor: isDark
-                                      ? Colors.white
-                                      : Colors.black87,
-                                  side: BorderSide(
-                                    color: isDark
-                                        ? Colors.grey[600]!
-                                        : Colors.grey[300]!,
-                                  ),
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 12,
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                ),
-                                child: const Text('Clear All'),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              flex: 2,
-                              child: ElevatedButton(
-                                onPressed: () async {
-                                  try {
-                                    Navigator.of(context).pop();
+                            final isContextual =
+                                widget.customerId != null ||
+                                widget.overdueOnly ||
+                                widget.unpaidOnly;
+                            if (!isContextual) {
+                              _savedFilters.clear();
+                              _savedStartDate = null;
+                              _savedEndDate = null;
+                              _savedGroupBy = null;
+                              _savedSearchQuery = '';
+                            }
+                            if (mounted) {
+                              CustomSnackbar.showInfo(
+                                context,
+                                'All filters cleared',
+                              );
+                            }
+                          },
+                          primaryLabel: 'Apply',
+                          onPrimary: () async {
+                            try {
+                              Navigator.of(context).pop();
 
-                                    setState(() {
-                                      _isGrouped = _selectedGroupBy != null;
-                                      _currentPage = 0;
-                                      _hasMoreData = true;
-                                      _invoices = null;
-                                      _isManualRefresh = true;
+                              setState(() {
+                                _isGrouped = _selectedGroupBy != null;
+                                _currentPage = 0;
+                                _hasMoreData = true;
+                                _invoices = null;
+                                _isManualRefresh = true;
 
-                                      _groupSummary.clear();
-                                      _loadedGroups.clear();
-                                    });
-                                    await _fetchInvoices();
+                                _groupSummary.clear();
+                                _loadedGroups.clear();
+                              });
+                              await _fetchInvoices();
 
-                                    final hasDateFilter =
-                                        _startDate != null || _endDate != null;
-                                    final totalFilters =
-                                        _activeFilters.length +
-                                        (hasDateFilter ? 1 : 0) +
-                                        (_selectedGroupBy != null ? 1 : 0);
-                                    if (mounted) {
-                                      final isContextual =
-                                          widget.customerId != null ||
-                                          widget.overdueOnly ||
-                                          widget.unpaidOnly;
-                                      if (!isContextual) {
-                                        _savedFilters = Set.from(
-                                          _activeFilters,
-                                        );
-                                        _savedStartDate = _startDate;
-                                        _savedEndDate = _endDate;
-                                        _savedGroupBy = _selectedGroupBy;
-                                        _savedSearchQuery = _searchQuery;
-                                      }
-                                      CustomSnackbar.showInfo(
-                                        context,
-                                        totalFilters == 0
-                                            ? 'All filters cleared'
-                                            : 'Applied $totalFilters setting${totalFilters > 1 ? 's' : ''}',
-                                      );
-                                    }
-                                  } catch (e) {
-                                    if (mounted) {
-                                      CustomSnackbar.showError(
-                                        context,
-                                        'Failed to apply filters: ${e.toString()}',
-                                      );
-                                    }
-                                  }
-                                },
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: theme.primaryColor,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 12,
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                ),
-                                child: const Text('Apply'),
-                              ),
-                            ),
-                          ],
+                              final hasDateFilter =
+                                  _startDate != null || _endDate != null;
+                              final totalFilters =
+                                  _activeFilters.length +
+                                  (hasDateFilter ? 1 : 0) +
+                                  (_selectedGroupBy != null ? 1 : 0);
+                              if (mounted) {
+                                final isContextual =
+                                    widget.customerId != null ||
+                                    widget.overdueOnly ||
+                                    widget.unpaidOnly;
+                                if (!isContextual) {
+                                  _savedFilters = Set.from(_activeFilters);
+                                  _savedStartDate = _startDate;
+                                  _savedEndDate = _endDate;
+                                  _savedGroupBy = _selectedGroupBy;
+                                  _savedSearchQuery = _searchQuery;
+                                }
+                                CustomSnackbar.showInfo(
+                                  context,
+                                  totalFilters == 0
+                                      ? 'All filters cleared'
+                                      : 'Applied $totalFilters setting${totalFilters > 1 ? 's' : ''}',
+                                );
+                              }
+                            } catch (e) {
+                              if (mounted) {
+                                CustomSnackbar.showError(
+                                  context,
+                                  'Failed to apply filters: ${e.toString()}',
+                                );
+                              }
+                            }
+                          },
                         ),
                       ),
                     ],
@@ -1476,124 +1601,17 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
       final client = await OdooSessionManager.getClient();
       if (client == null) return;
 
-      List<dynamic> domain = [
-        [
-          'move_type',
-          'in',
-          ['out_invoice', 'out_refund'],
-        ],
-      ];
+      final List<dynamic> domain = _buildDomain();
 
-      if (widget.customerId != null) {
-        domain.add(['partner_id', '=', widget.customerId]);
-      }
-
-      if (widget.saleOrderName != null && widget.saleOrderName!.isNotEmpty) {
-        domain.add(['invoice_origin', 'ilike', widget.saleOrderName!.trim()]);
-      }
-
-      if (widget.overdueOnly) {
-        final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
-        domain.addAll([
-          ['state', '=', 'posted'],
-          [
-            'payment_state',
-            'in',
-            ['not_paid', 'partial'],
-          ],
-          ['invoice_date_due', '<', todayStr],
-        ]);
-      }
-
-      if (widget.unpaidOnly) {
-        domain.addAll([
-          ['state', '=', 'posted'],
-          [
-            'payment_state',
-            'in',
-            ['not_paid', 'partial'],
-          ],
-        ]);
-      }
-
-      if (_activeFilters.isNotEmpty) {
-        List<dynamic> statusConditions = [];
-        for (String filter in _activeFilters) {
-          switch (filter) {
-            case 'draft':
-              statusConditions.add(['state', '=', 'draft']);
-              break;
-            case 'posted':
-              statusConditions.add('&');
-              statusConditions.add(['state', '=', 'posted']);
-              statusConditions.add(['payment_state', '=', 'not_paid']);
-              break;
-            case 'paid':
-              statusConditions.add(['payment_state', '=', 'paid']);
-              break;
-            case 'partial':
-              statusConditions.add(['payment_state', '=', 'partial']);
-              break;
-            case 'not_paid':
-              statusConditions.add('&');
-              statusConditions.add(['state', '=', 'posted']);
-              statusConditions.add(['payment_state', '=', 'not_paid']);
-              break;
-            case 'in_payment':
-              statusConditions.add(['payment_state', '=', 'in_payment']);
-              break;
-            case 'reversed':
-              statusConditions.add(['payment_state', '=', 'reversed']);
-              break;
-            case 'blocked':
-              statusConditions.add(['payment_state', '=', 'blocked']);
-              break;
-            case 'cancelled':
-              statusConditions.add(['state', '=', 'cancel']);
-              break;
-          }
-        }
-
-        if (statusConditions.isNotEmpty) {
-          if (statusConditions.length > 1) {
-            List<dynamic> orConditions = [];
-            for (int i = 0; i < statusConditions.length - 1; i++) {
-              orConditions.add('|');
-            }
-            orConditions.addAll(statusConditions);
-            domain.addAll(orConditions);
-          } else {
-            domain.addAll(statusConditions);
-          }
-        }
-      }
-
-      if (_startDate != null) {
-        final startDateStr = DateFormat('yyyy-MM-dd').format(_startDate!);
-        domain.add(['invoice_date', '>=', startDateStr]);
-      }
-
-      if (_endDate != null) {
-        final endDateStr = DateFormat('yyyy-MM-dd').format(_endDate!);
-        domain.add(['invoice_date', '<=', endDateStr]);
-      }
-
-      if (_searchQuery.isNotEmpty) {
-        domain.add('|');
-        domain.add(['name', 'ilike', _searchQuery]);
-        domain.add(['partner_id.name', 'ilike', _searchQuery]);
-      }
-
-      final result = await client.callKw({
-        'model': 'account.move',
-        'method': 'read_group',
-        'args': [domain],
-        'kwargs': {
-          'fields': ['id'],
-          'groupby': [_selectedGroupBy!],
-          'lazy': false,
-        },
-      });
+      // `read_group` has a different signature from Odoo 19 and is gone in 20;
+      // the helper returns the same rows on every release.
+      final dynamic result = await OdooCompat.readGroup(
+        model: 'account.move',
+        domain: domain,
+        fields: ['id'],
+        groupby: [_selectedGroupBy!],
+        callKw: client.callKw,
+      );
 
       if (result is List) {
         _groupSummary.clear();
@@ -1743,122 +1761,16 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
     }
   }
 
-  Future<void> loadGroupInvoices(String groupKey) async {
+  Future<void> loadGroupInvoices(String groupKey, {bool force = false}) async {
     if (!_isGrouped || _selectedGroupBy == null) return;
 
-    if (_loadedGroups.containsKey(groupKey)) return;
+    if (!force && _loadedGroups.containsKey(groupKey)) return;
 
     try {
       final client = await OdooSessionManager.getClient();
       if (client == null) return;
 
-      List<dynamic> domain = [
-        [
-          'move_type',
-          'in',
-          ['out_invoice', 'out_refund'],
-        ],
-      ];
-
-      if (widget.customerId != null) {
-        domain.add(['partner_id', '=', widget.customerId]);
-      }
-
-      if (widget.saleOrderName != null && widget.saleOrderName!.isNotEmpty) {
-        domain.add(['invoice_origin', 'ilike', widget.saleOrderName!.trim()]);
-      }
-
-      if (widget.overdueOnly) {
-        final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
-        domain.addAll([
-          ['state', '=', 'posted'],
-          [
-            'payment_state',
-            'in',
-            ['not_paid', 'partial'],
-          ],
-          ['invoice_date_due', '<', todayStr],
-        ]);
-      }
-
-      if (widget.unpaidOnly) {
-        domain.addAll([
-          ['state', '=', 'posted'],
-          [
-            'payment_state',
-            'in',
-            ['not_paid', 'partial'],
-          ],
-        ]);
-      }
-
-      if (_activeFilters.isNotEmpty) {
-        List<dynamic> statusConditions = [];
-        for (String filter in _activeFilters) {
-          switch (filter) {
-            case 'draft':
-              statusConditions.add(['state', '=', 'draft']);
-              break;
-            case 'posted':
-              statusConditions.add('&');
-              statusConditions.add(['state', '=', 'posted']);
-              statusConditions.add(['payment_state', '=', 'not_paid']);
-              break;
-            case 'paid':
-              statusConditions.add(['payment_state', '=', 'paid']);
-              break;
-            case 'partial':
-              statusConditions.add(['payment_state', '=', 'partial']);
-              break;
-            case 'not_paid':
-              statusConditions.add('&');
-              statusConditions.add(['state', '=', 'posted']);
-              statusConditions.add(['payment_state', '=', 'not_paid']);
-              break;
-            case 'in_payment':
-              statusConditions.add(['payment_state', '=', 'in_payment']);
-              break;
-            case 'reversed':
-              statusConditions.add(['payment_state', '=', 'reversed']);
-              break;
-            case 'blocked':
-              statusConditions.add(['payment_state', '=', 'blocked']);
-              break;
-            case 'cancelled':
-              statusConditions.add(['state', '=', 'cancel']);
-              break;
-          }
-        }
-
-        if (statusConditions.isNotEmpty) {
-          if (statusConditions.length > 1) {
-            List<dynamic> orConditions = [];
-            for (int i = 0; i < statusConditions.length - 1; i++) {
-              orConditions.add('|');
-            }
-            orConditions.addAll(statusConditions);
-            domain.addAll(orConditions);
-          } else {
-            domain.addAll(statusConditions);
-          }
-        }
-      }
-
-      if (_startDate != null) {
-        final startDateStr = DateFormat('yyyy-MM-dd').format(_startDate!);
-        domain.add(['invoice_date', '>=', startDateStr]);
-      }
-
-      if (_endDate != null) {
-        final endDateStr = DateFormat('yyyy-MM-dd').format(_endDate!);
-        domain.add(['invoice_date', '<=', endDateStr]);
-      }
-
-      if (_searchQuery.isNotEmpty) {
-        domain.add('|');
-        domain.add(['name', 'ilike', _searchQuery]);
-        domain.add(['partner_id.name', 'ilike', _searchQuery]);
-      }
+      final List<dynamic> domain = _buildDomain();
 
       final groupDomain = _buildGroupDomain(groupKey, _selectedGroupBy!);
 
@@ -2014,6 +1926,7 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
   }
 
   void _navigateToInvoiceDetail(BuildContext context, Invoice invoice) {
+    final loadsWhenOpened = _loadsBegun;
     Navigator.push(
       context,
 
@@ -2022,8 +1935,13 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
             InvoiceDetailsPage(invoiceId: invoice.id.toString()),
       ),
     ).then((result) {
-      if (result == true) {
-        _handleRefresh();
+      // What the page changed was announced as it happened, and the list
+      // refreshed itself in place then. This is only for a change that was
+      // not announced: refresh quietly, not with the skeleton and a "refreshed"
+      // message, and not at all when a load has run since the page was opened.
+      final loadedSince = _loadsBegun > loadsWhenOpened;
+      if (result == true && mounted && !loadedSince) {
+        _refreshQuietly();
       }
     });
   }
@@ -2398,17 +2316,8 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
                       await _fetchInvoices();
                     }
                   },
-                  backgroundColor:
-                      Theme.of(context).brightness == Brightness.dark
-                      ? Colors.white
-                      : Theme.of(context).primaryColor,
                   tooltip: 'Create Invoice',
-                  child: Icon(
-                    HugeIcons.strokeRoundedNoteAdd,
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? Colors.black
-                        : Colors.white,
-                  ),
+                  child: const Icon(HugeIcons.strokeRoundedNoteAdd),
                 ),
               ],
             ),

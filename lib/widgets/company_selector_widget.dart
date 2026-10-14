@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:provider/provider.dart';
 import '../providers/company_provider.dart';
 import '../services/session_service.dart';
+import '../shared/widgets/mobo/mobo_checkbox.dart';
 
 class CompanySelectorWidget extends StatelessWidget {
   final bool showMultiSelect;
@@ -437,11 +438,16 @@ class _CompanyDropdownContentState extends State<_CompanyDropdownContent> {
                               ),
                             ),
                             const SizedBox(width: 12),
-                            Checkbox(
+                            MoboCheckbox(
                               value: isAllowed,
-                              onChanged: _applying
-                                  ? null
-                                  : (companyId == _tempSelectedCompanyId)
+                              // A fingertip-sized target, as the Material
+                              // checkbox this replaces had.
+                              tapTargetSize: 48,
+                              enabled: !_applying,
+                              // The active company cannot be switched off, so
+                              // its box only displays — at full strength, not
+                              // dimmed like a disabled one.
+                              onChanged: (companyId == _tempSelectedCompanyId)
                                   ? null
                                   : (val) {
                                       setState(() {
@@ -454,31 +460,6 @@ class _CompanyDropdownContentState extends State<_CompanyDropdownContent> {
                                         }
                                       });
                                     },
-                              fillColor: WidgetStateProperty.resolveWith((
-                                states,
-                              ) {
-                                if (isActive) {
-                                  return primaryColor;
-                                }
-                                if (states.contains(WidgetState.selected)) {
-                                  return primaryColor;
-                                }
-                                return Colors.transparent;
-                              }),
-                              checkColor: isActive
-                                  ? Colors.white
-                                  : Colors.white,
-
-                              side: BorderSide(
-                                color: isActive
-                                    ? primaryColor
-                                    : Colors.grey.shade400,
-                                width: isActive ? 2 : 1,
-                              ),
-
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(4),
-                              ),
                             ),
                             const SizedBox(width: 8),
                           ],

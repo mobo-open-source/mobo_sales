@@ -1,13 +1,167 @@
+import 'dart:async';
+
+import 'odoo_error_classifier.dart';
+
 /// Converts raw Odoo server errors into readable user-facing messages.
 class OdooErrorHandler {
   /// Returns `true` if [e] represents an access rights or permission error.
+  ///
+  /// Matches what Odoo 17 to 20 word their `AccessError`s: the model-level
+  /// `You are not allowed to access 'X' (x.y) records.`, the record-rule
+  /// `Uh-oh! Looks like you have stumbled upon some top-secret records.`
+  /// and the field-level `You do not have enough rights to access the field
+  /// "f" on X (x.y).` The exception class name (`odoo.exceptions.AccessError`)
+  /// is there too when the error came through odoo_rpc.
   static bool isAccessError(dynamic e) {
     final s = e.toString().toLowerCase();
     return s.contains('accesserror') ||
         s.contains('access rights') ||
         s.contains('access denied') ||
         s.contains('not allowed to') ||
+        s.contains('top-secret records') ||
+        s.contains('enough rights') ||
         s.contains('permission');
+  }
+
+  /// The reason [e] gives, as one plain sentence for a snackbar.
+  ///
+  /// Only what the server (or the app) says went wrong, in the user's terms:
+  /// no `Exception:` prefixes, no "Failed to do X:" wrappers, no `Odoo Server
+  /// Error`, no traceback, none of the extra lines Odoo adds to a "go to the
+  /// settings" warning (its action id, its button label, `None`). Failures that
+  /// are about the connection, the session or the user's rights get their own
+  /// short wording, because the server's text for those is not meant for
+  /// users. [fallback] is used when nothing readable is left.
+  static String toSnackbarMessage(dynamic e, {String? fallback}) {
+    final generic = fallback ?? 'Something went wrong. Please try again.';
+    final raw = e.toString();
+    final lower = raw.toLowerCase();
+
+    if (e is TimeoutException ||
+        lower.contains('timeoutexception') ||
+        lower.contains('timed out') ||
+        lower.contains('request timeout')) {
+      return 'The server took too long to respond. Please try again.';
+    }
+    if (lower.contains('session expired') ||
+        lower.contains('session invalid') ||
+        lower.contains('sessionexpired')) {
+      return 'Your session has expired. Please log in again.';
+    }
+    if (OdooErrorClassifier.isServerUnreachable(e) ||
+        lower.contains('connection error')) {
+      return 'Could not reach the server. Please check your internet '
+          'connection and try again.';
+    }
+    if (isAccessError(e)) {
+      return "You don't have permission to do this. Please contact your "
+          'administrator.';
+    }
+
+    // The database's own words for a rule it enforces: a user cannot act on
+    // "violates unique constraint res_partner_x_key".
+    if (lower.contains('duplicate key value') ||
+        lower.contains('violates unique constraint')) {
+      return 'This already exists: a value that has to be unique is already '
+          'used by another record.';
+    }
+    if (lower.contains('violates not-null constraint')) {
+      return 'A required value is missing. Please fill in all required fields.';
+    }
+    if (lower.contains('violates foreign key constraint')) {
+      return 'This is linked to other records, so it cannot be changed or '
+          'removed.';
+    }
+
+    var text = _serverSentence(raw);
+    text = _tidy(text);
+    if (text.isEmpty ||
+        text.startsWith('{') ||
+        text.contains('Instance of ') ||
+        text.contains('Traceback')) {
+      return generic;
+    }
+    return '${text[0].toUpperCase()}${text.substring(1)}';
+  }
+
+  /// The part of [raw] the server wrote: the `data.message` of an odoo_rpc
+  /// error map, what follows `Odoo Server Error:` in the app's own wrapping,
+  /// or [raw] itself. An error this class already phrased for a dialog (a
+  /// title line with an emoji, then paragraphs) gives its first paragraph.
+  static String _serverSentence(String raw) {
+    final paragraphs = raw.trim().split(RegExp(r'\n\s*\n'));
+    if (paragraphs.length > 1 && _startsWithSymbol(paragraphs.first)) {
+      var body = paragraphs[1].trim();
+      // "…could not be reached. Please check:" — the list that follows is gone.
+      if (body.endsWith(':')) {
+        final lastStop = body.lastIndexOf('. ');
+        body = lastStop == -1
+            ? body.substring(0, body.length - 1)
+            : body.substring(0, lastStop + 1);
+      }
+      return body;
+    }
+
+    final map = RegExp(
+      r'data:\s*\{.*?message:\s*(.*?),\s*arguments:',
+      dotAll: true,
+    ).firstMatch(raw);
+    if (map != null) return map.group(1)!;
+
+    const marker = 'Odoo Server Error:';
+    final at = raw.lastIndexOf(marker);
+    if (at != -1) return raw.substring(at + marker.length);
+    return raw;
+  }
+
+  static bool _startsWithSymbol(String text) {
+    final trimmed = text.trimLeft();
+    return trimmed.isNotEmpty && trimmed.runes.first > 0x2000;
+  }
+
+  /// Strips the wrappers, the traceback and Odoo's warning residue from
+  /// [text] and folds it onto one line.
+  static String _tidy(String text) {
+    var out = text.trim();
+    final traceback = out.indexOf('Traceback (most recent call last)');
+    if (traceback != -1) out = out.substring(0, traceback);
+
+    final wrappers = [
+      RegExp(r'^(?:[A-Za-z]*Exception|Error|StateError)\s*:\s*'),
+      RegExp(r'^Failed to [^:\n]{3,80}:\s+'),
+      RegExp(r'^Odoo Server Error\s*:\s*'),
+    ];
+    var stripped = true;
+    while (stripped) {
+      stripped = false;
+      for (final wrapper in wrappers) {
+        final m = wrapper.firstMatch(out);
+        if (m != null && m.end < out.length) {
+          out = out.substring(m.end);
+          stripped = true;
+        }
+      }
+    }
+
+    // An exception with no message prints as just its name.
+    if (RegExp(r'^(?:[A-Za-z]*Exception|Error)\s*:?$').hasMatch(out)) return '';
+
+    // A "go to <settings>" warning arrives as message, action id, button
+    // label, context — one per line. Only the message is for the user.
+    var lines = out
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    final actionId = lines.indexWhere((l) => RegExp(r'^\d+$').hasMatch(l));
+    if (actionId > 0 &&
+        lines.length - actionId <= 3 &&
+        (lines.last == 'None' || lines.last.startsWith('{'))) {
+      lines = lines.sublist(0, actionId);
+    }
+
+    out = lines.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+    return out.length > 400 ? '${out.substring(0, 397)}...' : out;
   }
 
   /// Converts [e] to a user-readable error message, with an optional [defaultMessage] fallback.

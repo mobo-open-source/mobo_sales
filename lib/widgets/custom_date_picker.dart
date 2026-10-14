@@ -3,10 +3,16 @@ import 'package:flutter/material.dart';
 import 'package:hugeicons/hugeicons.dart';
 import 'package:intl/intl.dart';
 
+import '../shared/widgets/mobo/mobo_field_label.dart';
+
 class CustomDateSelector extends StatelessWidget {
   final VoidCallback onTap;
   final DateTime selectedDate;
   final String labelText;
+
+  /// Draws a red ` *` after [labelText]. Only for a date the form refuses to
+  /// submit without; a date that always has a default is not required.
+  final bool isRequired;
   final bool isDark;
   final bool showBorder;
   final String? dateFormat;
@@ -15,6 +21,7 @@ class CustomDateSelector extends StatelessWidget {
     required this.onTap,
     required this.selectedDate,
     required this.labelText,
+    this.isRequired = false,
     this.isDark = false,
     this.showBorder = false,
     this.dateFormat,
@@ -30,8 +37,9 @@ class CustomDateSelector extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
+          MoboFieldLabel(
             labelText,
+            isRequired: isRequired,
             style: TextStyle(
               fontWeight: FontWeight.w400,
               color: isDark ? Colors.white70 : Color(0xff7F7F7F),

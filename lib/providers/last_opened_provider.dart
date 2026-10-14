@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 
+import '../services/data_change_bus.dart';
+
 /// Represents a recently accessed record (quotation, invoice, product, etc.).
 class LastOpenedItem {
   final String id;
@@ -122,8 +124,77 @@ class LastOpenedProvider extends ChangeNotifier {
 
   LastOpenedItem? get lastOpened => _items.isNotEmpty ? _items.first : null;
 
-  LastOpenedProvider() {
-    _loadItems();
+  DataChangeSubscription? _busSubscription;
+  Future<void> _loadFuture = Future<void>.value();
+  bool _disposed = false;
+
+  /// [bus] is where record changes are announced; it is the app-wide bus
+  /// unless a test hands in one of its own.
+  LastOpenedProvider({DataChangeBus? bus}) {
+    _loadFuture = _loadItems();
+    _busSubscription = (bus ?? DataChangeBus.instance).listen(
+      where: (change) =>
+          (change.isQuotation || change.isInvoice) &&
+          change.id != null &&
+          change.kind != DataChangeKind.created,
+      onChange: _onRecordsChanged,
+    );
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _busSubscription?.cancel();
+    _busSubscription = null;
+    super.dispose();
+  }
+
+  /// A quotation or invoice was changed somewhere in the app.
+  ///
+  /// One that was deleted must not linger in the list (opening it would only
+  /// lead to a record that no longer exists), so its item is dropped and the
+  /// list persisted. One that was updated keeps its item: the title and
+  /// subtitle stored with it cannot be refreshed without a round trip to the
+  /// server, and opening the item loads the record afresh anyway. Listeners
+  /// are told either way so whatever shows the list rebuilds.
+  Future<void> _onRecordsChanged(List<DataChange> burst) async {
+    // Never act on a list that is still being read from storage: the read
+    // would replace whatever was removed here.
+    await _loadFuture;
+    if (_disposed) return;
+
+    final deletedIdsByType = <String, Set<String>>{};
+    var anyUpdated = false;
+
+    for (final change in burst) {
+      final recordId = change.id;
+      if (recordId == null) continue;
+      final type = change.isQuotation
+          ? 'quotation'
+          : change.isInvoice
+          ? 'invoice'
+          : null;
+      if (type == null) continue;
+
+      if (change.kind == DataChangeKind.deleted) {
+        (deletedIdsByType[type] ??= <String>{}).add('${type}_$recordId');
+      } else if (change.kind == DataChangeKind.updated) {
+        anyUpdated = true;
+      }
+    }
+
+    var removedAny = false;
+    if (deletedIdsByType.isNotEmpty) {
+      final countBefore = _items.length;
+      _items.removeWhere(
+        (item) => deletedIdsByType[item.type]?.contains(item.id) ?? false,
+      );
+      removedAny = _items.length != countBefore;
+      if (removedAny) await _saveItems();
+    }
+
+    if (_disposed) return;
+    if (removedAny || anyUpdated) notifyListeners();
   }
 
   Future<void> _loadItems() async {
@@ -158,7 +229,7 @@ class LastOpenedProvider extends ChangeNotifier {
   void updateSession(String? sessionId) {
     if (_currentSessionId == sessionId) return;
     _currentSessionId = sessionId;
-    _loadItems();
+    _loadFuture = _loadItems();
   }
 
   /// Adds [item] to the top of the history, removing any duplicate.

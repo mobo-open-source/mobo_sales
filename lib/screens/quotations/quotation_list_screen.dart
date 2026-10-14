@@ -8,7 +8,6 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:mobo_sales/screens/quotations/quotation_details_screen.dart';
 import 'package:mobo_sales/screens/quotations/create_quote_screen.dart';
-import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'package:mobo_sales/utils/date_picker_utils.dart';
 
 import '../../providers/quotation_provider.dart';
@@ -16,11 +15,14 @@ import '../../services/connectivity_service.dart';
 import '../../services/session_service.dart';
 import '../../widgets/connection_status_widget.dart';
 import '../../widgets/custom_snackbar.dart';
+import '../../widgets/loading_dialog.dart';
 import '../../widgets/empty_state_widget.dart';
 import '../../widgets/list_shimmer.dart';
 import '../../models/quote.dart';
 import '../../services/odoo_error_classifier.dart';
 import '../../widgets/list_search_bar.dart';
+import '../../utils/quotation_status.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 
 class QuotationListScreen extends StatefulWidget {
   final int? customerId;
@@ -269,148 +271,95 @@ class _QuotationListScreenState extends State<QuotationListScreen>
                               ),
                             ),
                           ),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: OutlinedButton(
-                                  onPressed: () async {
-                                    setDialogState(() {
-                                      _activeFilters.clear();
-                                      _startDate = null;
-                                      _endDate = null;
-                                      _selectedGroupBy = null;
-                                    });
+                          child: MoboDialogButtons(
+                            secondaryLabel: 'Clear All',
+                            onSecondary: () async {
+                              setDialogState(() {
+                                _activeFilters.clear();
+                                _startDate = null;
+                                _endDate = null;
+                                _selectedGroupBy = null;
+                              });
 
-                                    Navigator.of(context).pop();
+                              Navigator.of(context).pop();
 
-                                    final provider =
-                                        Provider.of<QuotationProvider>(
-                                          context,
-                                          listen: false,
-                                        );
-                                    provider.setDateRange(null, null);
-                                    await provider.loadQuotations(
-                                      filters: const {},
-                                      clearGroupBy: true,
-                                    );
-                                    if (mounted) {
-                                      CustomSnackbar.showInfo(
-                                        context,
-                                        'All filters cleared',
-                                      );
-                                    }
-                                  },
-                                  style: OutlinedButton.styleFrom(
-                                    foregroundColor: isDark
-                                        ? Colors.white
-                                        : Colors.black87,
-                                    side: BorderSide(
-                                      color: isDark
-                                          ? Colors.grey[600]!
-                                          : Colors.grey[300]!,
-                                    ),
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 12,
-                                    ),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                  ),
-                                  child: const Text('Clear All'),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                flex: 2,
-                                child: ElevatedButton(
-                                  onPressed: () async {
-                                    try {
-                                      Navigator.of(context).pop();
+                              final provider = Provider.of<QuotationProvider>(
+                                context,
+                                listen: false,
+                              );
+                              provider.setDateRange(null, null);
+                              await provider.loadQuotations(
+                                filters: const {},
+                                clearGroupBy: true,
+                              );
+                              if (mounted) {
+                                CustomSnackbar.showInfo(
+                                  context,
+                                  'All filters cleared',
+                                );
+                              }
+                            },
+                            primaryLabel: 'Apply',
+                            onPrimary: () async {
+                              try {
+                                Navigator.of(context).pop();
 
-                                      provider.setDateRange(
-                                        _startDate,
-                                        _endDate,
-                                      );
-                                      await provider.loadQuotations(
-                                        filters: _activeFilters,
-                                        groupBy: _selectedGroupBy,
-                                      );
+                                provider.setDateRange(_startDate, _endDate);
+                                await provider.loadQuotations(
+                                  filters: _activeFilters,
+                                  groupBy: _selectedGroupBy,
+                                );
 
-                                      int filterCount = 0;
-                                      if (_activeFilters.contains(
-                                        'quotation',
-                                      )) {
-                                        filterCount++;
-                                      }
-                                      if (_activeFilters.contains('sale')) {
-                                        filterCount++;
-                                      }
-                                      if (_activeFilters.contains('invoiced')) {
-                                        filterCount++;
-                                      }
-                                      if (_activeFilters.contains(
-                                        'to_invoice',
-                                      )) {
-                                        filterCount++;
-                                      }
-                                      if (_activeFilters.contains(
-                                        'delivered',
-                                      )) {
-                                        filterCount++;
-                                      }
-                                      if (_activeFilters.contains(
-                                        'to_deliver',
-                                      )) {
-                                        filterCount++;
-                                      }
-                                      if (_activeFilters.contains('expired')) {
-                                        filterCount++;
-                                      }
-                                      if (_activeFilters.contains(
-                                        'user_quotations',
-                                      )) {
-                                        filterCount++;
-                                      }
-                                      if (_startDate != null) filterCount++;
-                                      if (_endDate != null) filterCount++;
-                                      if (provider
-                                          .searchController
-                                          .text
-                                          .isNotEmpty) {
-                                        filterCount++;
-                                      }
+                                int filterCount = 0;
+                                if (_activeFilters.contains('quotation')) {
+                                  filterCount++;
+                                }
+                                if (_activeFilters.contains('sale')) {
+                                  filterCount++;
+                                }
+                                if (_activeFilters.contains('invoiced')) {
+                                  filterCount++;
+                                }
+                                if (_activeFilters.contains('to_invoice')) {
+                                  filterCount++;
+                                }
+                                if (_activeFilters.contains('delivered')) {
+                                  filterCount++;
+                                }
+                                if (_activeFilters.contains('to_deliver')) {
+                                  filterCount++;
+                                }
+                                if (_activeFilters.contains('expired')) {
+                                  filterCount++;
+                                }
+                                if (_activeFilters.contains(
+                                  'user_quotations',
+                                )) {
+                                  filterCount++;
+                                }
+                                if (_startDate != null) filterCount++;
+                                if (_endDate != null) filterCount++;
+                                if (provider.searchController.text.isNotEmpty) {
+                                  filterCount++;
+                                }
 
-                                      if (mounted) {
-                                        CustomSnackbar.showInfo(
-                                          context,
-                                          filterCount == 0
-                                              ? 'All filters cleared'
-                                              : 'Applied $filterCount filter${filterCount > 1 ? 's' : ''}',
-                                        );
-                                      }
-                                    } catch (e) {
-                                      if (mounted) {
-                                        CustomSnackbar.showError(
-                                          context,
-                                          'Failed to apply filters: ${e.toString()}',
-                                        );
-                                      }
-                                    }
-                                  },
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: theme.primaryColor,
-                                    foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 12,
-                                    ),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                  ),
-                                  child: const Text('Apply'),
-                                ),
-                              ),
-                            ],
+                                if (mounted) {
+                                  CustomSnackbar.showInfo(
+                                    context,
+                                    filterCount == 0
+                                        ? 'All filters cleared'
+                                        : 'Applied $filterCount filter${filterCount > 1 ? 's' : ''}',
+                                  );
+                                }
+                              } catch (e) {
+                                if (mounted) {
+                                  CustomSnackbar.showError(
+                                    context,
+                                    'Failed to apply filters: ${e.toString()}',
+                                  );
+                                }
+                              }
+                            },
                           ),
                         ),
                       ],
@@ -956,6 +905,10 @@ class _QuotationListScreenState extends State<QuotationListScreen>
       ),
     ).then((_) {
       _isActivePage = true;
+      // Whatever was done on the page just left — and anything done to the
+      // record elsewhere meanwhile — shows: the list reads what it has loaded
+      // again from the server, quietly, with the rows staying until it has.
+      if (mounted) unawaited(_quotationProvider?.quietReload());
     });
   }
 
@@ -1496,39 +1449,10 @@ class _QuotationListScreenState extends State<QuotationListScreen>
         ? quotation.extraData!['currency_id'] as List<dynamic>?
         : null;
 
-    Color getStatusColor(String s) {
-      switch (s) {
-        case 'sale':
-          return Colors.green;
-        case 'draft':
-          return Colors.orange;
-        case 'sent':
-          return Colors.blue;
-        case 'cancel':
-          return Colors.red;
-        case 'expired':
-          return Colors.grey;
-        default:
-          return Theme.of(context).primaryColor;
-      }
-    }
-
-    String getStatusLabel(String s) {
-      switch (s) {
-        case 'sale':
-          return 'Sale Order';
-        case 'draft':
-          return 'Quotation';
-        case 'sent':
-          return 'Sent';
-        case 'cancel':
-          return 'Cancelled';
-        case 'expired':
-          return 'Expired';
-        default:
-          return s.isNotEmpty ? s[0].toUpperCase() + s.substring(1) : 'Unknown';
-      }
-    }
+    final status = QuotationStatus.of(
+      state,
+      fallback: Theme.of(context).primaryColor,
+    );
 
     Widget? popup;
 
@@ -1665,8 +1589,8 @@ class _QuotationListScreenState extends State<QuotationListScreen>
       extraInfoLine: extraInfoLine,
       amount: totalAmount,
       currencyId: currencyId,
-      status: getStatusLabel(state),
-      statusColor: getStatusColor(state),
+      status: status.label,
+      statusColor: status.color,
       isDark: isDark,
       onTap: () => _navigateToQuotationDetail(context, quotation),
       popupMenu: popup,
@@ -1869,59 +1793,13 @@ class _QuotationListScreenState extends State<QuotationListScreen>
                 : Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isDark
-                        ? AppTheme.primaryColor
-                        : AppTheme.primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Convert',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Convert',
+            onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
       ),
@@ -1929,75 +1807,13 @@ class _QuotationListScreenState extends State<QuotationListScreen>
   }
 
   Future<void> _convertToOrder(BuildContext context, Quote quotation) async {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (BuildContext context) {
-        return PopScope(
-          canPop: false,
-          child: Dialog(
-            backgroundColor: Colors.transparent,
-            elevation: 0,
-            child: Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: isDark ? Colors.grey[900] : Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: isDark
-                        ? Colors.black.withOpacity(0.3)
-                        : Colors.black.withOpacity(0.1),
-                    blurRadius: 20,
-                    offset: const Offset(0, 10),
-                  ),
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 60,
-                    height: 60,
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? Colors.white.withOpacity(0.1)
-                          : Theme.of(context).primaryColor.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: LoadingAnimationWidget.fourRotatingDots(
-                      color: isDark
-                          ? Colors.white
-                          : Theme.of(context).primaryColor,
-                      size: 35,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    'Converting to Sale Order',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? Colors.white
-                          : Colors.grey[800],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Please wait while we process your request',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? Colors.grey[300]
-                          : Colors.grey[600],
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
-          ),
+        return const LoadingDialog(
+          message: 'Converting to Sale Order...',
+          subtitle: 'Please wait while we process your request',
         );
       },
     );
@@ -2113,17 +1929,16 @@ class _QuotationListScreenState extends State<QuotationListScreen>
               ],
             ),
           ),
+          actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('OK'),
-            ),
-            TextButton(
-              onPressed: () {
+            MoboDialogButtons(
+              secondaryLabel: 'OK',
+              onSecondary: () => Navigator.of(ctx).pop(),
+              primaryLabel: 'Retry',
+              onPrimary: () {
                 Navigator.of(ctx).pop();
                 _convertToOrder(context, quotation);
               },
-              child: const Text('Retry'),
             ),
           ],
         ),
@@ -2205,57 +2020,13 @@ class _QuotationListScreenState extends State<QuotationListScreen>
                 : Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red[600],
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Delete',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Delete',
+            onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
       ),
@@ -2265,58 +2036,9 @@ class _QuotationListScreenState extends State<QuotationListScreen>
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => Center(
-          child: Dialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-            elevation: 8,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 60,
-                    height: 60,
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? Colors.white.withOpacity(0.1)
-                          : Theme.of(context).primaryColor.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: LoadingAnimationWidget.fourRotatingDots(
-                      color: isDark
-                          ? Colors.white
-                          : Theme.of(context).primaryColor,
-                      size: 35,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    'Deleting Quotation',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? Colors.white
-                          : Colors.grey[800],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Please wait while we process your request',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? Colors.grey[300]
-                          : Colors.grey[600],
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
-          ),
+        builder: (context) => const LoadingDialog(
+          message: 'Deleting Quotation...',
+          subtitle: 'Please wait while we process your request',
         ),
       );
       try {
@@ -2371,57 +2093,13 @@ class _QuotationListScreenState extends State<QuotationListScreen>
                 : Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Back',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Back',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Cancel',
+            onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
       ),
@@ -2431,58 +2109,9 @@ class _QuotationListScreenState extends State<QuotationListScreen>
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => Center(
-          child: Dialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-            elevation: 8,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 60,
-                    height: 60,
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? Colors.white.withOpacity(0.1)
-                          : Theme.of(context).primaryColor.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: LoadingAnimationWidget.fourRotatingDots(
-                      color: isDark
-                          ? Colors.white
-                          : Theme.of(context).primaryColor,
-                      size: 35,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    'Cancelling Quotation',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? Colors.white
-                          : Colors.grey[800],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Please wait while we process your request',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? Colors.grey[300]
-                          : Colors.grey[600],
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
-          ),
+        builder: (context) => const LoadingDialog(
+          message: 'Cancelling Quotation...',
+          subtitle: 'Please wait while we process your request',
         ),
       );
       try {
@@ -2892,17 +2521,8 @@ class _QuotationListScreenState extends State<QuotationListScreen>
                           await provider.refreshQuotations();
                         }
                       },
-                      backgroundColor:
-                          Theme.of(context).brightness == Brightness.dark
-                          ? Colors.white
-                          : Theme.of(context).primaryColor,
                       tooltip: 'Create Quotation',
-                      child: Icon(
-                        HugeIcons.strokeRoundedFileAdd,
-                        color: Theme.of(context).brightness == Brightness.dark
-                            ? Colors.black
-                            : Colors.white,
-                      ),
+                      child: const Icon(HugeIcons.strokeRoundedFileAdd),
                     ),
                   ],
                 ),
@@ -3304,65 +2924,21 @@ class _QuotationListScreenState extends State<QuotationListScreen>
                                   bottomRight: Radius.circular(16),
                                 ),
                               ),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: Consumer<QuotationProvider>(
-                                      builder: (context, provider, child) {
-                                        return OutlinedButton(
-                                          onPressed: () {
-                                            provider.loadQuotations(
-                                              filters: {},
-                                            );
-                                            Navigator.of(context).pop();
-                                          },
-                                          style: OutlinedButton.styleFrom(
-                                            padding: const EdgeInsets.symmetric(
-                                              vertical: 12,
-                                            ),
-                                            side: BorderSide(
-                                              color: isDark
-                                                  ? Colors.grey[600]!
-                                                  : Colors.grey[400]!,
-                                            ),
-                                          ),
-                                          child: Text(
-                                            'Clear All',
-                                            style: TextStyle(
-                                              color: isDark
-                                                  ? Colors.grey[300]
-                                                  : Colors.grey[700],
-                                            ),
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: ElevatedButton(
-                                      onPressed: () {
-                                        Navigator.of(context).pop();
-                                        _loadQuotations();
-                                      },
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: Theme.of(
-                                          context,
-                                        ).primaryColor,
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 12,
-                                        ),
-                                      ),
-                                      child: const Text(
-                                        'Apply Filters',
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ],
+                              child: Consumer<QuotationProvider>(
+                                builder: (context, provider, child) {
+                                  return MoboDialogButtons(
+                                    secondaryLabel: 'Clear All',
+                                    onSecondary: () {
+                                      provider.loadQuotations(filters: {});
+                                      Navigator.of(context).pop();
+                                    },
+                                    primaryLabel: 'Apply Filters',
+                                    onPrimary: () {
+                                      Navigator.of(context).pop();
+                                      _loadQuotations();
+                                    },
+                                  );
+                                },
                               ),
                             ),
                           ],

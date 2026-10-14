@@ -7,6 +7,8 @@ import '../../services/session_service.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../widgets/custom_snackbar.dart';
 import '../../utils/app_theme.dart';
+import '../../widgets/access_denied_dialog.dart';
+import '../../utils/database_expiry.dart';
 
 class SwitchAccountScreen extends StatefulWidget {
   const SwitchAccountScreen({super.key});
@@ -82,6 +84,18 @@ class _SwitchAccountScreenState extends State<SwitchAccountScreen> {
         );
       }
     } catch (e) {
+      if (e is DatabaseExpiredException) {
+        setState(() => _errorMessage = DatabaseExpiredException.message);
+        return;
+      }
+      if (mounted &&
+          await AccessDeniedDialog.showIfAccessError(
+            context,
+            e,
+            buttonLabel: 'OK',
+          )) {
+        return;
+      }
       setState(() {
         _errorMessage = e.toString().replaceFirst('Exception: ', '');
       });

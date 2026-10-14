@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:hugeicons/hugeicons.dart';
-import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../main.dart';
@@ -12,6 +11,7 @@ import '../../providers/theme_provider.dart';
 import '../../providers/settings_provider.dart';
 import '../../providers/last_opened_provider.dart';
 import '../../widgets/custom_snackbar.dart';
+import '../../widgets/loading_dialog.dart';
 import '../../services/biometric_service.dart';
 
 enum SettingsSection { profile, appearance, preferences, support, account }
@@ -213,57 +213,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       barrierDismissible: false,
       builder: (ctx) {
         dialogContext = ctx;
-        final isDark = Theme.of(context).brightness == Brightness.dark;
-        return WillPopScope(
-          onWillPop: () async => false,
-          child: Dialog(
-            backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            elevation: 8,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.primary.withOpacity(0.08),
-                      shape: BoxShape.circle,
-                    ),
-                    padding: const EdgeInsets.all(16),
-                    child: LoadingAnimationWidget.fourRotatingDots(
-                      color: isDark
-                          ? Colors.white
-                          : Theme.of(context).colorScheme.primary,
-                      size: 50,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  Text(
-                    'Logging out...',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white : Colors.black87,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Please wait while we process your request.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: isDark ? Colors.grey[300] : Colors.grey[700],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+        return const LoadingDialog(
+          message: 'Logging out...',
+          subtitle: 'Please wait while we process your request.',
         );
       },
     );

@@ -434,3 +434,119 @@ class Tax {
   @override
   int get hashCode => id.hashCode;
 }
+
+// ---------------------------------------------------------------------------
+// Query pieces that differ between Odoo versions. Plain functions of an Odoo
+// generation (see `odooGeneration` in utils/odoo_version.dart), so the version
+// decision can be tested without a server.
+// ---------------------------------------------------------------------------
+
+/// The `product.template` domain behind the "Services", "Consumables" and
+/// "Storable" filter chips, for an Odoo [generation].
+///
+/// The chips are named after Odoo 17's `type` selection: `service`, `consu`
+/// (consumable) and `product` (storable). Odoo 18 merged the last two into one
+/// value, `consu` ("Goods"), and moved "stock is tracked" into a separate
+/// boolean, `is_storable`; `product` stopped being a value of `type`. Filtering
+/// on it is not an error on 18 and later, it just matches nothing, so the
+/// Storable chip would show an empty list. From 18 the old meaning is rebuilt
+/// from both fields: Storable is Goods whose stock is tracked, Consumable is
+/// Goods whose stock is not.
+///
+/// [hasIsStorable] says whether the server has the `is_storable` field. From
+/// 20 it always does (the `product` module owns it); in 18 and 19 it comes
+/// with the `stock` module, and a database without inventory has no tracked
+/// products to find, so it keeps the plain `type` filters. An unknown
+/// generation (0) takes the 17 filters, which is what the app asked before it
+/// knew about versions.
+List<List<dynamic>> productTypeFilterDomain({
+  required int generation,
+  bool services = false,
+  bool consumables = false,
+  bool storable = false,
+  bool hasIsStorable = false,
+}) {
+  final splitsGoods = generation >= 18 && (generation >= 20 || hasIsStorable);
+  final leaves = <List<dynamic>>[];
+
+  if (services) leaves.add(['type', '=', 'service']);
+
+  if (consumables) {
+    leaves.add(['type', '=', 'consu']);
+    if (splitsGoods) leaves.add(['is_storable', '=', false]);
+  }
+
+  if (storable) {
+    if (splitsGoods) {
+      leaves.add(['type', '=', 'consu']);
+      leaves.add(['is_storable', '=', true]);
+    } else {
+      leaves.add(['type', '=', 'product']);
+    }
+  }
+
+  return leaves;
+}
+
+/// A prefix-notation domain matching the text [query] against a
+/// `product.template`'s name, internal reference and barcode (and, with
+/// [includeCategory], its category name), for an Odoo [generation].
+///
+/// Up to Odoo 19 a template's `barcode` was a search-only view of its
+/// variants: searching it looked through `product_variant_ids.barcode`, so a
+/// scanned variant barcode found the template. In Odoo 20 `barcode` is a stored
+/// field that only mirrors the variant's barcode when the template has exactly
+/// one variant; with several it is the template's own value, usually empty,
+/// and a variant's barcode matches nothing. From 20 the variants' barcodes are
+/// searched explicitly too.
+List<dynamic> productSearchDomain(
+  String query, {
+  required int generation,
+  bool includeCategory = false,
+}) {
+  final leaves = <List<dynamic>>[
+    ['name', 'ilike', query],
+    ['default_code', 'ilike', query],
+    if (includeCategory) ['categ_id.name', 'ilike', query],
+    ['barcode', 'ilike', query],
+    if (generation >= 20) ['product_variant_ids.barcode', 'ilike', query],
+  ];
+  // n leaves need n - 1 "or" operators in front of them.
+  return [for (var i = 1; i < leaves.length; i++) '|', ...leaves];
+}
+
+/// The `uom.uom` fields the unit-of-measure picker reads on an Odoo
+/// [generation].
+///
+/// `category_id` went with the UoM categories in Odoo 19, so asking for it
+/// there fails the whole read. The picker only shows `name`; the category is
+/// kept for the releases that have it so their request stays as it was.
+List<String> uomOptionFields(int generation) => generation >= 19
+    ? const ['id', 'name']
+    : const ['id', 'name', 'category_id'];
+
+/// The vendor of a `product.supplierinfo` row, or null when the row names no
+/// real vendor.
+///
+/// The vendor is the `partner_id` many2one (`[id, name]`); the model has no
+/// `name` field in Odoo 17 to 20, so a read that asks for `name` fails in every
+/// release the app supports. `name` is still honoured for a row that carries
+/// one.
+String? supplierVendorName(Map<String, dynamic> row) {
+  final value = row['partner_id'] ?? row['name'];
+  final String? name;
+  if (value is List && value.length > 1) {
+    name = value[1]?.toString().trim();
+  } else if (value is String) {
+    name = value.trim();
+  } else {
+    name = null;
+  }
+  if (name == null || name.isEmpty) return null;
+
+  final lower = name.toLowerCase();
+  if (lower == 'false' || lower == 'null' || lower == 'unknown vendor') {
+    return null;
+  }
+  return name;
+}

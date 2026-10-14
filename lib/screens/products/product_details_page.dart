@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -11,6 +12,8 @@ import 'package:mobo_sales/widgets/custom_snackbar.dart';
 import 'package:provider/provider.dart';
 import '../../providers/currency_provider.dart';
 import '../../providers/last_opened_provider.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../../shared/widgets/mobo/mobo_field_label.dart';
 import 'package:mobo_sales/screens/products/product_sales_history_screen.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:barcode_widget/barcode_widget.dart';
@@ -23,7 +26,10 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../utils/app_theme.dart';
 import '../../widgets/full_image_screen.dart';
 import 'create_product_screen.dart';
+import '../../services/data_change_bus.dart';
+import '../../services/odoo_error_handler.dart';
 import '../../services/permission_service.dart';
+import '../../services/product_service.dart';
 import '../../services/field_validation_service.dart';
 import '../../utils/guarded_action.dart';
 
@@ -51,6 +57,16 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
   Product? _loadedProduct;
   bool _attributesExpanded = false;
 
+  DataChangeSubscription? _productChangeSubscription;
+
+  /// A load is running; one more is asked for when a change arrives meanwhile.
+  bool _loadInFlight = false;
+  bool _loadAgain = false;
+
+  /// When the load that is running, or the last one, began. A change announced
+  /// before that moment is already in what it read.
+  DateTime? _loadStartedAt;
+
   bool _hasUsefulDirectAttributes(Product product) {
     final attrs = product.attributes;
     if (attrs == null || attrs.isEmpty) return false;
@@ -71,6 +87,18 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
       parent: _fadeController,
       curve: Curves.easeInOut,
     );
+    // This product edited, archived or changed anywhere in the app — the edit
+    // form, another page, a list — is read again, in place.
+    _productChangeSubscription = DataChangeBus.instance.listen(
+      where: _concernsThisProduct,
+      onChange: (burst) {
+        final unseen = burst.any(
+          (c) => !c.isCoveredByRefreshStartedAt(_loadStartedAt),
+        );
+        if (!unseen || !mounted || _isLoading && !_loadInFlight) return;
+        unawaited(_loadProductDetails(forceRefresh: true));
+      },
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _trackProductAccess();
       _loadProductDetails();
@@ -84,16 +112,18 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
         context,
         listen: false,
       );
-      final productId = widget.product.id.toString() ?? '';
-      final productName = widget.product.name ?? 'Product';
-      final category =
-          widget.product.category ?? widget.product.categId?.toString();
+      // What the server holds now when it has been read, so the card on the
+      // dashboard carries the product's current name and category.
+      final current = _product;
+      final productId = widget.product.id.toString();
+      final productName = current.name;
+      final category = current.category ?? current.categId?.toString();
 
       lastOpenedProvider.trackProductAccess(
         productId: productId,
         productName: productName,
         category: category,
-        productData: widget.product.toJson(),
+        productData: current.toJson(),
       );
     } catch (e) {}
   }
@@ -290,23 +320,53 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
 
   @override
   void dispose() {
+    _productChangeSubscription?.cancel();
     _fadeController.dispose();
     super.dispose();
   }
 
-  Future<void> _loadProductDetails({bool forceRefresh = false}) async {
-    final id = widget.product.id;
-    if (!forceRefresh && _productCache.containsKey(id)) {
-      await _ensureAnalyticsLoaded();
-      await _ensureAttributesResolved();
+  /// Whether [change] is about this product: any product change with no id,
+  /// or one for this product's template (or, when the page was opened with a
+  /// template id, for that id).
+  bool _concernsThisProduct(DataChange change) {
+    if (!change.isProduct) return false;
+    final id = change.id;
+    if (id == null) return true;
+    return id.toString() == widget.product.id ||
+        id == _product.templateId ||
+        id == widget.product.templateId;
+  }
 
-      if (mounted) {
-        setState(() => _isLoading = false);
-        if (!_fadeController.isAnimating && !_fadeController.isCompleted) {
-          _fadeController.forward();
-        }
-      }
+  /// Reads the product, and what hangs off it, from the server. Always: a copy
+  /// from an earlier visit is shown while it is read, never trusted. A call
+  /// made while a load is running is not lost: one more follows it.
+  Future<void> _loadProductDetails({bool forceRefresh = false}) async {
+    if (_loadInFlight) {
+      _loadAgain = true;
       return;
+    }
+    _loadInFlight = true;
+    _loadAgain = false;
+    _loadStartedAt = DateTime.now();
+    try {
+      await _fetchProductDetails();
+    } finally {
+      _loadInFlight = false;
+    }
+    if (_loadAgain && mounted) {
+      _loadAgain = false;
+      unawaited(_loadProductDetails(forceRefresh: true));
+    }
+  }
+
+  Future<void> _fetchProductDetails() async {
+    final id = widget.product.id;
+    if (_productCache.containsKey(id) && mounted) {
+      // The last read of it, on screen at once; it is read again below.
+      setState(() => _isLoading = false);
+      if (!_fadeController.isAnimating && !_fadeController.isCompleted) {
+        _fadeController.forward();
+      }
     }
 
     try {
@@ -446,7 +506,9 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
           product.extraData?['taxNames'] = taxNames;
 
           List<Map<String, dynamic>> suppliers = [];
-          List<String> supplierFields = ['name', 'price'];
+          // The vendor is `partner_id`; `product.supplierinfo` has no `name`
+          // field in Odoo 17 to 20, so asking for it failed the read.
+          List<String> supplierFields = ['partner_id', 'price'];
           int supplierRetryCount = 0;
           const int supplierMaxRetries = 3;
           while (supplierRetryCount < supplierMaxRetries) {
@@ -469,10 +531,11 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
               break;
             } catch (e) {
               if (e.toString().contains('Invalid field')) {
-                final fieldMatch = RegExp(
-                  r"Invalid field '([^']+)' on model",
-                ).firstMatch(e.toString());
-                final invalidField = fieldMatch?.group(1);
+                // Odoo 19 and later word the error "on 'model'", without the
+                // word "model" this used to match on.
+                final invalidField = FieldValidationService.extractInvalidField(
+                  e.toString(),
+                );
                 if (invalidField != null &&
                     supplierFields.contains(invalidField)) {
                   supplierFields.remove(invalidField);
@@ -633,6 +696,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
             if (!_fadeController.isAnimating && !_fadeController.isCompleted) {
               _fadeController.forward();
             }
+            _trackProductAccess();
           }
         } catch (e) {
           if (mounted) {
@@ -1329,57 +1393,13 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
                 : Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Archive',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Archive',
+            onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
       ),
@@ -1419,9 +1439,14 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
 
       return result;
     } catch (e) {
-      String errorMessage = 'Failed to archive product: ${e.toString()}';
       if (context.mounted) {
-        CustomSnackbar.showError(context, errorMessage);
+        CustomSnackbar.showError(
+          context,
+          OdooErrorHandler.toSnackbarMessage(
+            e,
+            fallback: 'Could not archive the product. Please try again.',
+          ),
+        );
       }
       return false;
     }
@@ -1444,41 +1469,15 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
       throw Exception('Product not found');
     }
     final templateId = (productResult[0]['product_tmpl_id'] as List?)?.first;
+    if (templateId is! int) throw Exception('Product not found');
 
-    final result1 = await client
-        .callKw({
-          'model': 'product.product',
-          'method': 'write',
-          'args': [
-            [productId],
-            {'active': false},
-          ],
-          'kwargs': {},
-        })
-        .timeout(const Duration(seconds: 10));
-
-    var result2 = true;
-    if (templateId != null) {
-      result2 = await client
-          .callKw({
-            'model': 'product.template',
-            'method': 'write',
-            'args': [
-              [templateId],
-              {'active': false},
-            ],
-            'kwargs': {},
-          })
-          .timeout(const Duration(seconds: 10));
+    // Archiving the template archives its variants too; the service announces
+    // it, so every list drops the product.
+    await ProductService.instance.archiveProduct(templateId);
+    if (context.mounted) {
+      CustomSnackbar.showSuccess(context, 'Product archived successfully');
     }
-    if (result1 == true && result2 == true) {
-      if (context.mounted) {
-        CustomSnackbar.showSuccess(context, 'Product archived successfully');
-      }
-      return true;
-    } else {
-      throw Exception('Failed to archive product or template');
-    }
+    return true;
   }
 
   Widget _buildQuickActionButton(
@@ -1562,18 +1561,9 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
     final Map<String, dynamic> salesAnalytics =
         (extra['salesAnalytics'] as Map<String, dynamic>? ?? {});
 
-    final realVendors = suppliers.where((s) {
-      final name = (s['name'] is List && s['name'].length > 1)
-          ? s['name'][1]?.toString().trim()
-          : s['name']?.toString().trim();
-      final isRealName =
-          name != null &&
-          name.isNotEmpty &&
-          name.toLowerCase() != 'false' &&
-          name.toLowerCase() != 'null' &&
-          name.toLowerCase() != 'unknown vendor';
-      return isRealName;
-    }).toList();
+    final realVendors = suppliers
+        .where((s) => supplierVendorName(s) != null)
+        .toList();
 
     final hasRealVendors = realVendors.isNotEmpty;
     final backgroundColor = isDark ? Colors.grey[900] : Colors.grey[50];
@@ -2106,10 +2096,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
                           icon: HugeIcons.strokeRoundedUserStory,
                           iconColor: isDark ? Colors.white70 : Colors.indigo,
                           children: realVendors.map((s) {
-                            final name =
-                                (s['name'] is List && s['name'].length > 1)
-                                ? s['name'][1]?.toString().trim()
-                                : s['name']?.toString().trim();
+                            final name = supplierVendorName(s);
                             final price = s['price']?.toString();
                             String display = name ?? 'Unknown Vendor';
                             if (price != null &&
@@ -2738,6 +2725,15 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
           })
           .timeout(kActionTimeout);
 
+      // A new quotation is on the server: the quotation list and the
+      // dashboard show it.
+      if (result is int) {
+        DataChangeBus.instance.quotationChanged(
+          result,
+          kind: DataChangeKind.created,
+        );
+      }
+
       if (result != null && mounted) {
         final total =
             (orderDetails['quantity'] *
@@ -2869,6 +2865,11 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
             'kwargs': {},
           })
           .timeout(kActionTimeout);
+
+      // The order has a new line: its totals changed, on the quotation page
+      // and in the list.
+      final orderId = selectedOrder['id'];
+      DataChangeBus.instance.quotationChanged(orderId is int ? orderId : null);
 
       if (result != null && mounted) {
         final total =
@@ -3252,56 +3253,15 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
               ],
             ),
           ),
-          actionsPadding: const EdgeInsets.symmetric(
-            horizontal: 16,
-            vertical: 12,
-          ),
+          actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
           actions: [
-            Row(
-              children: [
-                Expanded(
-                  child: TextButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    style: TextButton.styleFrom(
-                      foregroundColor: isDark
-                          ? Colors.grey[400]
-                          : Colors.grey[600],
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                    ),
-                    child: const Text(
-                      'Cancel',
-                      style: TextStyle(fontWeight: FontWeight.w500),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: selectedCustomer != null
-                        ? () => Navigator.of(context).pop(selectedCustomer)
-                        : null,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Theme.of(context).primaryColor,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 12,
-                      ),
-                      elevation: isDark ? 0 : 3,
-                    ),
-                    child: const Text(
-                      'Select',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                ),
-              ],
+            MoboDialogButtons(
+              secondaryLabel: 'Cancel',
+              onSecondary: () => Navigator.of(context).pop(),
+              primaryLabel: 'Select',
+              onPrimary: selectedCustomer != null
+                  ? () => Navigator.of(context).pop(selectedCustomer)
+                  : null,
             ),
           ],
         ),
@@ -3421,60 +3381,16 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
           ),
           style: TextStyle(color: isDark ? Colors.white : Colors.black87),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () {
-                    final quantity = double.tryParse(controller.text);
-                    Navigator.of(context).pop(quantity);
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Add',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(context).pop(),
+            primaryLabel: 'Add',
+            onPrimary: () {
+              final quantity = double.tryParse(controller.text);
+              Navigator.of(context).pop(quantity);
+            },
           ),
         ],
       ),
@@ -3545,7 +3461,10 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
                 controller: priceController,
                 keyboardType: TextInputType.numberWithOptions(decimal: true),
                 decoration: InputDecoration(
-                  labelText: 'Unit Price (\$)',
+                  label: const MoboFieldLabel(
+                    'Unit Price (\$)',
+                    isRequired: true,
+                  ),
                   prefixIcon: Icon(HugeIcons.strokeRoundedDollar01, size: 20),
                   labelStyle: TextStyle(
                     color: isDark ? Colors.grey[400] : Colors.grey[600],
@@ -3587,90 +3506,43 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
             ],
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () {
-                    final quantity =
-                        double.tryParse(quantityController.text) ?? 1.0;
-                    final unitPrice =
-                        double.tryParse(priceController.text) ?? 0.0;
-                    final discount =
-                        double.tryParse(discountController.text) ?? 0.0;
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(context).pop(),
+            primaryLabel: 'Continue',
+            onPrimary: () {
+              final quantity = double.tryParse(quantityController.text) ?? 1.0;
+              final unitPrice = double.tryParse(priceController.text) ?? 0.0;
+              final discount = double.tryParse(discountController.text) ?? 0.0;
 
-                    if (quantity <= 0) {
-                      CustomSnackbar.show(
-                        context: context,
-                        title: 'Invalid Quantity',
-                        message: 'Quantity must be greater than 0',
-                        type: SnackbarType.warning,
-                      );
-                      return;
-                    }
+              if (quantity <= 0) {
+                CustomSnackbar.show(
+                  context: context,
+                  title: 'Invalid Quantity',
+                  message: 'Quantity must be greater than 0',
+                  type: SnackbarType.warning,
+                );
+                return;
+              }
 
-                    if (unitPrice <= 0) {
-                      CustomSnackbar.show(
-                        context: context,
-                        title: 'Invalid Price',
-                        message: 'Unit price must be greater than 0',
-                        type: SnackbarType.warning,
-                      );
-                      return;
-                    }
+              if (unitPrice <= 0) {
+                CustomSnackbar.show(
+                  context: context,
+                  title: 'Invalid Price',
+                  message: 'Unit price must be greater than 0',
+                  type: SnackbarType.warning,
+                );
+                return;
+              }
 
-                    Navigator.of(context).pop({
-                      'quantity': quantity,
-                      'unitPrice': unitPrice,
-                      'discount': discount,
-                    });
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Continue',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+              Navigator.of(context).pop({
+                'quantity': quantity,
+                'unitPrice': unitPrice,
+                'discount': discount,
+              });
+            },
           ),
         ],
       ),
@@ -3767,57 +3639,13 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
                 ),
               ],
             ),
-            actionsPadding: const EdgeInsets.symmetric(
-              horizontal: 16,
-              vertical: 12,
-            ),
+            actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
             actions: [
-              Row(
-                children: [
-                  Expanded(
-                    child: TextButton(
-                      onPressed: () => Navigator.of(context).pop(false),
-                      style: TextButton.styleFrom(
-                        foregroundColor: isDark
-                            ? Colors.grey[400]
-                            : Theme.of(context).colorScheme.onSurfaceVariant,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 12,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                      ),
-                      child: const Text(
-                        'Cancel',
-                        style: TextStyle(fontWeight: FontWeight.w500),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: () => Navigator.of(context).pop(true),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 12,
-                        ),
-                        elevation: isDark ? 0 : 3,
-                      ),
-                      child: const Text(
-                        'Confirm',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  ),
-                ],
+              MoboDialogButtons(
+                secondaryLabel: 'Cancel',
+                onSecondary: () => Navigator.of(context).pop(false),
+                primaryLabel: 'Confirm',
+                onPrimary: () => Navigator.of(context).pop(true),
               ),
             ],
           ),
@@ -3989,70 +3817,19 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
             ],
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: TextButton.icon(
-                      onPressed: () {
-                        Navigator.of(context).pop();
-                        _shareBarcodeImage(product);
-                      },
-                      icon: const Icon(Icons.image, size: 18),
-                      label: const Text(
-                        'Share Image',
-                        style: TextStyle(fontWeight: FontWeight.w500),
-                      ),
-                      style: TextButton.styleFrom(
-                        foregroundColor: isDark
-                            ? Colors.grey[400]
-                            : Theme.of(context).colorScheme.onSurfaceVariant,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 12,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: () {
-                        Navigator.of(context).pop();
-                        _shareBarcodePDF(product);
-                      },
-                      icon: const Icon(Icons.picture_as_pdf, size: 18),
-                      label: const Text(
-                        'Share PDF',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.primaryColor,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 12,
-                        ),
-                        elevation: isDark ? 0 : 3,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Share Image',
+            onSecondary: () {
+              Navigator.of(context).pop();
+              _shareBarcodeImage(product);
+            },
+            primaryLabel: 'Share PDF',
+            onPrimary: () {
+              Navigator.of(context).pop();
+              _shareBarcodePDF(product);
+            },
           ),
         ],
       ),
@@ -4397,57 +4174,13 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
             ],
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Close',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(context).pop(),
+            primaryLabel: 'Close',
+            onPrimary: () => Navigator.of(context).pop(),
           ),
         ],
       ),

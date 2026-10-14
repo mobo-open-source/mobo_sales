@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import '../shared/widgets/mobo/mobo_field_label.dart';
 import '../utils/app_theme.dart';
 
 /// A customizable [TextFormField] wrapper with a label above the field,
@@ -8,6 +9,10 @@ import '../utils/app_theme.dart';
 class CustomTextField extends StatelessWidget {
   final TextEditingController controller;
   final String labelText;
+
+  /// Draws a red ` *` after [labelText]. Mark a field required only when the
+  /// form really refuses to submit without it — the star is a promise.
+  final bool isRequired;
   final String? hintText;
   final String? Function(String?) validator;
   final bool isDark;
@@ -19,6 +24,7 @@ class CustomTextField extends StatelessWidget {
   const CustomTextField({
     required this.controller,
     required this.labelText,
+    this.isRequired = false,
     this.hintText,
     required this.validator,
     this.isDark = false,
@@ -34,8 +40,9 @@ class CustomTextField extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
+        MoboFieldLabel(
           labelText,
+          isRequired: isRequired,
           style: TextStyle(
             fontFamily: GoogleFonts.manrope(
               fontWeight: FontWeight.w400,

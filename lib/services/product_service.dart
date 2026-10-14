@@ -1,4 +1,7 @@
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import '../models/product.dart';
+import 'data_change_bus.dart';
+import '../services/odoo_compat.dart';
 import '../services/odoo_session_manager.dart';
 import '../services/field_validation_service.dart';
 import '../services/permission_service.dart';
@@ -6,7 +9,13 @@ import '../services/permission_service.dart';
 class ProductService {
   static final ProductService instance = ProductService._internal();
 
-  ProductService._internal();
+  ProductService._internal() : _bus = DataChangeBus.instance;
+
+  /// A service that announces on [bus] instead of the app's; for tests.
+  @visibleForTesting
+  ProductService.forTesting({required DataChangeBus bus}) : _bus = bus;
+
+  final DataChangeBus _bus;
 
   List<Map<String, String>>? _cachedCategories;
   DateTime? _categoriesFetchedAt;
@@ -33,17 +42,20 @@ class ProductService {
     _currenciesFetchedAt = null;
   }
 
-  Future<bool> canCreateProduct() async {
+  /// Whether the current user may create products.
+  ///
+  /// `check_access_rights` no longer exists in Odoo 20, so the question goes
+  /// through [OdooCompat.hasAccess], which asks the way each version expects.
+  /// Any failure to ask counts as "no", as it always has here. [callKw] and
+  /// [generation] stand in for the live session in tests.
+  Future<bool> canCreateProduct({OdooCallKw? callKw, int? generation}) async {
     try {
-      final result = await OdooSessionManager.safeCallKw({
-        'model': 'product.template',
-        'method': 'check_access_rights',
-        'args': ['create'],
-        'kwargs': {'raise_exception': false},
-      });
-
-      if (result is bool) return result;
-      return false;
+      return await OdooCompat.hasAccess(
+        model: 'product.template',
+        operation: 'create',
+        callKw: callKw,
+        generation: generation,
+      );
     } catch (e) {
       return false;
     }
@@ -66,6 +78,8 @@ class ProductService {
       });
 
       if (result != null && result is int) {
+        // On the server: every list of products reads it again.
+        _bus.productChanged(result, kind: DataChangeKind.created);
         return await fetchProductDetails(result.toString());
       }
       return null;
@@ -122,12 +136,57 @@ class ProductService {
         'kwargs': {},
       });
 
+      if (result == true) {
+        // The server has the edit: the lists, the product's page and the
+        // pickers that hold a copy of it read it again.
+        _bus.productChanged(templateId);
+      }
       return result == true;
     } catch (e) {
       rethrow;
     }
   }
 
+  /// Archives the product with template id [templateId], and its variants, and
+  /// announces it. Not a deletion in Odoo, but gone from every list.
+  Future<void> archiveProduct(int templateId) async {
+    final canWrite = await PermissionService.instance.canWrite(
+      'product.template',
+    );
+    if (!canWrite) {
+      throw Exception('You do not have permission to modify products.');
+    }
+    final result = await OdooSessionManager.safeCallKw({
+      'model': 'product.template',
+      'method': 'write',
+      'args': [
+        [templateId],
+        {'active': false},
+      ],
+      'kwargs': {},
+    });
+    if (result != true) {
+      throw Exception('Failed to archive the product');
+    }
+    _bus.productChanged(templateId, kind: DataChangeKind.deleted);
+  }
+
+  /// Drops what must not be sent on a create or write: nulls, blank strings
+  /// (except the three text fields that may be cleared) and the fields below.
+  ///
+  /// Checked against the Odoo 17, 18, 19 and 20 sources:
+  /// * `currency_id` is a computed, non-stored field on `product.template` in
+  ///   every release, so it cannot be written; dropping it is correct.
+  /// * `taxes_id` (many2many) and `uom_id` (many2one, required) exist and are
+  ///   writable in every release, up to and including 20. Dropping them means
+  ///   the tax and unit chosen on the product form are never saved, on any
+  ///   version. That is not an Odoo 20 regression and it is left as it was:
+  ///   sending them as-is would also make an edit of a product with several
+  ///   taxes replace them all with the single tax the form can show.
+  /// * `lead_time`, `procurement_route`, `dimensions`, `property_account_income`
+  ///   and `property_account_expense` are not fields of any release (the
+  ///   accounts are `property_account_income_id` / `..._expense_id`); the form
+  ///   never sends them. `qty_available` and `cost_method` are computed.
   Map<String, dynamic> _cleanProductData(Map<String, dynamic> data) {
     final cleanedData = Map<String, dynamic>.from(data);
 
@@ -352,6 +411,8 @@ class ProductService {
       if (!forceRefresh && _cachedUOMs != null && _isFresh(_uomsFetchedAt)) {
         return _cachedUOMs!;
       }
+      // Odoo 19 removed `uom.uom.category_id`, which fails the whole read.
+      final generation = await OdooSessionManager.serverGeneration();
       try {
         final result = await OdooSessionManager.safeCallKw({
           'model': 'uom.uom',
@@ -362,7 +423,7 @@ class ProductService {
             ],
           ],
           'kwargs': {
-            'fields': ['id', 'name', 'category_id'],
+            'fields': uomOptionFields(generation),
             'order': 'name ASC',
           },
         }).timeout(const Duration(seconds: 12));
@@ -506,26 +567,26 @@ class ProductService {
     }
   }
 
+  /// One row per [groupBy] value with its `__count`, in the shape the old
+  /// `read_group` returned (`[id, name]` for a many2one, the raw value for a
+  /// selection). Odoo 19 and 20 changed `read_group`, so the call goes through
+  /// [OdooCompat.readGroup]. [callKw] and [generation] stand in for the live
+  /// session in tests.
   Future<List<Map<String, dynamic>>> fetchGroupSummary({
     required List<dynamic> domain,
     required String groupBy,
+    OdooCallKw? callKw,
+    int? generation,
   }) async {
     try {
-      final result = await OdooSessionManager.safeCallKw({
-        'model': 'product.template',
-        'method': 'read_group',
-        'args': [domain],
-        'kwargs': {
-          'fields': [groupBy],
-          'groupby': [groupBy],
-          'lazy': false,
-        },
-      });
-
-      if (result is List) {
-        return result.cast<Map<String, dynamic>>();
-      }
-      return [];
+      return await OdooCompat.readGroup(
+        model: 'product.template',
+        domain: domain,
+        fields: [groupBy],
+        groupby: [groupBy],
+        callKw: callKw,
+        generation: generation,
+      );
     } catch (e) {
       rethrow;
     }

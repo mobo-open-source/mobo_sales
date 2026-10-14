@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import '../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import '../widgets/custom_snackbar.dart';
 
 class RuntimePermissionService {
@@ -306,14 +307,13 @@ class RuntimePermissionService {
                 ],
               ),
               content: Text(message),
+              actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
               actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(false),
-                  child: const Text('Not Now'),
-                ),
-                ElevatedButton(
-                  onPressed: () => Navigator.of(context).pop(true),
-                  child: const Text('Grant Permission'),
+                MoboDialogButtons(
+                  secondaryLabel: 'Not Now',
+                  onSecondary: () => Navigator.of(context).pop(false),
+                  primaryLabel: 'Grant Permission',
+                  onPrimary: () => Navigator.of(context).pop(true),
                 ),
               ],
             );
@@ -343,17 +343,16 @@ class RuntimePermissionService {
             ],
           ),
           content: Text(message),
+          actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () {
+            MoboDialogButtons(
+              secondaryLabel: 'Cancel',
+              onSecondary: () => Navigator.of(context).pop(),
+              primaryLabel: 'Open Settings',
+              onPrimary: () {
                 Navigator.of(context).pop();
                 openAppSettings();
               },
-              child: const Text('Open Settings'),
             ),
           ],
         );

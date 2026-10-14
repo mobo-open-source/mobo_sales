@@ -2,6 +2,11 @@
 class Contact {
   final int id;
   final String name;
+
+  /// Odoo's `complete_name`: the name as its own Customers list shows it,
+  /// "Company, Contact" for a contact that belongs to a company. Only the
+  /// lists read it; see [listName].
+  final String? completeName;
   final String? email;
   final String? phone;
   final String? mobile;
@@ -47,6 +52,7 @@ class Contact {
   Contact({
     required this.id,
     required this.name,
+    this.completeName,
     this.email,
     this.phone,
     this.mobile,
@@ -92,6 +98,7 @@ class Contact {
     return Contact(
       id: json['id'] ?? 0,
       name: json['name']?.toString() ?? 'Unnamed Contact',
+      completeName: json['complete_name']?.toString(),
       email: json['email']?.toString(),
       phone: json['phone']?.toString(),
       mobile: json['mobile']?.toString(),
@@ -111,7 +118,7 @@ class Contact {
           ? json['country_id'][1]?.toString()
           : json['country_id']?.toString(),
 
-      imageUrl: (json['image_128'] ?? json['image_1920'])?.toString(),
+      imageUrl: _imageFrom(json),
       latitude: json['partner_latitude']?.toDouble(),
       longitude: json['partner_longitude']?.toDouble(),
       createdAt: json['create_date'] != null
@@ -125,14 +132,14 @@ class Contact {
           (json['company_id'] is List &&
               (json['company_id'] as List).length > 1)
           ? json['company_id'][1]?.toString()
-          : json['company_name']?.toString(),
+          : _companyNameFrom(json),
       companyId:
           (json['company_id'] is List &&
               (json['company_id'] as List).isNotEmpty)
           ? json['company_id'][0] as int?
           : null,
       vat: json['vat']?.toString(),
-      companyType: json['company_type']?.toString(),
+      companyType: _companyTypeFrom(json),
       industry: json['industry_id'] is List
           ? json['industry_id'][1]?.toString()
           : json['industry']?.toString(),
@@ -173,6 +180,68 @@ class Contact {
           ? List<int>.from((json['category_id'] as List).whereType<int>())
           : null,
     );
+  }
+
+  /// The free-text company of a contact, from whichever field the server has.
+  ///
+  /// Up to Odoo 19 that is `company_name` and it is returned as written, so
+  /// an unset value stays `'false'` for the callers that already test for it.
+  /// Odoo 20 removed the field in favour of the `parent_id` relation (the
+  /// "Company Employer"); `parent_name` is its name, and is what the customer
+  /// reads ask for in place of `company_name` there. Only that key is used,
+  /// not `parent_id` itself, so data that merely happens to carry the relation
+  /// (other screens read it for their own reasons) is not reinterpreted.
+  static String? _companyNameFrom(Map<String, dynamic> json) {
+    if (json.containsKey('company_name')) {
+      return json['company_name']?.toString();
+    }
+    final parentName = json['parent_name'];
+    if (parentName is String && parentName.isNotEmpty) return parentName;
+    return null;
+  }
+
+  /// The contact's picture as base64 text, whichever shape the data has.
+  ///
+  /// Up to Odoo 19 a binary field reads as its base64 text, or `false` when
+  /// empty. Odoo 20 reads it as a dict with the base64 text under `content`
+  /// (next to `size`, and `filename` when there is one). The transport already
+  /// flattens those for every `call_kw` (see `odoo_binary.dart`); this stays
+  /// tolerant of the dict anyway, so a contact built from data that did not go
+  /// through it still gets its photo instead of the text of a map. A dict
+  /// without content (the metadata-only form) is "no image"; anything else is
+  /// passed on as the app always did.
+  static String? _imageFrom(Map<String, dynamic> json) {
+    final value = json['image_128'] ?? json['image_1920'];
+    if (value is Map) {
+      final content = value['content'];
+      return content is String && content.isNotEmpty ? content : null;
+    }
+    return value?.toString();
+  }
+
+  /// `person` or `company`. Odoo 20 removed `company_type`; it was only ever
+  /// `company` for a partner with `is_company` and `person` for the rest, so
+  /// when the server does not send it, it is worked out from `is_company`.
+  /// Unknown (null) when neither is in the data, never a guess.
+  static String? _companyTypeFrom(Map<String, dynamic> json) {
+    final type = json['company_type'];
+    if (type is String && type.isNotEmpty) return type;
+    final isCompany = json['is_company'];
+    if (isCompany is bool) return isCompany ? 'company' : 'person';
+    return null;
+  }
+
+  /// The name a customer list row shows: [completeName] when the server sent
+  /// one ("Acme Corporation, Addison Olson"), otherwise [name]. Odoo sends
+  /// `false` for an empty char, which reads here as the text `false`. Apart
+  /// from [displayName], which the detail and edit screens use and which
+  /// answers a different question.
+  String get listName {
+    final full = completeName?.trim();
+    if (full == null || full.isEmpty || full.toLowerCase() == 'false') {
+      return name;
+    }
+    return full;
   }
 
   /// Returns `true` if this contact has valid non-zero latitude and longitude.
@@ -230,6 +299,7 @@ class Contact {
   Contact copyWith({
     int? id,
     String? name,
+    String? completeName,
     String? email,
     String? phone,
     String? mobile,
@@ -271,6 +341,7 @@ class Contact {
     return Contact(
       id: id ?? this.id,
       name: name ?? this.name,
+      completeName: completeName ?? this.completeName,
       email: email ?? this.email,
       phone: phone ?? this.phone,
       mobile: mobile ?? this.mobile,

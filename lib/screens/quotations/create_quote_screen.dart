@@ -1,33 +1,47 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:odoo_rpc/odoo_rpc.dart';
 import 'package:provider/provider.dart';
 import 'package:hugeicons/hugeicons.dart';
-import 'package:loading_animation_widget/loading_animation_widget.dart';
-import 'package:mobo_sales/utils/app_theme.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:mobo_sales/widgets/circular_image_widget.dart';
 import '../../services/connectivity_service.dart';
 import '../../services/session_service.dart';
 import '../../widgets/connection_status_widget.dart';
 import '../../widgets/custom_snackbar.dart';
+import '../../widgets/loading_dialog.dart';
 import '../../models/contact.dart';
+import '../../models/sale_order_compat.dart';
 import '../../providers/contact_provider.dart';
 import '../../providers/currency_provider.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../services/odoo_error_handler.dart';
+import '../../utils/odoo_version.dart';
 import '../../widgets/confetti_dialogs.dart';
 import '../../utils/data_loss_warning_mixin.dart';
 import '../../widgets/custom_text_field.dart';
 import '../../widgets/custom_date_picker.dart';
 import '../../utils/date_picker_utils.dart';
+import '../../utils/form_change_tracker.dart';
 import '../../widgets/customer_typeahead.dart';
 import '../../widgets/product_typeahead.dart';
-import '../../widgets/custom_dropdown.dart';
+import '../../shared/widgets/mobo/mobo_bottom_action_bar.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../../shared/widgets/mobo/mobo_select_field.dart';
 import '../../services/review_service.dart';
+import '../../services/data_change_bus.dart';
+
+/// What the edit screen hands back to the screen that opened it when the
+/// quotation was saved. [note] is something the user must still be told about
+/// the save — what the server would not let it change on a confirmed order.
+class QuoteSaved {
+  const QuoteSaved({this.note, this.noteIsWarning = false});
+
+  final String? note;
+  final bool noteIsWarning;
+}
 
 class CreateQuoteScreen extends StatefulWidget {
   final Contact? customer;
@@ -43,10 +57,24 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
     with DataLossWarningMixin {
   final _formKey = GlobalKey<FormState>();
   final _notesController = TextEditingController();
-  final _customerSearchController = TextEditingController();
   Contact? _selectedCustomer;
-  final _productSearchController = TextEditingController();
   final List<Map<String, dynamic>> _quoteLines = [];
+
+  /// The state of the order being edited ('' when creating one): as the server
+  /// has it now, falling back to what the screen that opened this one knew.
+  String? _loadedState;
+  String get _orderState =>
+      _loadedState ?? widget.quotationToEdit?['state']?.toString() ?? '';
+
+  /// Odoo's own form: once an order is confirmed (`sale`, or the older `done`)
+  /// its customer and pricelist are read-only and its expiration date is no
+  /// longer shown. A cancelled order is read-only in the same fields. The app's
+  /// edit form follows suit, rather than offering a change the server refuses
+  /// ("You cannot change the pricelist of a confirmed order").
+  bool get _isConfirmedOrder => _orderState == 'sale' || _orderState == 'done';
+  bool get _isCancelledOrder => _orderState == 'cancel';
+  bool get _customerAndPricelistLocked =>
+      _isConfirmedOrder || _isCancelledOrder;
 
   /// Monotonic id assigned to every quote line so each line widget gets a
   /// stable [ValueKey]. Without it, inserting a new line at the top makes
@@ -65,9 +93,52 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
   /// check below reads any content at all as unsaved work.
   bool _savedSuccessfully = false;
 
+  /// Every value the user can edit on the form, so an edit form can tell
+  /// whether it differs from the quotation it loaded. The baseline is taken
+  /// when the load that [initState] starts has filled in the quotation, its
+  /// lines and the customer's defaults.
+  late final FormChangeTracker _changes = FormChangeTracker(
+    () => {
+      'customer': _selectedCustomer?.id,
+      'validityDate': _validityDate?.toIso8601String().split('T')[0],
+      'notes': _notesController.text.trim(),
+      'paymentTerm': _selectedPaymentTerm?['id'],
+      'pricelist': _selectedPricelist?['id'],
+      'lines': [
+        for (final line in _quoteLines)
+          {
+            'product': line['product_id'],
+            'quantity': line['quantity'],
+            'unitPrice': line['unit_price'],
+          },
+      ],
+    },
+  );
+
+  /// What the form refuses to submit without: a customer and a product line.
+  bool get _requiredFieldsFilled =>
+      _selectedCustomer != null && _quoteLines.isNotEmpty;
+
+  /// Whether the submit button is live. Editing also needs a real change, so
+  /// Update stays off until there is something to save.
+  bool get _canSubmit {
+    final idle = _quoteLines.isNotEmpty && !_isLoading;
+    if (widget.quotationToEdit == null) return idle;
+    return idle && _requiredFieldsFilled && _changes.isDirty;
+  }
+
+  void _onFormChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   bool get hasUnsavedData {
     if (_isInitialLoad || _savedSuccessfully) return false;
+
+    // An edit form has unsaved work only once it differs from the quotation it
+    // loaded; the checks below would read that quotation's own customer and
+    // lines as new work.
+    if (widget.quotationToEdit != null) return _changes.isDirty;
 
     final customerChanged =
         _selectedCustomer != null &&
@@ -90,10 +161,12 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
 
   @override
   void onConfirmLeave() {
+    // Clearing the notes below would otherwise rebuild the form, showing it
+    // emptied while the page is still sliding away.
+    _notesController.removeListener(_onFormChanged);
     _selectedCustomer = null;
     _quoteLines.clear();
     _notesController.clear();
-    _customerSearchController.clear();
     _selectedPaymentTerm = null;
     _selectedPricelist = null;
     _validityDate = _initialValidityDate;
@@ -132,6 +205,10 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
 
   static List<Map<String, dynamic>>? _paymentTermsCache;
   static List<Map<String, dynamic>>? _pricelistsCache;
+
+  /// Whose lists the two caches hold: database, user and company. A list read
+  /// for one company must never be shown for another.
+  static String? _listsCacheScope;
   static DateTime? _paymentTermsCacheTime;
   static DateTime? _pricelistsCacheTime;
   static const Duration _cacheDuration = Duration(minutes: 10);
@@ -181,30 +258,45 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
     _validityDate = DateTime.now().add(const Duration(days: 30));
     _initialValidityDate = _validityDate;
 
-    _isInitialLoad = widget.customer != null;
+    // An edit form shows the skeleton from its first frame until the quotation
+    // and its lines are in: never an empty form that fills in under the user.
+    _isInitialLoad = widget.customer != null || widget.quotationToEdit != null;
 
     if (widget.customer != null && widget.quotationToEdit == null) {
       _selectedCustomer = widget.customer;
-      _customerSearchController.text = widget.customer!.name;
     }
 
+    _notesController.addListener(_onFormChanged);
+
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final futures = <Future<void>>[];
-      futures.add(_loadPaymentTerms());
-      futures.add(_loadPricelists());
+      try {
+        final futures = <Future<void>>[];
+        futures.add(_loadPaymentTerms());
+        futures.add(_loadPricelists());
 
-      if (widget.quotationToEdit != null) {
-        await _loadQuotationForEditing(widget.quotationToEdit!);
-      }
+        if (widget.quotationToEdit != null) {
+          await _loadQuotationForEditing(widget.quotationToEdit!);
+        }
 
-      if (_selectedCustomer != null) {
-        futures.add(_loadCustomerDefaults(_selectedCustomer!));
-      }
+        // A quotation being edited keeps its own pricelist and payment term;
+        // the customer's defaults are for a new one (and for a customer the
+        // user picks later, which loads them itself).
+        if (_selectedCustomer != null && widget.quotationToEdit == null) {
+          futures.add(_loadCustomerDefaults(_selectedCustomer!));
+        }
 
-      await Future.wait(futures);
+        await Future.wait(futures);
 
-      if (mounted) {
-        setState(() => _isInitialLoad = false);
+        // Everything an edit form fills in is in place by now: the quotation
+        // and its lines, the customer's payment term and pricelist, and the
+        // option lists. This is what "unchanged" means from here on. The tax
+        // recalculation below only rewrites the derived tax total.
+        if (mounted && widget.quotationToEdit != null) _changes.markClean();
+      } catch (_) {
+        // A failed load must not leave the skeleton up for good; the form
+        // opens with whatever arrived.
+      } finally {
+        if (mounted) setState(() => _isInitialLoad = false);
       }
 
       if (_quoteLines.isNotEmpty) {
@@ -224,28 +316,17 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
         final client = await OdooSessionManager.getClient();
         if (client != null) {
           try {
+            // `company_name` is gone in Odoo 20; asking for it would fail the
+            // whole read and leave the customer with no details.
+            final generation = await OdooSessionManager.serverGeneration();
+            final hasCompanyName = odooHasPartnerCompanyName(generation);
             final customerData = await client.callKw({
               'model': 'res.partner',
               'method': 'read',
               'args': [
                 [customerId],
               ],
-              'kwargs': {
-                'fields': [
-                  'name',
-                  'email',
-                  'phone',
-                  'street',
-                  'street2',
-                  'city',
-                  'state_id',
-                  'zip',
-                  'country_id',
-                  'vat',
-                  'company_name',
-                  'image_1920',
-                ],
-              },
+              'kwargs': {'fields': quoteCustomerFields(generation)},
             });
 
             if (customerData != null &&
@@ -259,6 +340,17 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                   imageBytes = base64Decode(data['image_1920']);
                 } catch (e) {}
               }
+
+              // The employer stands in for the free-text company where the
+              // server no longer has `company_name`.
+              final parent = data['parent_id'];
+              final companyName = hasCompanyName
+                  ? (data['company_name']?.toString() != 'false'
+                        ? data['company_name']?.toString()
+                        : null)
+                  : (parent is List && parent.length > 1
+                        ? parent[1]?.toString()
+                        : null);
 
               _selectedCustomer = Contact(
                 id: customerId,
@@ -284,9 +376,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                 vat: data['vat']?.toString() != 'false'
                     ? data['vat']?.toString()
                     : null,
-                companyName: data['company_name']?.toString() != 'false'
-                    ? data['company_name']?.toString()
-                    : null,
+                companyName: companyName,
                 imageUrl: imageBytes != null
                     ? 'data:image/png;base64,${base64Encode(imageBytes)}'
                     : null,
@@ -326,6 +416,20 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
         } catch (e) {}
       }
 
+      // The order's own pricelist and payment term — not the customer's
+      // defaults, which are what a new quotation starts from. Without this an
+      // edit showed the customer's pricelist and saved it over the order's.
+      final header = await _orderHeader();
+      _loadedState = header?['state']?.toString();
+      _selectedPricelist = _recordFrom(
+        header != null ? header['pricelist_id'] : quotation['pricelist_id'],
+      );
+      _selectedPaymentTerm = _recordFrom(
+        header != null
+            ? header['payment_term_id']
+            : quotation['payment_term_id'],
+      );
+
       if (quotation['order_line'] != null && quotation['order_line'] is List) {
         final client = await OdooSessionManager.getClient();
         if (client != null) {
@@ -343,50 +447,36 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
           String? uomField;
           String? taxField;
 
-          try {
-            linesData = await client.callKw({
-              'model': 'sale.order.line',
-              'method': 'read',
-              'args': [lineIds],
-              'kwargs': {
-                'fields': [...fieldsToFetch, 'product_uom_id', 'tax_id'],
-              },
-            });
-            uomField = 'product_uom_id';
-            taxField = 'tax_id';
-          } catch (e) {
+          // The unit and taxes fields were renamed together in Odoo 19
+          // (`product_uom`/`tax_id` -> `product_uom_id`/`tax_ids`). Asking for
+          // a mix, or the wrong pair, fails the read and the lines come back
+          // without their unit or taxes, so each server gets its own pair.
+          final generation = await OdooSessionManager.serverGeneration();
+          for (final spelling in SaleLineFields.candidates(generation)) {
             try {
               linesData = await client.callKw({
                 'model': 'sale.order.line',
                 'method': 'read',
                 'args': [lineIds],
                 'kwargs': {
-                  'fields': [...fieldsToFetch, 'product_uom', 'tax_id'],
+                  'fields': [...fieldsToFetch, spelling.uom, spelling.tax],
                 },
               });
-              uomField = 'product_uom';
-              taxField = 'tax_id';
-            } catch (e2) {
-              try {
-                linesData = await client.callKw({
-                  'model': 'sale.order.line',
-                  'method': 'read',
-                  'args': [lineIds],
-                  'kwargs': {
-                    'fields': [...fieldsToFetch, 'product_uom', 'tax_ids'],
-                  },
-                });
-                uomField = 'product_uom';
-                taxField = 'tax_ids';
-              } catch (e3) {
-                linesData = await client.callKw({
-                  'model': 'sale.order.line',
-                  'method': 'read',
-                  'args': [lineIds],
-                  'kwargs': {'fields': fieldsToFetch},
-                });
-              }
+              uomField = spelling.uom;
+              taxField = spelling.tax;
+              break;
+            } catch (e) {
+              // This server spells them the other way; try the next pair.
             }
+          }
+
+          if (uomField == null) {
+            linesData = await client.callKw({
+              'model': 'sale.order.line',
+              'method': 'read',
+              'args': [lineIds],
+              'kwargs': {'fields': fieldsToFetch},
+            });
           }
 
           if (linesData != null && linesData is List) {
@@ -444,9 +534,8 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
     try {
       _clearContactProviderSearchState();
 
+      _notesController.removeListener(_onFormChanged);
       _notesController.dispose();
-      _customerSearchController.dispose();
-      _productSearchController.dispose();
       _debounce?.cancel();
       _selectedCustomer = null;
       _quoteLines.clear();
@@ -455,9 +544,73 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
     }
   }
 
+  Future<Map<String, dynamic>?>? _orderHeaderFuture;
+
+  /// The order being edited as the server has it now: its company, pricelist,
+  /// payment term and state. Null when creating one, or when it cannot be read.
+  Future<Map<String, dynamic>?> _orderHeader() =>
+      _orderHeaderFuture ??= _readOrderHeader();
+
+  Future<Map<String, dynamic>?> _readOrderHeader() async {
+    final orderId = widget.quotationToEdit?['id'];
+    if (orderId is! int) return null;
+    try {
+      final client = await OdooSessionManager.getClient();
+      final rows = await client?.callKw({
+        'model': 'sale.order',
+        'method': 'read',
+        'args': [
+          [orderId],
+          ['company_id', 'pricelist_id', 'payment_term_id', 'state'],
+        ],
+        'kwargs': {},
+      });
+      if (rows is List && rows.isNotEmpty && rows.first is Map) {
+        return Map<String, dynamic>.from(rows.first as Map);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// A many2one value (`[id, name]`) as the id/name map the form's lists use.
+  Map<String, dynamic>? _recordFrom(dynamic value) {
+    if (value is List && value.length > 1 && value.first is int) {
+      return {'id': value.first, 'name': value[1], 'display_name': value[1]};
+    }
+    return null;
+  }
+
+  Future<_QuoteCompany>? _companyFuture;
+
+  /// The company this quotation belongs to, and the scope its lists are cached
+  /// under: a quotation being edited keeps the company it was made in, a new
+  /// one takes the company selected in the app, as Odoo's own form does.
+  Future<_QuoteCompany> _quoteCompany() => _companyFuture ??= _resolveCompany();
+
+  Future<_QuoteCompany> _resolveCompany() async {
+    final session = await OdooSessionManager.getCurrentSession();
+    int? companyId = session?.selectedCompanyId;
+
+    final header = await _orderHeader();
+    final value = header?['company_id'];
+    if (value is List && value.isNotEmpty && value.first is int) {
+      companyId = value.first as int;
+    } else if (value is int) {
+      companyId = value;
+    }
+    if (companyId == 0) companyId = null;
+
+    return _QuoteCompany(
+      id: companyId,
+      scope: '${session?.database}|${session?.userId}|$companyId',
+    );
+  }
+
   Future<void> _loadPaymentTerms() async {
+    final company = await _quoteCompany();
     if (_paymentTermsCache != null &&
         _paymentTermsCacheTime != null &&
+        _listsCacheScope == company.scope &&
         DateTime.now().difference(_paymentTermsCacheTime!) < _cacheDuration) {
       if (mounted) {
         final uniqueList = <int, Map<String, dynamic>>{};
@@ -476,12 +629,14 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
       final client = await OdooSessionManager.getClient();
       if (client == null) return;
 
+      // Odoo's form offers the terms with no company or the quotation's own.
       final paymentTerms = await client.callKw({
         'model': 'account.payment.term',
         'method': 'search_read',
-        'args': [],
+        'args': [company.domain],
         'kwargs': {
           'fields': ['id', 'name'],
+          'context': company.context,
         },
       });
 
@@ -496,6 +651,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
 
       _paymentTermsCache = deduplicatedList;
       _paymentTermsCacheTime = DateTime.now();
+      _listsCacheScope = company.scope;
 
       if (mounted) {
         setState(() {
@@ -506,8 +662,10 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
   }
 
   Future<void> _loadPricelists() async {
+    final company = await _quoteCompany();
     if (_pricelistsCache != null &&
         _pricelistsCacheTime != null &&
+        _listsCacheScope == company.scope &&
         DateTime.now().difference(_pricelistsCacheTime!) < _cacheDuration) {
       if (mounted) {
         final uniqueList = <int, Map<String, dynamic>>{};
@@ -526,12 +684,17 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
       final client = await OdooSessionManager.getClient();
       if (client == null) return;
 
+      // Odoo's form offers the pricelists with no company or the quotation's
+      // own. Asked with no company at all, the server answers for every company
+      // the user may use, and a quotation could end up with another company's
+      // pricelist.
       final pricelists = await client.callKw({
         'model': 'product.pricelist',
         'method': 'search_read',
-        'args': [],
+        'args': [company.domain],
         'kwargs': {
           'fields': ['id', 'name', 'currency_id'],
+          'context': company.context,
         },
       });
 
@@ -546,6 +709,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
 
       _pricelistsCache = deduplicatedList;
       _pricelistsCacheTime = DateTime.now();
+      _listsCacheScope = company.scope;
 
       if (mounted) {
         setState(() {
@@ -567,6 +731,9 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
       final client = await OdooSessionManager.getClient();
       if (client == null) throw Exception('No active Odoo session');
 
+      // Both are company-dependent properties: read for the quotation's
+      // company, not the user's default one.
+      final company = await _quoteCompany();
       final result = await client.callKw({
         'model': 'res.partner',
         'method': 'read',
@@ -574,7 +741,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
           customer.id,
           ['property_payment_term_id', 'property_product_pricelist'],
         ],
-        'kwargs': {},
+        'kwargs': {'context': company.context},
       });
 
       if (mounted && result is List && result.isNotEmpty) {
@@ -617,6 +784,24 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
         });
       }
     }
+  }
+
+  /// Options for a Mobo select over Odoo id/name maps, keyed on the id's string
+  /// form. The first entry for an id wins, as the lists are not guaranteed
+  /// unique.
+  List<MoboOption<String>> _mapOptions(
+    List<Map<String, dynamic>> items,
+    Object Function(Map<String, dynamic> item) labelOf,
+  ) {
+    final seen = <String>{};
+    return [
+      for (final item in items)
+        if (item['id'] != null && seen.add(item['id'].toString()))
+          MoboOption<String>(
+            value: item['id'].toString(),
+            label: labelOf(item).toString(),
+          ),
+    ];
   }
 
   Widget _buildShimmerDropdown(String label) {
@@ -711,6 +896,21 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
       text: line['unit_price'].toString(),
     );
 
+    // Update stays off until a value differs from what the dialog opened with.
+    // Values compare as numbers, so retyping 1.0 as 1 is not a change.
+    Object valueOf(TextEditingController c) =>
+        double.tryParse(c.text) ?? c.text.trim();
+    final changes = FormChangeTracker(
+      () => {
+        'quantity': valueOf(quantityController),
+        'unitPrice': valueOf(priceController),
+      },
+    )..markClean();
+    StateSetter? setButtonState;
+    void onValuesChanged() => setButtonState?.call(() {});
+    quantityController.addListener(onValuesChanged);
+    priceController.addListener(onValuesChanged);
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -768,19 +968,27 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
             ),
           ],
         ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final quantity = double.tryParse(quantityController.text) ?? 1.0;
-              final price = double.tryParse(priceController.text) ?? 0.0;
-              _updateLine(index, quantity, price);
-              Navigator.pop(context);
+          StatefulBuilder(
+            builder: (context, setState) {
+              setButtonState = setState;
+              return MoboDialogButtons(
+                secondaryLabel: 'Cancel',
+                onSecondary: () => Navigator.pop(context),
+                primaryLabel: 'Update',
+                onPrimary: changes.isDirty
+                    ? () {
+                        final quantity =
+                            double.tryParse(quantityController.text) ?? 1.0;
+                        final price =
+                            double.tryParse(priceController.text) ?? 0.0;
+                        _updateLine(index, quantity, price);
+                        Navigator.pop(context);
+                      }
+                    : null,
+              );
             },
-            child: const Text('Update'),
           ),
         ],
       ),
@@ -839,30 +1047,20 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
         return;
       }
 
-      final orderLines = <List<dynamic>>[];
+      // The unit field is `product_uom` up to Odoo 18 and `product_uom_id` from
+      // 19; an unknown server is tried with each in turn.
+      final generation = await OdooSessionManager.serverGeneration();
+      final uomSpellings = SaleLineFields.candidates(generation);
 
-      for (final line in _quoteLines) {
-        final productId = _toIntId(line['product_id']);
-        if (productId == null) continue;
-
-        final lineData = {
-          'product_id': productId,
-          'name': line['product_name'],
-          'product_uom_qty': line['quantity'],
-          'price_unit': line['unit_price'],
-        };
-
-        final uomId = _toIntId(line['uom_id']) ?? 1;
-        lineData['product_uom'] = uomId;
-
-        orderLines.add([0, 0, lineData]);
-      }
-
-      final orderData = {
+      final orderData = <String, dynamic>{
         'partner_id': _selectedCustomer!.id,
-        'order_line': orderLines,
+        'order_line': _buildOrderLineCommands(uomSpellings.first.uom),
         'payment_term_id': _selectedPaymentTerm?['id'],
-        'fiscal_position_id': false,
+        // Up to Odoo 18 the estimate pins the order to no fiscal position. From
+        // 19 the server picks the customer's own, as it will for the saved
+        // quotation, so the estimate carries that position's tax mapping.
+        if (saleUsesFiscalPositionTaxModel(generation))
+          'fiscal_position_id': false,
       };
 
       if (_selectedPricelist != null && _selectedPricelist!['id'] != null) {
@@ -878,28 +1076,12 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
           'kwargs': {},
         });
       } catch (e) {
-        if (e.toString().contains('product_uom') ||
-            e.toString().contains('Invalid field')) {
-          final fallbackOrderLines = <List<dynamic>>[];
-          for (final line in _quoteLines) {
-            final productId = _toIntId(line['product_id']);
-            if (productId == null) continue;
-
-            final uomId = _toIntId(line['uom_id']) ?? 1;
-            fallbackOrderLines.add([
-              0,
-              0,
-              {
-                'product_id': productId,
-                'name': line['product_name'],
-                'product_uom_qty': line['quantity'],
-                'price_unit': line['unit_price'],
-                'product_uom_id': uomId,
-              },
-            ]);
-          }
-
-          orderData['order_line'] = fallbackOrderLines;
+        if (uomSpellings.length > 1 &&
+            (e.toString().contains('product_uom') ||
+                e.toString().contains('Invalid field'))) {
+          orderData['order_line'] = _buildOrderLineCommands(
+            uomSpellings[1].uom,
+          );
 
           orderId = await client.callKw({
             'model': 'sale.order',
@@ -956,6 +1138,12 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
     }
   }
 
+  /// The `order_line` create commands for the lines on the form, with the unit
+  /// of measure under [uomField] (`product_uom` up to Odoo 18, `product_uom_id`
+  /// from 19).
+  List<List<dynamic>> _buildOrderLineCommands(String uomField) =>
+      saleOrderLineCommands(_quoteLines, uomField, _toIntId);
+
   void _fallbackTaxCalculation() {
     setState(() => _calculatedTaxAmount = 0.0);
   }
@@ -964,28 +1152,16 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
     final client = await OdooSessionManager.getClient();
     if (client == null) return;
 
-    final orderLines = <List<dynamic>>[];
+    final generation = await OdooSessionManager.serverGeneration();
 
-    for (final line in _quoteLines) {
-      final productId = _toIntId(line['product_id']);
-      if (productId == null) continue;
-
-      final lineData = {
-        'product_id': productId,
-        'name': line['product_name'],
-        'product_uom_qty': line['quantity'],
-        'price_unit': line['unit_price'],
-        'product_uom': _toIntId(line['uom_id']) ?? 1,
-      };
-
-      orderLines.add([0, 0, lineData]);
-    }
-
-    final orderData = {
+    final orderData = <String, dynamic>{
       'partner_id': _selectedCustomer!.id,
-      'order_line': orderLines,
+      'order_line': _buildOrderLineCommands(
+        SaleLineFields.candidates(generation).last.uom,
+      ),
       'payment_term_id': _selectedPaymentTerm?['id'],
-      'fiscal_position_id': false,
+      if (saleUsesFiscalPositionTaxModel(generation))
+        'fiscal_position_id': false,
     };
 
     if (_selectedPricelist != null && _selectedPricelist!['id'] != null) {
@@ -1073,22 +1249,32 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
 
       List<int> taxIds = [];
 
-      try {
-        final fiscalPosition = await client.callKw({
-          'model': 'account.fiscal.position',
-          'method': 'get_fiscal_position',
-          'args': [_selectedCustomer!.id],
-          'kwargs': {},
-        });
-
-        final fiscalPositionId = _toIntId(fiscalPosition);
-        taxIds = await _getTaxesWithFiscalPosition(
-          productData,
-          fiscalPositionId,
-          client,
-        );
-      } catch (e) {
+      final generation = await OdooSessionManager.serverGeneration();
+      if (!saleUsesFiscalPositionTaxModel(generation)) {
+        // Odoo 19 dropped `account.fiscal.position.tax`, and no Odoo version
+        // has a callable `get_fiscal_position`. The estimate's temporary order
+        // takes the customer's fiscal position from the server, which maps the
+        // taxes itself, so all this needs to know is whether the product is
+        // taxed at all.
         taxIds = _extractTaxIds(productData['taxes_id']);
+      } else {
+        try {
+          final fiscalPosition = await client.callKw({
+            'model': 'account.fiscal.position',
+            'method': 'get_fiscal_position',
+            'args': [_selectedCustomer!.id],
+            'kwargs': {},
+          });
+
+          final fiscalPositionId = _toIntId(fiscalPosition);
+          taxIds = await _getTaxesWithFiscalPosition(
+            productData,
+            fiscalPositionId,
+            client,
+          );
+        } catch (e) {
+          taxIds = _extractTaxIds(productData['taxes_id']);
+        }
       }
 
       if (userCompanyId != null && taxIds.isNotEmpty) {
@@ -1217,65 +1403,21 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
 
     setState(() => _isLoading = true);
 
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primaryColor = Theme.of(context).primaryColor;
-    BuildContext? dialogContext;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        dialogContext = ctx;
-        return Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-          elevation: 8,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  decoration: BoxDecoration(
-                    color: primaryColor.withOpacity(0.08),
-                    shape: BoxShape.circle,
-                  ),
-                  padding: const EdgeInsets.all(16),
-                  child: LoadingAnimationWidget.fourRotatingDots(
-                    color: Theme.of(context).colorScheme.primary,
-                    size: 50,
-                  ),
-                ),
-                const SizedBox(height: 24),
-                Text(
-                  widget.quotationToEdit != null
-                      ? 'Updating quotation...'
-                      : 'Creating quotation...',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  widget.quotationToEdit != null
-                      ? 'Please wait while we update your quotation.'
-                      : 'Please wait while we create your quotation.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: isDark ? Colors.grey[300] : Colors.grey[700],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+    // The loading card, closed exactly once whichever path gets there first.
+    // This used to be a `pop` in a `finally` that ran after the success path had
+    // already closed the card AND this screen, and that second pop took the
+    // screen underneath (the quotation's details) with it — so the details never
+    // refreshed and never showed their "updated" message.
+    final loading = LoadingDialog.open(
+      context,
+      message: widget.quotationToEdit != null
+          ? 'Updating quotation...'
+          : 'Creating quotation...',
+      subtitle: widget.quotationToEdit != null
+          ? 'Please wait while we update your quotation.'
+          : 'Please wait while we create your quotation.',
     );
+    void closeLoading() => loading.close();
 
     try {
       final client = await OdooSessionManager.getClient();
@@ -1284,9 +1426,19 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
       final isEditing = widget.quotationToEdit != null && _quotationId != null;
 
       if (isEditing) {
+        // Written in the quotation's own company, so what the server computes
+        // from it (pricelist, fiscal position, taxes) is that company's.
+        final company = await _quoteCompany();
+        String? savedNote;
+        var savedNoteIsWarning = false;
+
+        // Fields the order's state makes read-only are left out, as Odoo's own
+        // form leaves them out.
+        final locked = _customerAndPricelistLocked;
         final updateData = {
-          'partner_id': _selectedCustomer!.id,
-          'validity_date': _validityDate?.toIso8601String().split('T')[0],
+          if (!locked) 'partner_id': _selectedCustomer!.id,
+          if (!locked)
+            'validity_date': _validityDate?.toIso8601String().split('T')[0],
           'note': _notesController.text.trim().isEmpty
               ? false
               : _notesController.text.trim(),
@@ -1298,10 +1450,12 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
           updateData['payment_term_id'] = false;
         }
 
-        if (_selectedPricelist != null) {
-          updateData['pricelist_id'] = _selectedPricelist!['id'];
-        } else {
-          updateData['pricelist_id'] = false;
+        if (!locked) {
+          if (_selectedPricelist != null) {
+            updateData['pricelist_id'] = _selectedPricelist!['id'];
+          } else {
+            updateData['pricelist_id'] = false;
+          }
         }
 
         final defaultPickingPolicy = await _getDefaultPickingPolicy(
@@ -1311,21 +1465,12 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
           updateData['picking_policy'] = defaultPickingPolicy;
         }
 
-        final orderLines = <List<dynamic>>[];
-        for (final line in _quoteLines) {
-          final productId = _toIntId(line['product_id']);
-          if (productId == null) continue;
+        // The unit field is `product_uom` up to Odoo 18 and `product_uom_id`
+        // from 19; an unknown server is retried with the other spelling below.
+        final generation = await OdooSessionManager.serverGeneration();
+        final uomSpellings = SaleLineFields.candidates(generation);
 
-          final lineData = {
-            'product_id': productId,
-            'name': line['product_name'],
-            'product_uom_qty': line['quantity'],
-            'price_unit': line['unit_price'],
-            'product_uom': _toIntId(line['uom_id']) ?? 1,
-          };
-
-          orderLines.add([0, 0, lineData]);
-        }
+        final orderLines = _buildOrderLineCommands(uomSpellings.first.uom);
 
         final existingQuotation = await client.callKw({
           'model': 'sale.order',
@@ -1361,7 +1506,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
               [_quotationId],
               updateData,
             ],
-            'kwargs': {},
+            'kwargs': {'context': company.context},
           });
         } catch (writeError) {
           if (writeError.toString().contains(
@@ -1380,19 +1525,12 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                   [_quotationId],
                   updateDataWithoutPricelist,
                 ],
-                'kwargs': {},
+                'kwargs': {'context': company.context},
               });
 
-              if (mounted && context.mounted) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (mounted && context.mounted) {
-                    CustomSnackbar.showWarning(
-                      context,
-                      'Order updated successfully. Note: Pricelist cannot be changed on confirmed orders.',
-                    );
-                  }
-                });
-              }
+              savedNote =
+                  'Order updated successfully. Note: Pricelist cannot be changed on confirmed orders.';
+              savedNoteIsWarning = true;
             } catch (retryError) {
               if (retryError.toString().contains(
                     'you can\'t remove one of its lines',
@@ -1406,29 +1544,22 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                     updateDataWithoutPricelist,
                   );
 
-                  if (dialogContext != null &&
-                      Navigator.of(dialogContext!).canPop()) {
-                    Navigator.of(dialogContext!).pop();
-                  }
+                  closeLoading();
+                  final state =
+                      widget.quotationToEdit?['state']?.toString() ?? '';
+                  final documentType = (state == 'sale')
+                      ? 'Sale Order'
+                      : 'Quotation';
+                  DataChangeBus.instance.quotationChanged(_quotationId);
                   if (mounted && context.mounted) {
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (mounted && context.mounted) {
-                        final state =
-                            widget.quotationToEdit?['state']?.toString() ?? '';
-                        final documentType = (state == 'sale')
-                            ? 'Sale Order'
-                            : 'Quotation';
-
-                        CustomSnackbar.showSuccess(
-                          context,
-                          '$documentType updated successfully. Only existing line quantities were updated on this confirmed order.',
-                        );
-                      }
-                    });
-
-                    await Future.delayed(const Duration(milliseconds: 100));
                     _savedSuccessfully = true;
-                    Navigator.pop(context, true);
+                    Navigator.pop(
+                      context,
+                      QuoteSaved(
+                        note:
+                            '$documentType updated successfully. Only existing line quantities were updated on this confirmed order.',
+                      ),
+                    );
                   }
                   return;
                 } catch (updateError) {
@@ -1448,7 +1579,10 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
 
               rethrow;
             }
-          } else if (writeError.toString().contains('product_uom')) {
+          } else if (uomSpellings.length > 1 &&
+              writeError.toString().contains('product_uom')) {
+            // The server did not know the first spelling of the unit field (it
+            // is not known which Odoo this is): write again with the other.
             final fallbackOrderLines = <List<dynamic>>[];
 
             if (existingQuotation != null &&
@@ -1464,22 +1598,9 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
               }
             }
 
-            for (final line in _quoteLines) {
-              final productId = _toIntId(line['product_id']);
-              if (productId == null) continue;
-
-              fallbackOrderLines.add([
-                0,
-                0,
-                {
-                  'product_id': productId,
-                  'name': line['product_name'],
-                  'product_uom_qty': line['quantity'],
-                  'price_unit': line['unit_price'],
-                  'product_uom': _toIntId(line['uom_id']) ?? 1,
-                },
-              ]);
-            }
+            fallbackOrderLines.addAll(
+              _buildOrderLineCommands(uomSpellings[1].uom),
+            );
 
             updateData['order_line'] = fallbackOrderLines;
 
@@ -1490,7 +1611,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                 [_quotationId],
                 updateData,
               ],
-              'kwargs': {},
+              'kwargs': {'context': company.context},
             });
           } else {
             String errorMessage = 'Failed to update quotation';
@@ -1523,37 +1644,33 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
           }
         }
 
-        if (dialogContext != null && Navigator.of(dialogContext!).canPop()) {
-          Navigator.of(dialogContext!).pop();
-        }
+        closeLoading();
+        // Announced before the pop: the details screen behind this one, the
+        // list, the dashboard and a customer's page all refresh from it.
+        DataChangeBus.instance.quotationChanged(_quotationId);
         if (mounted) {
           _savedSuccessfully = true;
-          Navigator.pop(context, true);
+          Navigator.pop(
+            context,
+            QuoteSaved(note: savedNote, noteIsWarning: savedNoteIsWarning),
+          );
         }
       } else {
-        final orderLines = <List<dynamic>>[];
+        // The unit field is `product_uom` up to Odoo 18 and `product_uom_id`
+        // from 19; an unknown server is retried with the other spelling below.
+        final generation = await OdooSessionManager.serverGeneration();
+        final uomSpellings = SaleLineFields.candidates(generation);
 
-        for (final line in _quoteLines) {
-          final productId = _toIntId(line['product_id']);
-          if (productId == null) continue;
-
-          final lineData = {
-            'product_id': productId,
-            'name': line['product_name'],
-            'product_uom_qty': line['quantity'],
-            'price_unit': line['unit_price'],
-            'product_uom': _toIntId(line['uom_id']) ?? 1,
-          };
-
-          orderLines.add([0, 0, lineData]);
-        }
+        final orderLines = _buildOrderLineCommands(uomSpellings.first.uom);
 
         final defaultPickingPolicy = await _getDefaultPickingPolicy(
           defaultPartnerId: _selectedCustomer!.id,
         );
 
+        final company = await _quoteCompany();
         final quoteData = {
           'partner_id': _selectedCustomer!.id,
+          if (company.id != null) 'company_id': company.id,
           'validity_date': _validityDate?.toIso8601String().split('T')[0],
           'note': _notesController.text.trim().isEmpty
               ? null
@@ -1581,38 +1698,23 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                 'model': 'sale.order',
                 'method': 'create',
                 'args': [quoteData],
-                'kwargs': {},
+                'kwargs': {'context': company.context},
               })
               .timeout(const Duration(seconds: 60));
         } catch (createError) {
-          if (createError.toString().contains('product_uom') ||
-              createError.toString().contains('Invalid field')) {
-            final fallbackOrderLines = <List<dynamic>>[];
-            for (final line in _quoteLines) {
-              final productId = _toIntId(line['product_id']);
-              if (productId == null) continue;
-
-              fallbackOrderLines.add([
-                0,
-                0,
-                {
-                  'product_id': productId,
-                  'name': line['product_name'],
-                  'product_uom_qty': line['quantity'],
-                  'price_unit': line['unit_price'],
-                  'product_uom_id': _toIntId(line['uom_id']) ?? 1,
-                },
-              ]);
-            }
-
-            quoteData['order_line'] = fallbackOrderLines;
+          if (uomSpellings.length > 1 &&
+              (createError.toString().contains('product_uom') ||
+                  createError.toString().contains('Invalid field'))) {
+            quoteData['order_line'] = _buildOrderLineCommands(
+              uomSpellings[1].uom,
+            );
 
             quoteId = await client
                 .callKw({
                   'model': 'sale.order',
                   'method': 'create',
                   'args': [quoteData],
-                  'kwargs': {},
+                  'kwargs': {'context': company.context},
                 })
                 .timeout(const Duration(seconds: 60));
           } else {
@@ -1620,9 +1722,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
           }
         }
         if (quoteId != null) {
-          if (dialogContext != null && Navigator.of(dialogContext!).canPop()) {
-            Navigator.of(dialogContext!).pop();
-          }
+          closeLoading();
           if (mounted) {
             String quotationName = 'Quotation';
             try {
@@ -1645,6 +1745,10 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
             } catch (e) {}
 
             ReviewService().trackSignificantEvent();
+            DataChangeBus.instance.quotationChanged(
+              quoteId,
+              kind: DataChangeKind.created,
+            );
 
             await showQuotationCreatedConfettiDialog(context, quotationName);
 
@@ -1681,9 +1785,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
         });
       }
 
-      if (dialogContext != null && Navigator.of(dialogContext!).canPop()) {
-        Navigator.of(dialogContext!).maybePop();
-      }
+      closeLoading();
     }
   }
 
@@ -1828,7 +1930,6 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                     onPressed: () {
                       setState(() {
                         _selectedCustomer = null;
-                        _customerSearchController.clear();
                         _selectedPaymentTerm = null;
                         _selectedPricelist = null;
                         _isLoadingPaymentTermsShimmer = false;
@@ -1869,152 +1970,6 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                   _buildInfoChip(
                     Icons.location_on_outlined,
                     _buildAddressString(_selectedCustomer!),
-                    isDark,
-                  ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSelectedCustomerCard() {
-    if (_selectedCustomer == null) return const SizedBox.shrink();
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final customer = _selectedCustomer!;
-
-    return Card(
-      margin: const EdgeInsets.only(top: 0),
-      elevation: 1,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: isDark ? Colors.grey[800] : Colors.white,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                CircleAvatar(
-                  radius: 20,
-                  backgroundColor: isDark ? Colors.grey[100] : Colors.grey[200],
-                  child:
-                      customer.imageUrl != null && customer.imageUrl!.isNotEmpty
-                      ? ClipOval(
-                          child: customer.imageUrl!.startsWith('http')
-                              ? Image.network(
-                                  customer.imageUrl!,
-                                  width: 40,
-                                  height: 40,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (context, error, stackTrace) =>
-                                      _buildAvatarFallback(customer),
-                                )
-                              : _buildBase64Avatar(customer),
-                        )
-                      : _buildAvatarFallback(customer),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              customer.name,
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                                fontSize: 16,
-                                color: isDark ? Colors.white : Colors.black87,
-                              ),
-                            ),
-                          ),
-                          if (customer.isCompany == true)
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 2,
-                              ),
-                              decoration: BoxDecoration(
-                                color: isDark
-                                    ? Colors.white.withOpacity(.1)
-                                    : Theme.of(
-                                        context,
-                                      ).primaryColor.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(
-                                'Company',
-                                style: TextStyle(
-                                  color: isDark
-                                      ? Colors.white
-                                      : Theme.of(context).primaryColor,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                      if (_buildAddressString(customer).isNotEmpty)
-                        Text(
-                          _buildAddressString(customer),
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: isDark ? Colors.grey[400] : Colors.grey[600],
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                    ],
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(HugeIcons.strokeRoundedCancel01),
-                  onPressed: () {
-                    setState(() {
-                      _selectedCustomer = null;
-                      _customerSearchController.clear();
-                      _selectedPaymentTerm = null;
-                      _selectedPricelist = null;
-                      _isLoadingPaymentTermsShimmer = false;
-                      _isLoadingPricelistsShimmer = false;
-                    });
-                    if (_quoteLines.isNotEmpty) {
-                      _scheduleTaxRecalc();
-                    }
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              children: [
-                if (_isValidField(customer.email))
-                  _buildInfoChip(
-                    HugeIcons.strokeRoundedMail01,
-                    customer.email!,
-                    isDark,
-                  ),
-                if (_isValidField(customer.phone))
-                  _buildInfoChip(
-                    HugeIcons.strokeRoundedCall,
-                    customer.phone!,
-                    isDark,
-                  ),
-                if (_isValidField(customer.mobile))
-                  _buildInfoChip(
-                    HugeIcons.strokeRoundedSmartPhone01,
-                    customer.mobile!,
-                    isDark,
-                  ),
-                if (_isValidField(customer.vat))
-                  _buildInfoChip(
-                    HugeIcons.strokeRoundedLegalDocument01,
-                    customer.vat!,
                     isDark,
                   ),
               ],
@@ -2789,9 +2744,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
             isDark ? Colors.grey[900]! : Colors.grey[50]!,
           ),
         );
-        return (Platform.isAndroid && hasUnsavedData)
-            ? WillPopScope(onWillPop: () => handleWillPop(), child: popChild)
-            : popChild;
+        return withBackGuard(popChild);
       },
     );
   }
@@ -2874,56 +2827,75 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                       _buildProfessionalCard(
                         title: 'Customer Information',
                         children: [
-                          if (_selectedCustomer != null)
-                            _buildSelectedCustomerCard()
-                          else
-                            CustomerTypeAhead(
-                              controller: _customerSearchController,
-                              labelText: 'Customer',
-                              isDark: isDark,
-                              onCustomerSelected: (customer) {
-                                setState(() {
-                                  _selectedCustomer = customer;
-                                  _customerSearchController.text =
-                                      customer.name;
-                                });
-                                _loadCustomerDefaults(customer);
-                                if (_quoteLines.isNotEmpty) {
-                                  _scheduleTaxRecalc();
-                                }
-                              },
-                              onClear: () {
-                                setState(() {
-                                  _selectedCustomer = null;
-                                  _customerSearchController.clear();
+                          // The chosen customer stays in the field, avatar and
+                          // name, like an Employee in an expense form. A customer
+                          // the screen was opened for is locked in place.
+                          CustomerTypeAhead(
+                            labelText: 'Customer',
+                            isRequired: true,
+                            selectedCustomer: _selectedCustomer,
+                            allowClear: false,
+                            enabled:
+                                widget.customer == null &&
+                                !_customerAndPricelistLocked,
+                            onCustomerSelected: (customer) {
+                              final changed =
+                                  _selectedCustomer?.id != customer.id;
+                              setState(() {
+                                _selectedCustomer = customer;
+                                // The previous customer's terms and pricelist
+                                // are not the new one's: start clean, then take
+                                // the new customer's own defaults.
+                                if (changed) {
                                   _selectedPaymentTerm = null;
                                   _selectedPricelist = null;
-                                  _isLoadingPaymentTermsShimmer = false;
-                                  _isLoadingPricelistsShimmer = false;
-                                });
-                                if (_quoteLines.isNotEmpty) {
-                                  _scheduleTaxRecalc();
                                 }
-                              },
-                              validator: (value) => _selectedCustomer == null
-                                  ? 'Please select a customer'
-                                  : null,
-                            ),
+                              });
+                              _loadCustomerDefaults(customer);
+                              if (_quoteLines.isNotEmpty) {
+                                _scheduleTaxRecalc();
+                              }
+                            },
+                            onClear: () {
+                              setState(() {
+                                _selectedCustomer = null;
+                                _selectedPaymentTerm = null;
+                                _selectedPricelist = null;
+                                _isLoadingPaymentTermsShimmer = false;
+                                _isLoadingPricelistsShimmer = false;
+                              });
+                              if (_quoteLines.isNotEmpty) {
+                                _scheduleTaxRecalc();
+                              }
+                            },
+                            validator: (value) => _selectedCustomer == null
+                                ? 'Please select a customer'
+                                : null,
+                          ),
                         ],
                       ),
                       _buildProfessionalCard(
                         title: 'Quote Details',
                         children: [
-                          CustomDateSelector(
-                            onTap: _selectValidityDate,
-                            selectedDate:
-                                _validityDate ??
-                                DateTime.now().add(const Duration(days: 30)),
-                            labelText: 'Validity Date',
-                            isDark: isDark,
-                            showBorder: true,
-                          ),
-                          const SizedBox(height: 20),
+                          if (!_isConfirmedOrder) ...[
+                            Opacity(
+                              opacity: _isCancelledOrder ? 0.6 : 1,
+                              child: CustomDateSelector(
+                                onTap: _isCancelledOrder
+                                    ? () {}
+                                    : _selectValidityDate,
+                                selectedDate:
+                                    _validityDate ??
+                                    DateTime.now().add(
+                                      const Duration(days: 30),
+                                    ),
+                                labelText: 'Validity Date',
+                                isDark: isDark,
+                                showBorder: true,
+                              ),
+                            ),
+                            const SizedBox(height: 20),
+                          ],
                           CustomTextField(
                             controller: _notesController,
                             labelText: 'Notes (Optional)',
@@ -2936,45 +2908,21 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                               ? _buildShimmerDropdown(
                                   'Loading payment terms...',
                                 )
-                              : CustomDropdownField(
+                              : MoboSelectField<String>(
+                                  label: 'Payment Terms',
+                                  hintText: 'Select payment terms (optional)',
                                   value: _selectedPaymentTerm?['id']
                                       ?.toString(),
-                                  labelText: 'Payment Terms',
-                                  hintText: 'Select payment terms (optional)',
-                                  isDark: isDark,
-                                  items: [
-                                    const DropdownMenuItem<String>(
-                                      value: null,
-                                      child: Text('Select Payment Terms'),
-                                    ),
-
-                                    ...(() {
-                                      final items = _paymentTerms.map((term) {
-                                        return DropdownMenuItem<String>(
-                                          value: term['id']?.toString(),
-                                          child: Text(
-                                            term['name'] ?? 'Unknown',
-                                            overflow: TextOverflow.ellipsis,
-                                            maxLines: 1,
-                                          ),
-                                        );
-                                      }).toList();
-                                      final deduped = items
-                                          .fold<
-                                            Map<
-                                              String,
-                                              DropdownMenuItem<String>
-                                            >
-                                          >({}, (map, item) {
-                                            if (item.value != null &&
-                                                !map.containsKey(item.value)) {
-                                              map[item.value!] = item;
-                                            }
-                                            return map;
-                                          });
-                                      return deduped.values.toList();
-                                    })(),
-                                  ],
+                                  options: _mapOptions([
+                                    ..._paymentTerms,
+                                    if (_selectedPaymentTerm != null &&
+                                        !_paymentTerms.any(
+                                          (t) =>
+                                              t['id'] ==
+                                              _selectedPaymentTerm!['id'],
+                                        ))
+                                      _selectedPaymentTerm!,
+                                  ], (term) => term['name'] ?? 'Unknown'),
                                   onChanged: (value) {
                                     if (value == null) {
                                       setState(() {
@@ -2992,53 +2940,35 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                                       });
                                     }
                                   },
-                                  validator: (value) => null,
                                 ),
                           const SizedBox(height: 20),
                           _isLoadingPricelistsShimmer
                               ? _buildShimmerDropdown('Loading pricelists...')
-                              : CustomDropdownField(
-                                  value: _selectedPricelist?['id']?.toString(),
-                                  labelText: 'Pricelist',
+                              : MoboSelectField<String>(
+                                  label: 'Pricelist',
                                   hintText: 'Select pricelist (optional)',
-                                  isDark: isDark,
-                                  items: [
-                                    const DropdownMenuItem<String>(
-                                      value: null,
-                                      child: Text('Select Pricelist'),
-                                    ),
-
-                                    ...(() {
-                                      final items = _pricelists.map((
-                                        pricelist,
-                                      ) {
-                                        return DropdownMenuItem<String>(
-                                          value: pricelist['id']?.toString(),
-                                          child: Text(
-                                            pricelist['display_name'] ??
-                                                pricelist['name'] ??
-                                                'Unknown',
-                                            overflow: TextOverflow.ellipsis,
-                                            maxLines: 1,
-                                          ),
-                                        );
-                                      }).toList();
-                                      final deduped = items
-                                          .fold<
-                                            Map<
-                                              String,
-                                              DropdownMenuItem<String>
-                                            >
-                                          >({}, (map, item) {
-                                            if (item.value != null &&
-                                                !map.containsKey(item.value)) {
-                                              map[item.value!] = item;
-                                            }
-                                            return map;
-                                          });
-                                      return deduped.values.toList();
-                                    })(),
-                                  ],
+                                  value: _selectedPricelist?['id']?.toString(),
+                                  enabled: !_customerAndPricelistLocked,
+                                  allowClear: !_customerAndPricelistLocked,
+                                  options: _mapOptions(
+                                    [
+                                      ..._pricelists,
+                                      // The order's own pricelist is shown even
+                                      // when the list for its company no longer
+                                      // holds it (an archived one, say).
+                                      if (_selectedPricelist != null &&
+                                          !_pricelists.any(
+                                            (p) =>
+                                                p['id'] ==
+                                                _selectedPricelist!['id'],
+                                          ))
+                                        _selectedPricelist!,
+                                    ],
+                                    (pricelist) =>
+                                        pricelist['display_name'] ??
+                                        pricelist['name'] ??
+                                        'Unknown',
+                                  ),
                                   onChanged: (value) {
                                     if (value == null) {
                                       setState(() {
@@ -3057,7 +2987,6 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                                       });
                                     }
                                   },
-                                  validator: (value) => null,
                                 ),
                           const SizedBox(height: 20),
                         ],
@@ -3066,9 +2995,8 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                         title: 'Products',
                         children: [
                           ProductTypeAhead(
-                            controller: _productSearchController,
                             labelText: 'Search Product to Add',
-                            isDark: isDark,
+                            isRequired: true,
                             onProductSelected: (product) {
                               setState(() {
                                 _isAddingLine = true;
@@ -3102,7 +3030,6 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                                   'discount': 0.0,
                                   'tax_id': product.taxesIds,
                                 });
-                                _productSearchController.clear();
                               });
 
                               _debouncedTaxRecalc?.cancel();
@@ -3459,82 +3386,68 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                             ),
                         ],
                       ),
-                      const SizedBox(height: 8),
-                      Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(8),
-                          boxShadow: [
-                            BoxShadow(
-                              color: isDark
-                                  ? Colors.black.withOpacity(0.18)
-                                  : Colors.black.withOpacity(0.06),
-                              blurRadius: 12,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
-                        ),
-                        child: SizedBox(
-                          width: double.infinity,
-                          height: 56,
-                          child: ElevatedButton.icon(
-                            onPressed: (_quoteLines.isEmpty || _isLoading)
-                                ? null
-                                : _saveQuote,
-                            icon: _isLoading
-                                ? const SizedBox(
-                                    width: 20,
-                                    height: 20,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      valueColor: AlwaysStoppedAnimation<Color>(
-                                        Colors.white,
-                                      ),
-                                    ),
-                                  )
-                                : const Icon(
-                                    HugeIcons.strokeRoundedFileAdd,
-                                    color: Colors.white,
-                                    size: 20,
-                                  ),
-                            label: Text(
-                              _isLoading
-                                  ? (widget.quotationToEdit != null
-                                        ? 'Updating Quote...'
-                                        : 'Creating Quote...')
-                                  : (widget.quotationToEdit != null
-                                        ? 'Update Quote'
-                                        : 'Create Quote'),
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.white,
-                              ),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Theme.of(context).primaryColor,
-                              foregroundColor: Colors.white,
-                              elevation: 0,
-                              shadowColor: Colors.transparent,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              padding: const EdgeInsets.symmetric(
-                                vertical: 14,
-                                horizontal: 16,
-                              ),
-                              disabledBackgroundColor: isDark
-                                  ? Colors.grey[700]!
-                                  : Colors.grey[400]!,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 20),
                     ],
                   ),
                 ),
               ),
       ),
+      bottomNavigationBar: _isInitialLoad
+          ? null
+          : MoboBottomActionBar(
+              child: SizedBox(
+                width: double.infinity,
+                height: 56,
+                child: ElevatedButton.icon(
+                  onPressed: _canSubmit ? _saveQuote : null,
+                  icon: _isLoading
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              Colors.white,
+                            ),
+                          ),
+                        )
+                      : const Icon(
+                          HugeIcons.strokeRoundedFileAdd,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                  label: Text(
+                    _isLoading
+                        ? (widget.quotationToEdit != null
+                              ? 'Updating Quote...'
+                              : 'Creating Quote...')
+                        : (widget.quotationToEdit != null
+                              ? 'Update Quote'
+                              : 'Create Quote'),
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Theme.of(context).primaryColor,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shadowColor: Colors.transparent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 14,
+                      horizontal: 16,
+                    ),
+                    disabledBackgroundColor: isDark
+                        ? Colors.grey[700]!
+                        : Colors.grey[400]!,
+                  ),
+                ),
+              ),
+            ),
     );
   }
 
@@ -4202,6 +4115,7 @@ class _QuantityDialogState extends State<QuantityDialog> {
                     child: CustomTextField(
                       controller: _quantityController,
                       labelText: 'Quantity',
+                      isRequired: true,
                       isDark: isDark,
                       keyboardType: const TextInputType.numberWithOptions(
                         decimal: true,
@@ -4235,6 +4149,7 @@ class _QuantityDialogState extends State<QuantityDialog> {
                         return CustomTextField(
                           controller: _priceController,
                           labelText: 'Unit Price ($currencySymbol)',
+                          isRequired: true,
                           isDark: isDark,
                           keyboardType: const TextInputType.numberWithOptions(
                             decimal: true,
@@ -4328,49 +4243,12 @@ class _QuantityDialogState extends State<QuantityDialog> {
                 ),
               ),
               const SizedBox(height: 24),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed: _isLoading ? null : () => Navigator.pop(context),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 12,
-                      ),
-                    ),
-                    child: Text(
-                      'Cancel',
-                      style: TextStyle(
-                        color: isDark ? Colors.white : AppTheme.primaryColor,
-                      ),
-                    ),
-                  ),
-                  FilledButton(
-                    onPressed: _isLoading ? null : _handleConfirm,
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 12,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                    child: _isLoading
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : Text(
-                            'Add to Quote',
-                            style: TextStyle(
-                              color: isDark ? Colors.white : Colors.white,
-                            ),
-                          ),
-                  ),
-                ],
+              MoboDialogButtons(
+                secondaryLabel: 'Cancel',
+                onSecondary: () => Navigator.pop(context),
+                primaryLabel: 'Add to Quote',
+                onPrimary: _handleConfirm,
+                isLoading: _isLoading,
               ),
             ],
           ),
@@ -4378,4 +4256,34 @@ class _QuantityDialogState extends State<QuantityDialog> {
       ),
     );
   }
+}
+
+/// The company a quotation is for: what its pricelist and payment-term lists
+/// are limited to, and the context its server calls run in.
+class _QuoteCompany {
+  const _QuoteCompany({required this.id, required this.scope});
+
+  final int? id;
+
+  /// Database, user and company: what a cached list belongs to.
+  final String scope;
+
+  /// The domain of Odoo's own form field: records with no company, or this
+  /// one's. With no company known, all of the user's companies are left
+  /// alone, as before.
+  List<dynamic> get domain => id == null
+      ? const []
+      : [
+          '|',
+          ['company_id', '=', false],
+          ['company_id', '=', id],
+        ];
+
+  /// Makes the server answer as if this company were the one selected.
+  Map<String, dynamic> get context => id == null
+      ? const {}
+      : {
+          'allowed_company_ids': [id],
+          'company_id': id,
+        };
 }

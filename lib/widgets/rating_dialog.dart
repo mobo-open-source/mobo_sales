@@ -102,8 +102,9 @@ class _CustomRatingDialogState extends State<CustomRatingDialog> {
                     behavior: HitTestBehavior.opaque,
                     onTap: () => setState(() => _rating = index + 1),
                     child: Padding(
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: _kStarGap),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: _kStarGap,
+                      ),
                       child: SvgPicture.asset(
                         filled
                             ? 'assets/icons/star_filled.svg'

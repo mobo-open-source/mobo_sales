@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/connectivity_service.dart';
+import '../services/data_change_bus.dart';
 import '../services/session_service.dart';
 import '../services/stock_service.dart';
 import '../services/odoo_error_classifier.dart';
+import '../services/odoo_session_manager.dart';
+import '../models/product.dart';
 
 /// Manages stock product listing, pagination, search, and inventory detail fetching.
 class StockCheckProvider with ChangeNotifier {
@@ -15,10 +18,30 @@ class StockCheckProvider with ChangeNotifier {
     ConnectivityService? connectivityService,
     SessionService? sessionService,
     StockService? stockService,
+    DataChangeBus? bus,
   }) : _connectivityService =
            connectivityService ?? ConnectivityService.instance,
        _sessionService = sessionService ?? SessionService.instance,
-       _stockService = stockService ?? StockService.instance;
+       _stockService = stockService ?? StockService.instance {
+    // A product edited, archived or added anywhere in the app: the stock list
+    // shows its new name, code and category.
+    _productChanges = (bus ?? DataChangeBus.instance).listen(
+      where: (change) => change.isProduct,
+      onChange: (_) => unawaited(quietReload()),
+    );
+  }
+
+  DataChangeSubscription? _productChanges;
+
+  /// The server's Odoo generation, or 0 when it cannot be read: a search must
+  /// never fail because the version could not be looked up.
+  Future<int> _serverGeneration() async {
+    try {
+      return await OdooSessionManager.serverGeneration();
+    } catch (_) {
+      return 0;
+    }
+  }
 
   List<Map<String, dynamic>> _stockList = [];
   bool _isLoading = false;
@@ -49,6 +72,81 @@ class StockCheckProvider with ChangeNotifier {
 
   bool _isServerUnreachableError(dynamic error) =>
       OdooErrorClassifier.isServerUnreachable(error);
+
+  /// The domain of the stock list: active storable or consumable products,
+  /// narrowed by the search.
+  Future<List<dynamic>> _stockDomain() async {
+    final domain = <dynamic>[
+      ['active', '=', true],
+      [
+        'type',
+        'in',
+        ['product', 'consu'],
+      ],
+    ];
+    if (_searchQuery.isEmpty) return domain;
+    return [
+      '&',
+      '&',
+      ...domain,
+      // Odoo 20 stopped searching a template's variants through `barcode`;
+      // `productSearchDomain` asks for them explicitly there.
+      ...productSearchDomain(
+        _searchQuery,
+        generation: await _serverGeneration(),
+        includeCategory: true,
+      ),
+    ];
+  }
+
+  bool _quietReloading = false;
+  bool _quietReloadPending = false;
+
+  /// Reads the products the list shows — every page loaded so far — again,
+  /// without clearing the list first: the rows stay and the scroll position
+  /// stays where it is until the new ones arrive. The 30-second copy kept for
+  /// reopening the screen is dropped, since it no longer matches the server.
+  Future<void> quietReload() async {
+    _cache = null;
+    _lastFetchTime = null;
+    if (_stockList.isEmpty) return;
+    if (_isLoading || _isLoadingMore || _quietReloading) {
+      _quietReloadPending = true;
+      return;
+    }
+    if (!_connectivityService.isConnected || !_sessionService.hasValidSession) {
+      return;
+    }
+
+    _quietReloading = true;
+    try {
+      final domain = await _stockDomain();
+      final rows = await _stockService.fetchStockTemplates(
+        domain: domain,
+        limit: (_currentPage + 1) * _pageSize,
+        offset: 0,
+        companyId: _companyId,
+      );
+      final total = await _stockService.getStockCount(
+        domain: domain,
+        companyId: _companyId,
+      );
+
+      _stockList = rows;
+      _totalProducts = total;
+      _hasMoreData = rows.length < total;
+      _currentPage = rows.isEmpty ? 0 : (rows.length - 1) ~/ _pageSize;
+      notifyListeners();
+    } catch (_) {
+      // The list keeps what it has; a pull-down reads it again.
+    } finally {
+      _quietReloading = false;
+      if (_quietReloadPending && !_isLoading && !_isLoadingMore) {
+        _quietReloadPending = false;
+        unawaited(quietReload());
+      }
+    }
+  }
 
   /// Loads the first page of stock products, optionally bypassing the cache.
   Future<void> fetchInitialStock({bool forceRefresh = false}) async {
@@ -107,13 +205,13 @@ class StockCheckProvider with ChangeNotifier {
             'in',
             ['product', 'consu'],
           ],
-          '|',
-          '|',
-          '|',
-          ['name', 'ilike', _searchQuery],
-          ['default_code', 'ilike', _searchQuery],
-          ['categ_id.name', 'ilike', _searchQuery],
-          ['barcode', 'ilike', _searchQuery],
+          // Odoo 20 stopped searching a template's variants through
+          // `barcode`; `productSearchDomain` asks for them explicitly there.
+          ...productSearchDomain(
+            _searchQuery,
+            generation: await _serverGeneration(),
+            includeCategory: true,
+          ),
         ];
       }
 
@@ -182,13 +280,13 @@ class StockCheckProvider with ChangeNotifier {
             'in',
             ['product', 'consu'],
           ],
-          '|',
-          '|',
-          '|',
-          ['name', 'ilike', _searchQuery],
-          ['default_code', 'ilike', _searchQuery],
-          ['categ_id.name', 'ilike', _searchQuery],
-          ['barcode', 'ilike', _searchQuery],
+          // Odoo 20 stopped searching a template's variants through
+          // `barcode`; `productSearchDomain` asks for them explicitly there.
+          ...productSearchDomain(
+            _searchQuery,
+            generation: await _serverGeneration(),
+            includeCategory: true,
+          ),
         ];
       }
       final offset = (_currentPage + 1) * _pageSize;
@@ -249,8 +347,9 @@ class StockCheckProvider with ChangeNotifier {
       final locationUsageMap = <String, String>{};
       final internalLocations = <String>[];
       for (var loc in locationResult) {
-        final locationName =
-            loc['complete_name'] is String ? loc['complete_name'] as String : '';
+        final locationName = loc['complete_name'] is String
+            ? loc['complete_name'] as String
+            : '';
         final usage = loc['usage'] is String ? loc['usage'] as String : '';
         locationUsageMap[locationName] = usage;
         if (usage == 'internal') {
@@ -485,6 +584,7 @@ class StockCheckProvider with ChangeNotifier {
 
   @override
   void dispose() {
+    _productChanges?.cancel();
     _debounceTimer?.cancel();
     super.dispose();
   }

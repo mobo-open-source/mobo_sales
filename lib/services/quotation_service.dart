@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:mobo_sales/widgets/confetti_dialogs.dart';
+import 'package:mobo_sales/widgets/custom_snackbar.dart';
+import 'odoo_error_handler.dart';
 import 'odoo_session_manager.dart';
+import 'data_change_bus.dart';
 
 /// Handles send, email, and delete operations on Odoo `sale.order` records.
 class QuotationService {
@@ -45,7 +48,9 @@ class QuotationService {
         'uid': session.userId ?? 0,
         'allowed_company_ids': session.allowedCompanyIds.isNotEmpty
             ? session.allowedCompanyIds
-            : (session.selectedCompanyId != null ? [session.selectedCompanyId!] : []),
+            : (session.selectedCompanyId != null
+                  ? [session.selectedCompanyId!]
+                  : []),
         'active_model': 'sale.order',
         'active_id': orderId,
         'active_ids': [orderId],
@@ -216,6 +221,10 @@ class QuotationService {
 
             final sendSuccess = true;
 
+            // Sending marks a draft as sent: the list, the details behind this
+            // dialog and the dashboard show the new state.
+            DataChangeBus.instance.quotationChanged(orderId);
+
             if (context.mounted) {
               if (sendSuccess) {
                 closeLoadingDialog();
@@ -233,6 +242,7 @@ class QuotationService {
           throw Exception('Unexpected wizard model: $wizardModel');
         }
       } else {
+        DataChangeBus.instance.quotationChanged(orderId);
         if (context.mounted) {
           closeLoadingDialog();
 
@@ -248,11 +258,7 @@ class QuotationService {
 
         await Future.delayed(const Duration(milliseconds: 300));
         if (context.mounted) {
-          _showErrorDialog(
-            context,
-            'Send Quotation Failed',
-            _getErrorMessage(e),
-          );
+          CustomSnackbar.showError(context, _getErrorMessage(e));
         }
       }
     }
@@ -345,73 +351,9 @@ class QuotationService {
     });
   }
 
-  static void _showErrorDialog(
-    BuildContext context,
-    String title,
-    String message,
-  ) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: isDark ? const Color(0xFF212121) : Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: Colors.red.shade50,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                Icons.error_outline_rounded,
-                size: 24,
-                color: Colors.red.shade400,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                title,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w600,
-                  fontSize: 18,
-                ),
-              ),
-            ),
-          ],
-        ),
-        content: Text(
-          message,
-          style: const TextStyle(fontSize: 15, height: 1.5),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
+  /// Why sending failed, in one sentence for the snackbar.
   static String _getErrorMessage(dynamic error) {
     final errorString = error.toString();
-
-    if (errorString.contains('Failed host lookup') ||
-        errorString.contains('SocketException') ||
-        errorString.contains('No address associated with hostname')) {
-      return 'Network connection failed. Please check your internet connection and try again.\n\nIf the problem persists, the Odoo server may be temporarily unavailable.';
-    }
-
-    if (errorString.contains('No active session') ||
-        errorString.contains('session') ||
-        errorString.contains('authentication')) {
-      return 'Session expired or invalid. Please log in again to continue.';
-    }
 
     if (errorString.contains('Cannot send cancelled quotation')) {
       return 'Cannot send a cancelled quotation. Please check the quotation status.';
@@ -421,28 +363,9 @@ class QuotationService {
       return 'Quotation not found. It may have been deleted by another user.';
     }
 
-    return 'Failed to send quotation. Please try again.\n\nError details: ${_extractOdooErrorMessage(errorString)}';
-  }
-
-  static String _extractOdooErrorMessage(String errorString) {
-    final patterns = [
-      RegExp(r'odoo\.exceptions\.[^:]+:\s*(.+?)(?:\n|$)', multiLine: true),
-      RegExp(r'Exception:\s*(.+?)(?:\n|$)', multiLine: true),
-      RegExp(r'Error:\s*(.+?)(?:\n|$)', multiLine: true),
-    ];
-
-    for (final pattern in patterns) {
-      final match = pattern.firstMatch(errorString);
-      if (match != null && match.group(1) != null) {
-        return match.group(1)!.trim();
-      }
-    }
-
-    return errorString
-        .replaceAll('Exception: ', '')
-        .replaceAll('ClientException with ', '')
-        .split('\n')
-        .first
-        .trim();
+    return OdooErrorHandler.toSnackbarMessage(
+      error,
+      fallback: 'Could not send the quotation. Please try again.',
+    );
   }
 }

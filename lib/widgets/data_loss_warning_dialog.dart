@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:hugeicons/hugeicons.dart';
 
+import '../shared/widgets/mobo/mobo_dialog_buttons.dart';
+
 class DataLossWarningDialog extends StatelessWidget {
   final String title;
   final String message;
@@ -69,57 +71,14 @@ class DataLossWarningDialog extends StatelessWidget {
             ),
             const SizedBox(height: 24),
 
-            Row(
-              children: [
-                Expanded(
-                  child: TextButton(
-                    onPressed:
-                        onCancel ?? () => Navigator.of(context).pop(false),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        side: BorderSide(
-                          color: isDark ? Colors.grey[600]! : Colors.grey[300]!,
-                        ),
-                      ),
-                    ),
-                    child: Text(
-                      cancelText,
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
-                        color: isDark ? Colors.grey[300] : Colors.grey[700],
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: () {
-                      Navigator.of(context).pop(true);
-                      onConfirm();
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: primaryColor,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    child: Text(
-                      confirmText,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+            MoboDialogButtons(
+              secondaryLabel: cancelText,
+              onSecondary: onCancel ?? () => Navigator.of(context).pop(false),
+              primaryLabel: confirmText,
+              onPrimary: () {
+                Navigator.of(context).pop(true);
+                onConfirm();
+              },
             ),
           ],
         ),

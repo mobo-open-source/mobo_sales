@@ -1,4 +1,9 @@
-/// Standard Odoo payment states.
+/// The app's view of an `account.payment` state.
+///
+/// Odoo does not use one vocabulary for it. 17 has `draft`, `posted`,
+/// `cancel`; 18 and 19 have `draft`, `in_process`, `paid`, `canceled`,
+/// `rejected`; 20 has `draft`, `paid`, `reconciled`, `canceled`, `rejected`.
+/// [Payment.parseOdooState] folds all of them into these values.
 enum OdooPaymentState { draft, posted, sent, reconciled, cancelled }
 
 /// Internal reconciliation status within the app.
@@ -285,22 +290,53 @@ class Payment {
       case OdooPaymentState.reconciled:
         return 'Reconciled';
       case OdooPaymentState.cancelled:
-        return 'Cancelled';
+        return state.toLowerCase() == 'rejected' ? 'Rejected' : 'Cancelled';
     }
   }
 
+  /// The raw `account.payment.state` values of a payment that has been
+  /// confirmed, in the vocabulary of every supported Odoo release.
+  ///
+  /// For a search domain: Odoo does not validate selection values, so the ones
+  /// a given release does not have simply match nothing. Filtering on 17's
+  /// `posted` alone finds no payment at all on 18 and later.
+  static const List<String> confirmedStates = [
+    'posted',
+    'sent',
+    'reconciled',
+    'in_process',
+    'paid',
+  ];
+
+  /// Whether the raw [state] is a posted payment that may still need
+  /// reconciling, whichever Odoo release wrote it.
+  static bool isPostedState(Object? state) =>
+      state is String && parseOdooState(state) == OdooPaymentState.posted;
+
   /// Returns the [OdooPaymentState] corresponding to the [state] string.
+  ///
+  /// `in_process` (18, 19) and `paid` (18, 19, 20) are payments that have been
+  /// posted, exactly what `posted` is on 17; whether the payment is also
+  /// reconciled is told by `is_reconciled`, which all four releases keep, so
+  /// that is left to [isReconciled]. `reconciled` is 20's settled state.
+  /// A cancelled payment is `cancel` on 17 and `canceled` from 18; `rejected`
+  /// (18 and later) is treated as one too.
   static OdooPaymentState parseOdooState(String state) {
     switch (state.toLowerCase()) {
       case 'draft':
         return OdooPaymentState.draft;
       case 'posted':
+      case 'in_process':
+      case 'paid':
         return OdooPaymentState.posted;
       case 'sent':
         return OdooPaymentState.sent;
       case 'reconciled':
         return OdooPaymentState.reconciled;
+      case 'cancel':
+      case 'canceled':
       case 'cancelled':
+      case 'rejected':
         return OdooPaymentState.cancelled;
       default:
         return OdooPaymentState.draft;

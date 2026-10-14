@@ -29,6 +29,9 @@ class InvoiceDetailsService {
             'write_date',
             'payment_state',
             'move_type',
+            // The badge reads "Sent" once the invoice was emailed; a server
+            // without the field has it dropped and read again.
+            'is_move_sent',
           ],
           apiCall: (currentFields) async {
             final res = await OdooSessionManager.safeCallKw({
@@ -174,7 +177,7 @@ class InvoiceDetailsService {
         'kwargs': {},
       });
     } catch (e) {
-      if (!_isMissingMethodError(e)) rethrow;
+      if (!isMissingMethodError(e)) rethrow;
       await OdooSessionManager.safeCallKw({
         'model': 'account.move',
         'method': 'action_draft',
@@ -187,29 +190,41 @@ class InvoiceDetailsService {
   }
 
   /// Whether [error] means the server does not define the method at all.
-  static bool _isMissingMethodError(Object error) {
+  ///
+  /// Odoo words it differently by release: 17 and 18 say "The method 'x' does
+  /// not exist on the model 'm'", 19 and 20 "The method 'm.x' does not exist".
+  static bool isMissingMethodError(Object error) {
     final message = error.toString().toLowerCase();
     return message.contains('has no attribute') ||
         message.contains('object has no method') ||
         message.contains('is not a valid action') ||
-        message.contains('attributeerror');
+        message.contains('attributeerror') ||
+        (message.contains('the method') && message.contains('does not exist'));
   }
 
   /// Cancels the invoice with [invoiceId].
+  ///
+  /// `button_cancel` is the method on every supported release, 17 to 20, and
+  /// from the posted state it first resets the invoice to draft itself. The
+  /// `action_cancel` retry exists only for a server that does not define
+  /// `button_cancel`; no release does define `action_cancel`, so trying it first
+  /// cost a failed call (and a server-side error) on every cancel. As with
+  /// [resetToDraft], any other failure is rethrown: it is Odoo's real reason.
   Future<void> cancelInvoice(int invoiceId) async {
     try {
       await OdooSessionManager.safeCallKw({
         'model': 'account.move',
-        'method': 'action_cancel',
+        'method': 'button_cancel',
         'args': [
           [invoiceId],
         ],
         'kwargs': {},
       });
     } catch (e) {
+      if (!isMissingMethodError(e)) rethrow;
       await OdooSessionManager.safeCallKw({
         'model': 'account.move',
-        'method': 'button_cancel',
+        'method': 'action_cancel',
         'args': [
           [invoiceId],
         ],

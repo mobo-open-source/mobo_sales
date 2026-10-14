@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'package:mobo_sales/widgets/list_search_bar.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:provider/provider.dart';
 import 'package:mobo_sales/providers/quotation_provider.dart';
 import 'package:mobo_sales/screens/quotations/quotation_list_screen.dart';
+import 'package:mobo_sales/shared/widgets/mobo/mobo_dialog_buttons.dart';
 import 'package:mobo_sales/widgets/empty_state_widget.dart';
 import 'package:mobo_sales/providers/currency_provider.dart';
 import 'package:mobo_sales/services/connectivity_service.dart';
@@ -111,5 +114,43 @@ void main() {
 
     await tester.pumpWidget(createWidgetUnderTest());
     await tester.pump();
+  });
+
+  testWidgets('the filter sheet ends in the Mobo Clear All / Apply buttons', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    when(
+      () => mockQuotationProvider.fetchGroupByOptions(),
+    ).thenAnswer((_) async => {});
+    await tester.pumpWidget(createWidgetUnderTest());
+    await tester.pump();
+
+    await tester.tap(
+      find
+          .descendant(
+            of: find.byType(ListSearchBar),
+            matching: find.byType(SvgPicture),
+          )
+          .last,
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    final buttons = tester.widget<MoboDialogButtons>(
+      find.byType(MoboDialogButtons),
+    );
+    expect(buttons.secondaryLabel, 'Clear All');
+    expect(buttons.primaryLabel, 'Apply');
+    // Equal-width, 48-high pair: the old Clear All (grey, 8-radius) and Apply
+    // (flex 2) are gone.
+    expect(find.widgetWithText(OutlinedButton, 'Clear All'), findsOneWidget);
+    expect(find.widgetWithText(ElevatedButton, 'Apply'), findsOneWidget);
+    expect(
+      tester.getSize(find.widgetWithText(ElevatedButton, 'Apply')).height,
+      MoboDialogButtons.height,
+    );
   });
 }

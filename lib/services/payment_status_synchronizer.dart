@@ -1,5 +1,6 @@
 import 'dart:async';
 import '../models/payment.dart';
+import 'data_change_bus.dart';
 import 'odoo_session_manager.dart';
 
 class PaymentStatusUpdate {
@@ -123,6 +124,17 @@ class PaymentStatusSynchronizer {
       );
 
       _notifyWatchers(invoiceId, update);
+
+      // The payment state moved since the last look, which means something
+      // other than this screen changed it (a payment reconciled in Odoo, a
+      // bank statement matched): tell the lists and the other detail pages.
+      if (previousPaymentState != 'unknown' &&
+          previousPaymentState != currentPaymentState) {
+        DataChangeBus.instance.invoiceChanged(
+          invoiceId,
+          origin: PaymentStatusSynchronizer,
+        );
+      }
 
       return update;
     } catch (e) {
@@ -557,7 +569,8 @@ class PaymentStatusSynchronizer {
 
           final paymentId = paymentData['id'] as int;
           final isReconciled = paymentData['is_reconciled'] ?? false;
-          final paymentState = paymentData['state'] ?? 'draft';
+          // `posted` on 17, `in_process`/`paid` on 18 and later.
+          final isPosted = Payment.isPostedState(paymentData['state']);
 
           paymentData['reconciliation_lines'] =
               reconciliationLines[paymentId]
@@ -567,11 +580,11 @@ class PaymentStatusSynchronizer {
 
           paymentData['reconciliation_status'] = isReconciled
               ? 'complete'
-              : paymentState == 'posted'
+              : isPosted
               ? 'pending'
               : 'not_required';
           paymentData['requires_manual_reconciliation'] =
-              paymentState == 'posted' && !isReconciled;
+              isPosted && !isReconciled;
 
           final reconciledAmount =
               reconciliationLines[paymentId]?.fold(

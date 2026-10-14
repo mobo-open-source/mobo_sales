@@ -2,7 +2,9 @@
 class OdooErrorClassifier {
   const OdooErrorClassifier._();
 
-  static final RegExp _httpStatus = RegExp(r'(?<![0-9])(404|500|502|503|504)(?![0-9])');
+  static final RegExp _httpStatus = RegExp(
+    r'(?<![0-9])(404|500|502|503|504)(?![0-9])',
+  );
 
   static const List<String> _transportMarkers = [
     'socketexception',

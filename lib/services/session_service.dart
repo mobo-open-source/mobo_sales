@@ -17,10 +17,12 @@ import '../providers/settings_provider.dart';
 import '../providers/last_opened_provider.dart';
 import '../providers/product_provider.dart';
 import '../providers/login_provider.dart';
+import '../utils/odoo_binary.dart';
 import '../utils/server_url_utils.dart';
 import 'field_validation_service.dart';
 import 'odoo_session_manager.dart';
 import 'odoo_api_service.dart';
+import 'permission_service.dart';
 import 'biometric_context_service.dart';
 import '../screens/others/dashboard_screen.dart';
 import '../screens/invoices/invoice_list_screen.dart';
@@ -29,6 +31,8 @@ import '../services/payment_status_synchronizer.dart';
 import '../home_scaffold.dart';
 
 import '../widgets/custom_snackbar.dart';
+import 'sales_access.dart';
+import '../utils/database_expiry.dart';
 
 class SessionService extends ChangeNotifier {
   static final SessionService instance = SessionService._internal();
@@ -600,35 +604,15 @@ class SessionService extends ChangeNotifier {
       String? imageBase64;
       String userDisplayName = session.userLogin;
 
-      try {
-        if (session.userId != null && session.sessionId.isNotEmpty) {
-          final userDetails = await OdooSessionManager.callKwWithSession(
-            url: normalizeServerUrl(session.serverUrl),
-            sessionId: session.sessionId,
-            payload: {
-              'model': 'res.users',
-              'method': 'read',
-              'args': [
-                [session.userId],
-                ['name', 'image_1920'],
-              ],
-              'kwargs': const {},
-            },
-          ).timeout(const Duration(seconds: 20));
-
-          if (userDetails is List && userDetails.isNotEmpty) {
-            final user = userDetails.first as Map;
-            final n = user['name'];
-            if (n != null && n != false) {
-              userDisplayName = n.toString();
-            }
-            final img = user['image_1920'];
-            if (img != null && img != false) {
-              imageBase64 = img.toString();
-            }
-          }
-        }
-      } catch (e) {}
+      final identity = await _fetchUserIdentity(
+        url: session.serverUrl,
+        sessionId: session.sessionId,
+        userId: session.userId,
+      );
+      if (identity != null) {
+        userDisplayName = identity.name ?? userDisplayName;
+        imageBase64 = identity.imageBase64;
+      }
 
       final accountData = {
         'id': (session.userId ?? 0).toString(),
@@ -672,6 +656,160 @@ class SessionService extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       rethrow;
+    }
+  }
+
+  /// The name and photo of the user [userId] on [url], read with that user's
+  /// own [sessionId]; null when they cannot be read (no session, an expired
+  /// one, the server down).
+  ///
+  /// [UserIdentity.name] is null when the server returns no name; the photo is
+  /// null when the user has none, which is a real answer and not a failure.
+  Future<UserIdentity?> _fetchUserIdentity({
+    required String url,
+    required String sessionId,
+    required int? userId,
+  }) async {
+    if (userId == null || sessionId.isEmpty) return null;
+    try {
+      final rows = await OdooSessionManager.callKwWithSession(
+        url: normalizeServerUrl(url),
+        sessionId: sessionId,
+        payload: {
+          'model': 'res.users',
+          'method': 'read',
+          'args': [
+            [userId],
+            ['name', 'image_1920'],
+          ],
+          'kwargs': const {},
+        },
+      ).timeout(const Duration(seconds: 20));
+      if (rows is! List || rows.isEmpty || rows.first is! Map) return null;
+      final row = rows.first as Map;
+      final name = row['name'];
+      return UserIdentity(
+        name: (name is String && name.trim().isNotEmpty) ? name : null,
+        imageBase64: odooBinaryToBase64(row['image_1920']),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Applies a freshly read [identity] to a stored [account] map, in place,
+  /// and returns whether anything changed.
+  ///
+  /// The name goes under both keys the app has always written (`name` and
+  /// `userName`). A null name leaves the stored one alone; the photo is
+  /// replaced even by null, since a user who removed theirs has none.
+  @visibleForTesting
+  static bool applyIdentity(
+    Map<String, dynamic> account,
+    UserIdentity identity,
+  ) {
+    var changed = false;
+    final name = identity.name;
+    if (name != null &&
+        (account['name'] != name || account['userName'] != name)) {
+      account['name'] = name;
+      account['userName'] = name;
+      changed = true;
+    }
+    if (account['imageBase64'] != identity.imageBase64) {
+      account['imageBase64'] = identity.imageBase64;
+      changed = true;
+    }
+    return changed;
+  }
+
+  /// Records a profile the app has just read or saved — [name] and the photo
+  /// [imageBase64] — on the stored entry of [session]'s account, so the
+  /// account list shows what the profile screen shows.
+  Future<void> updateStoredAccountProfile(
+    OdooSessionModel session, {
+    String? name,
+    String? imageBase64,
+  }) async {
+    final key = storedAccountKey({
+      'userId': session.userId?.toString(),
+      'serverUrl': session.serverUrl,
+      'database': session.database,
+    });
+    final index = _storedAccounts.indexWhere(
+      (account) => storedAccountKey(account) == key,
+    );
+    if (index < 0) return;
+
+    final changed = applyIdentity(
+      _storedAccounts[index],
+      UserIdentity(name: name, imageBase64: imageBase64),
+    );
+    if (!changed) return;
+    await _saveStoredAccountsWithRetry();
+    notifyListeners();
+  }
+
+  DateTime? _accountsRefreshedAt;
+  bool _isRefreshingAccounts = false;
+
+  /// Re-reads the name and photo of every stored account and updates the ones
+  /// that changed — a rename or a new photo made on the web, say.
+  ///
+  /// Each account is read with its own saved session; one whose session has
+  /// expired is skipped and keeps what it shows. Without [force] it runs at
+  /// most once every five minutes, so opening the screen again does not repeat
+  /// the work.
+  Future<void> refreshStoredAccountsProfiles({bool force = false}) async {
+    if (_isRefreshingAccounts || _storedAccounts.isEmpty) return;
+    final last = _accountsRefreshedAt;
+    if (!force &&
+        last != null &&
+        DateTime.now().difference(last) < const Duration(minutes: 5)) {
+      return;
+    }
+    _isRefreshingAccounts = true;
+    try {
+      final current = _currentSession;
+      final currentKey = current == null
+          ? null
+          : storedAccountKey({
+              'userId': current.userId?.toString(),
+              'serverUrl': current.serverUrl,
+              'database': current.database,
+            });
+
+      final accounts = List<Map<String, dynamic>>.from(_storedAccounts);
+      final identities = await Future.wait([
+        for (final account in accounts)
+          _fetchUserIdentity(
+            url: (account['serverUrl'] ?? account['url'] ?? '').toString(),
+            // The signed-in account's saved id can be older than its live one.
+            sessionId: storedAccountKey(account) == currentKey
+                ? current!.sessionId
+                : (account['sessionId'] ?? '').toString(),
+            userId: int.tryParse(account['userId']?.toString() ?? ''),
+          ),
+      ]);
+
+      var changed = false;
+      for (var i = 0; i < accounts.length; i++) {
+        final identity = identities[i];
+        if (identity == null) continue;
+        final index = _storedAccounts.indexWhere(
+          (a) => storedAccountKey(a) == storedAccountKey(accounts[i]),
+        );
+        if (index < 0) continue;
+        if (applyIdentity(_storedAccounts[index], identity)) changed = true;
+      }
+
+      _accountsRefreshedAt = DateTime.now();
+      if (changed) {
+        await _saveStoredAccountsWithRetry();
+        notifyListeners();
+      }
+    } finally {
+      _isRefreshingAccounts = false;
     }
   }
 
@@ -1000,6 +1138,14 @@ class SessionService extends ChangeNotifier {
       FieldValidationService.clearInvalidFieldsCache();
     } catch (e) {}
 
+    // What the previous account or company could do says nothing about this
+    // one; the five-minute permission cache must not outlive the switch.
+    try {
+      PermissionService.instance.clearCache();
+    } catch (e) {
+      // A replaced PermissionService (tests) need not support clearing.
+    }
+
     _clearScreenStaticCaches();
     DashboardScreen.clearDashboardCache();
   }
@@ -1083,6 +1229,9 @@ class SessionService extends ChangeNotifier {
             break;
           }
         } catch (e) {
+          // Not a connection or password problem: let it reach the caller as is.
+          if (e is DatabaseExpiredException) rethrow;
+          if (e is SalesAccessException) rethrow;
           if (_isConnectionError(e)) {
             if (attempts < maxAttempts) {
               await Future.delayed(Duration(milliseconds: attempts * 500));
@@ -1307,4 +1456,15 @@ class SessionService extends ChangeNotifier {
       notifyListeners();
     }
   }
+}
+
+/// The name and photo of an Odoo user, as read from `res.users`.
+class UserIdentity {
+  const UserIdentity({this.name, this.imageBase64});
+
+  /// Null when the server gave none.
+  final String? name;
+
+  /// Base64 text of the photo, or null when the user has none.
+  final String? imageBase64;
 }

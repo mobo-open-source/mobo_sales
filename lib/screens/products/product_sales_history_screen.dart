@@ -5,13 +5,26 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 import '../../models/product.dart';
 import '../../providers/currency_provider.dart';
+import '../../services/data_change_bus.dart';
 import '../../services/odoo_session_manager.dart';
+import '../../shared/widgets/mobo/mobo_select_field.dart';
+import '../../utils/quiet_reload_gate.dart';
 import '../../widgets/custom_snackbar.dart';
+import '../../widgets/loading_skeletons.dart';
 
 class ProductSalesHistoryScreen extends StatefulWidget {
   final Product product;
 
-  const ProductSalesHistoryScreen({super.key, required this.product});
+  /// Where the history is read from; the signed-in session when null. A test
+  /// passes its own.
+  @visibleForTesting
+  final Future<dynamic> Function(Map<String, dynamic> payload)? callKw;
+
+  const ProductSalesHistoryScreen({
+    super.key,
+    required this.product,
+    this.callKw,
+  });
 
   @override
   State<ProductSalesHistoryScreen> createState() =>
@@ -28,24 +41,63 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
 
   final Map<int, String> _orderPartnerNames = {};
 
+  static const Duration _busDebounce = Duration(milliseconds: 350);
+  late final QuietReloadGate _reloadGate;
+  DataChangeSubscription? _busSubscription;
+
   @override
   void initState() {
     super.initState();
+    _reloadGate = QuietReloadGate(_refreshQuietly);
+    // Orders for this product are what quotations are made of: any quotation or
+    // sale order that is created, edited, confirmed, cancelled or deleted can
+    // change the history, so re-read it, without bringing the skeleton back.
+    _busSubscription = DataChangeBus.instance.listen(
+      where: (change) => change.isQuotation,
+      debounce: _busDebounce,
+      onChange: (_) {
+        if (!mounted) return;
+        _reloadGate.changed(debounce: _busDebounce);
+      },
+    );
     _loadSalesHistory();
   }
 
-  Future<void> _loadSalesHistory() async {
-    try {
-      setState(() => _isLoading = true);
+  @override
+  void dispose() {
+    _busSubscription?.cancel();
+    _reloadGate.dispose();
+    super.dispose();
+  }
 
-      final client = await OdooSessionManager.getClient();
-      if (client == null) {
-        throw Exception('No Odoo client available');
-      }
+  /// The first load: the skeleton shows until it is done.
+  Future<void> _loadSalesHistory() => _reloadGate.run(_loadSalesHistoryNow);
+
+  Future<void> _loadSalesHistoryNow() => _readSalesHistory(quiet: false);
+
+  /// A re-read in place: the page stays as it is, with its scroll position,
+  /// and the new figures replace the old ones when they are all in. A read that
+  /// fails leaves what is shown, and says nothing.
+  Future<void> _refreshQuietly() => _readSalesHistory(quiet: true);
+
+  Future<Future<dynamic> Function(Map<String, dynamic> payload)>
+  _sessionCallKw() async {
+    final client = await OdooSessionManager.getClient();
+    if (client == null) {
+      throw Exception('No Odoo client available');
+    }
+    return client.callKw;
+  }
+
+  Future<void> _readSalesHistory({required bool quiet}) async {
+    try {
+      if (!quiet) setState(() => _isLoading = true);
+
+      final callKw = widget.callKw ?? await _sessionCallKw();
 
       final productId = int.parse(widget.product.id);
 
-      final salesResult = await client.callKw({
+      final salesResult = await callKw({
         'model': 'sale.order.line',
         'method': 'search_read',
         'args': [
@@ -67,7 +119,7 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
         },
       });
 
-      final quotationResult = await client.callKw({
+      final quotationResult = await callKw({
         'model': 'sale.order.line',
         'method': 'search_read',
         'args': [
@@ -89,6 +141,7 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
         },
       });
 
+      final partnerNames = <int, String>{};
       try {
         final Set<int> orderIds = {};
         for (final m in (salesResult ?? [])) {
@@ -104,7 +157,7 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
           if (oid != null) orderIds.add(oid);
         }
         if (orderIds.isNotEmpty) {
-          final orderInfo = await client.callKw({
+          final orderInfo = await callKw({
             'model': 'sale.order',
             'method': 'read',
             'args': [orderIds.toList()],
@@ -113,7 +166,6 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
             },
           });
           if (orderInfo is List) {
-            _orderPartnerNames.clear();
             for (final o in orderInfo) {
               final int? id = o['id'] as int?;
               String? partnerName;
@@ -122,7 +174,7 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
                 partnerName = p[1]?.toString();
               }
               if (id != null && partnerName != null) {
-                _orderPartnerNames[id] = partnerName;
+                partnerNames[id] = partnerName;
               }
             }
           }
@@ -131,6 +183,9 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
 
       if (mounted) {
         setState(() {
+          _orderPartnerNames
+            ..clear()
+            ..addAll(partnerNames);
           _salesHistory = List<Map<String, dynamic>>.from(salesResult ?? []);
           _quotationHistory = List<Map<String, dynamic>>.from(
             quotationResult ?? [],
@@ -141,7 +196,7 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
         });
       }
     } catch (e) {
-      if (mounted) {
+      if (mounted && !quiet) {
         setState(() => _isLoading = false);
         CustomSnackbar.showError(context, 'Failed to load sales history: $e');
       }
@@ -280,7 +335,7 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
   }
 
   Widget _buildLoadingState() {
-    return const Center(child: CircularProgressIndicator());
+    return const SalesHistorySkeleton();
   }
 
   Widget _buildAnalyticsCards() {
@@ -447,22 +502,24 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
                   color: isDark ? Colors.white : Colors.black87,
                 ),
               ),
-              DropdownButton<String>(
-                value: _selectedPeriod,
-                dropdownColor: isDark ? Colors.grey[800] : Colors.white,
-                style: TextStyle(color: isDark ? Colors.white : Colors.black87),
-                items: const [
-                  DropdownMenuItem(value: '6M', child: Text('6 Months')),
-                  DropdownMenuItem(value: '12M', child: Text('12 Months')),
-                ],
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() {
-                      _selectedPeriod = value;
-                      _chartData = _generateChartData();
-                    });
-                  }
-                },
+              SizedBox(
+                width: 150,
+                child: MoboSelectField<String>(
+                  value: _selectedPeriod,
+                  allowClear: false,
+                  options: const [
+                    MoboOption<String>(value: '6M', label: '6 Months'),
+                    MoboOption<String>(value: '12M', label: '12 Months'),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() {
+                        _selectedPeriod = value;
+                        _chartData = _generateChartData();
+                      });
+                    }
+                  },
+                ),
               ),
             ],
           ),

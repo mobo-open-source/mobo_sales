@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../models/contact.dart';
 import '../screens/customers/select_location_screen.dart';
 import '../services/session_service.dart';
+import '../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import 'custom_snackbar.dart';
 
 class LocationMapWidget extends StatefulWidget {
@@ -40,7 +41,6 @@ class _LocationMapWidgetState extends State<LocationMapWidget> {
 
   Future<void> _showRemoveCoordinatesDialog() async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primaryColor = Theme.of(context).primaryColor;
 
     return showDialog<void>(
       context: context,
@@ -70,27 +70,15 @@ class _LocationMapWidgetState extends State<LocationMapWidget> {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
           ),
+          actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
           actions: <Widget>[
-            TextButton(
-              child: Text(
-                'Cancel',
-                style: TextStyle(
-                  color: isDark ? Colors.white70 : Colors.black54,
-                ),
-              ),
-              onPressed: () {
+            MoboDialogButtons(
+              secondaryLabel: 'Cancel',
+              onSecondary: () {
                 Navigator.of(context).pop();
               },
-            ),
-            TextButton(
-              child: Text(
-                'Remove',
-                style: TextStyle(
-                  color: isDark ? Colors.white : primaryColor,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              onPressed: () async {
+              primaryLabel: 'Remove',
+              onPrimary: () async {
                 Navigator.of(context).pop();
                 await _resetLocation();
               },
@@ -107,12 +95,15 @@ class _LocationMapWidgetState extends State<LocationMapWidget> {
     if (client == null) return;
 
     try {
+      // 0.0 / 0.0 is how the app (and Odoo) read "no coordinates". The write
+      // used to carry no values at all, which reports success and changes
+      // nothing, so the location came back the next time the customer loaded.
       final result = await client.callKw({
         'model': 'res.partner',
         'method': 'write',
         'args': [
           [_contact.id],
-          {},
+          {'partner_latitude': 0.0, 'partner_longitude': 0.0},
         ],
         'kwargs': {},
       });

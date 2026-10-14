@@ -98,3 +98,32 @@ class Delivery {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Field names that differ between Odoo versions. Plain functions of an Odoo
+// generation (see `odooGeneration` in utils/odoo_version.dart), so the version
+// decision can be tested without a server.
+// ---------------------------------------------------------------------------
+
+/// The `stock.picking` one2many that lists a picking's moves, for an Odoo
+/// [generation].
+///
+/// Odoo 17 and 18 read the operations list from `move_ids_without_package`
+/// (the moves outside a package level). Odoo 19 dropped that field and lists
+/// `move_ids` directly, so asking for the old name there fails the whole read.
+/// An unknown generation (0) keeps the older name; the caller prunes a field
+/// the server rejects.
+String pickingMovesField(int generation) =>
+    generation >= 19 ? 'move_ids' : 'move_ids_without_package';
+
+/// The `stock.move` unit-of-measure field to read, for an Odoo [generation],
+/// in the order to try them.
+///
+/// The field was `product_uom` up to Odoo 19 and is `uom_id` from 20, where
+/// the old name no longer exists. An unknown generation (0) tries the older
+/// name first, then the newer.
+List<String> stockMoveUomFields(int generation) {
+  if (generation >= 20) return const ['uom_id'];
+  if (generation == 0) return const ['product_uom', 'uom_id'];
+  return const ['product_uom'];
+}

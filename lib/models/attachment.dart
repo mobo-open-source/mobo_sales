@@ -18,6 +18,16 @@ class Attachment {
     this.description,
   });
 
+  /// The path Odoo serves an attachment's file from, relative to the server.
+  ///
+  /// `/web/content/<id>/<name>` streams the attachment's `raw` content and is
+  /// the same route on Odoo 17 to 20. The longer
+  /// `/web/content/ir.attachment/<id>/datas/<name>` this used to build names
+  /// the `datas` field, which Odoo 20 removed from `ir.attachment` (only `raw`
+  /// remains): there it answers 404.
+  static String contentUrl(Object? id, String name) =>
+      '/web/content/$id/${Uri.encodeComponent(name)}';
+
   /// Constructs an [Attachment] from a raw Odoo JSON map, resolving the download URL.
   factory Attachment.fromJson(Map<String, dynamic> json) {
     String? attachmentUrl = json['url']?.toString();
@@ -28,8 +38,7 @@ class Attachment {
             attachmentUrl.isEmpty)) {
       final attachmentId = json['id'];
       final fileName = json['name'] ?? 'attachment';
-      attachmentUrl =
-          '/web/content/ir.attachment/$attachmentId/datas/${Uri.encodeComponent(fileName)}';
+      attachmentUrl = contentUrl(attachmentId, fileName.toString());
     }
 
     DateTime? parsedCreateDate;
@@ -88,7 +97,7 @@ class Attachment {
     }
 
     if (type == 'binary') {
-      return '/web/content/ir.attachment/$id/datas/${Uri.encodeComponent(name)}';
+      return contentUrl(id, name);
     }
 
     return null;

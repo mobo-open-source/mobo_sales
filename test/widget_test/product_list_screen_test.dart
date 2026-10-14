@@ -10,6 +10,7 @@ import 'package:mobo_sales/providers/company_provider.dart';
 import 'package:mobo_sales/services/connectivity_service.dart';
 import 'package:mobo_sales/services/session_service.dart';
 import 'package:mobo_sales/models/product.dart';
+import 'package:mobo_sales/services/data_change_bus.dart';
 import 'package:intl/intl.dart';
 
 class MockProductProvider extends Mock implements ProductProvider {}
@@ -160,5 +161,86 @@ void main() {
 
     expect(find.text('Product 1'), findsOneWidget);
     expect(find.text('Product 2'), findsOneWidget);
+  });
+
+  testWidgets('a product edited, archived or added anywhere makes the list '
+      'read its page again', (WidgetTester tester) async {
+    when(() => mockProductProvider.products).thenReturn([
+      Product(
+        id: '1',
+        name: 'Desk',
+        listPrice: 10.0,
+        qtyAvailable: 5,
+        variantCount: 1,
+        defaultCode: 'D1',
+      ),
+    ]);
+    when(() => mockProductProvider.totalProducts).thenReturn(1);
+    when(() => mockProductProvider.quietReload()).thenAnswer((_) async {});
+
+    await tester.pumpWidget(createWidgetUnderTest());
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('Desk'), findsOneWidget);
+
+    DataChangeBus.instance.productChanged(1);
+    await tester.pump(const Duration(milliseconds: 500));
+
+    verify(() => mockProductProvider.quietReload()).called(1);
+
+    // A burst is one reload.
+    DataChangeBus.instance.productChanged(1);
+    DataChangeBus.instance.productChanged(2, kind: DataChangeKind.created);
+    DataChangeBus.instance.productChanged(3, kind: DataChangeKind.deleted);
+    await tester.pump(const Duration(milliseconds: 500));
+    verify(() => mockProductProvider.quietReload()).called(1);
+
+    // The list that was left stops listening.
+    await tester.pumpWidget(const SizedBox());
+    DataChangeBus.instance.productChanged(1);
+    await tester.pump(const Duration(milliseconds: 500));
+    verifyNever(() => mockProductProvider.quietReload());
+  });
+
+  testWidgets('pulling the list down to refresh it shows no "refreshed" '
+      'message', (WidgetTester tester) async {
+    when(() => mockProductProvider.products).thenReturn([
+      Product(
+        id: '1',
+        name: 'Desk',
+        listPrice: 10.0,
+        qtyAvailable: 5,
+        variantCount: 1,
+        defaultCode: 'D1',
+      ),
+    ]);
+    when(() => mockProductProvider.totalProducts).thenReturn(1);
+
+    await tester.pumpWidget(createWidgetUnderTest());
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('Desk'), findsOneWidget);
+
+    // The pull-down: the refresh indicator's own gesture, started directly.
+    final indicator = tester.state<RefreshIndicatorState>(
+      find.byType(RefreshIndicator).first,
+    );
+    final refreshing = indicator.show();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(seconds: 2));
+    await refreshing;
+    await tester.pump(const Duration(seconds: 1));
+
+    // The refresh ran (the list was read again)...
+    verify(
+      () => mockProductProvider.fetchProducts(
+        searchQuery: any(named: 'searchQuery'),
+        category: any(named: 'category'),
+        filters: any(named: 'filters'),
+      ),
+    ).called(greaterThan(1));
+    // ...and said nothing about it.
+    expect(find.textContaining('refreshed'), findsNothing);
+    expect(find.text('Success'), findsNothing);
   });
 }

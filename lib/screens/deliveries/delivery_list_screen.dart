@@ -12,6 +12,7 @@ import '../../widgets/connection_status_widget.dart';
 import '../../widgets/empty_state_widget.dart';
 import 'delivery_details_screen.dart';
 import '../../services/odoo_error_classifier.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 
 class DeliveryListScreen extends StatefulWidget {
   final String? saleOrderName;
@@ -301,58 +302,30 @@ class _DeliveryListScreenState extends State<DeliveryListScreen>
                             ),
                           ),
                         ),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: () {
-                                  setDialogState(() {
-                                    _activeFilters.clear();
-                                    _startDate = null;
-                                    _endDate = null;
-                                    _selectedGroupBy = null;
-                                    _isGrouped = false;
-                                  });
-                                },
-                                style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 16,
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                ),
-                                child: const Text('Clear All'),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: ElevatedButton(
-                                onPressed: () {
-                                  Navigator.pop(context);
-                                  setState(() {
-                                    if (_selectedGroupBy != null) {
-                                      _isGrouped = true;
-                                      _groupDeliveries();
-                                    } else {
-                                      _isGrouped = false;
-                                    }
-                                  });
-                                  _fetchDeliveries();
-                                },
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: theme.primaryColor,
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 16,
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                ),
-                                child: const Text('Apply'),
-                              ),
-                            ),
-                          ],
+                        child: MoboDialogButtons(
+                          secondaryLabel: 'Clear All',
+                          onSecondary: () {
+                            setDialogState(() {
+                              _activeFilters.clear();
+                              _startDate = null;
+                              _endDate = null;
+                              _selectedGroupBy = null;
+                              _isGrouped = false;
+                            });
+                          },
+                          primaryLabel: 'Apply',
+                          onPrimary: () {
+                            Navigator.pop(context);
+                            setState(() {
+                              if (_selectedGroupBy != null) {
+                                _isGrouped = true;
+                                _groupDeliveries();
+                              } else {
+                                _isGrouped = false;
+                              }
+                            });
+                            _fetchDeliveries();
+                          },
                         ),
                       ),
                     ],

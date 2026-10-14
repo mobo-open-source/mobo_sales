@@ -7,6 +7,8 @@ import '../../services/customer_service.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../widgets/confetti_dialogs.dart';
 import '../../utils/data_loss_warning_mixin.dart';
+import '../../utils/form_change_tracker.dart';
+import '../../utils/odoo_version.dart';
 import 'dart:io';
 import 'dart:convert';
 import 'package:mobo_sales/widgets/circular_image_widget.dart';
@@ -16,19 +18,26 @@ import '../../services/connectivity_service.dart';
 import '../../services/session_service.dart';
 import '../../widgets/connection_status_widget.dart';
 import '../../widgets/custom_text_field.dart';
-import '../../widgets/custom_dropdown.dart';
-import '../../widgets/custom_generic_dropdown.dart';
+import '../../shared/widgets/mobo/mobo_bottom_action_bar.dart';
+import '../../shared/widgets/mobo/mobo_checkbox.dart';
+import '../../shared/widgets/mobo/mobo_select_field.dart';
 import '../../widgets/custom_snackbar.dart';
 import '../../providers/last_opened_provider.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import '../../utils/guarded_action.dart';
+import '../../utils/customer_error_message.dart';
 
 class EditCustomerScreen extends StatefulWidget {
   final Contact? contact;
 
-  const EditCustomerScreen({super.key, this.contact});
+  /// Where the country and state lists are read from; the signed-in session
+  /// when null. A test passes its own.
+  @visibleForTesting
+  final Future<dynamic> Function(Map<String, dynamic> payload)? callKw;
+
+  const EditCustomerScreen({super.key, this.contact, this.callKw});
 
   @override
   State<EditCustomerScreen> createState() => _EditCustomerScreenState();
@@ -53,6 +62,7 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
   @override
   bool get hasUnsavedData {
     if (_dropdownsLoading || _hasBeenSaved) return false;
+    if (_isEditMode) return _changes.isDirty;
 
     final c = widget.contact;
     return _nameController.text.trim() != (c?.name ?? '') ||
@@ -124,80 +134,8 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
         s.contains('certificate');
   }
 
-  String _getUserFriendlyErrorMessage(dynamic error) {
-    final errorString = error.toString().toLowerCase();
-
-    if (errorString.contains('you do not have permission')) {
-      final fullError = error.toString();
-      if (fullError.contains(
-        'You do not have permission to create customers',
-      )) {
-        return 'Permission Denied: You do not have permission to create customers (res.partner create). Please contact your administrator.';
-      } else if (fullError.contains(
-        'You do not have permission to update customers',
-      )) {
-        return 'Permission Denied: You do not have permission to update customers (res.partner write). Please contact your administrator.';
-      } else {
-        return fullError.replaceAll('Exception: ', '');
-      }
-    }
-
-    if (errorString.contains('accesserror')) {
-      if (errorString.contains('credit_limit')) {
-        return 'You don\'t have permission to set credit limits. The customer will be created without this field.';
-      } else if (errorString.contains('payment_term')) {
-        return 'You don\'t have permission to set payment terms. The customer will be created without this field.';
-      } else if (errorString.contains('property_')) {
-        return 'You don\'t have permission to set some advanced properties. The customer will be created with basic information.';
-      } else {
-        return 'You don\'t have sufficient permissions to access some fields. Please contact your system administrator.';
-      }
-    }
-
-    if (errorString.contains('validationerror')) {
-      if (errorString.contains('email')) {
-        return 'Please enter a valid email address.';
-      } else if (errorString.contains('phone')) {
-        return 'Please enter a valid phone number.';
-      } else if (errorString.contains('vat')) {
-        return 'Please enter a valid VAT number.';
-      } else {
-        return 'Please check your input data for errors.';
-      }
-    }
-
-    if (errorString.contains('duplicate') ||
-        errorString.contains('already exists')) {
-      if (errorString.contains('email')) {
-        return 'A customer with this email address already exists.';
-      } else if (errorString.contains('vat')) {
-        return 'A customer with this VAT number already exists.';
-      } else {
-        return 'A customer with similar information already exists.';
-      }
-    }
-
-    if (_isServerUnreachableError(error)) {
-      return 'Unable to connect to the server. Please check your internet connection and try again.';
-    }
-
-    if (errorString.contains('session') ||
-        errorString.contains('authentication') ||
-        errorString.contains('login')) {
-      return 'Your session has expired. Please log in again.';
-    }
-
-    if (errorString.contains('database') ||
-        errorString.contains('constraint')) {
-      return 'Database error occurred. Please try again or contact support.';
-    }
-
-    if (_isEditMode) {
-      return 'Failed to update customer. Please try again.';
-    } else {
-      return 'Failed to create customer. Please try again.';
-    }
-  }
+  String _getUserFriendlyErrorMessage(dynamic error) =>
+      customerErrorMessage(error, isEdit: _isEditMode);
 
   @override
   String get dataLossTitle =>
@@ -302,6 +240,89 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
 
   bool get _isNameFilled => _nameController.text.trim().isNotEmpty;
 
+  /// Whether every field the form cannot be saved without has a value.
+  /// Emptiness only: the email format is checked by `validate()` when saving.
+  bool get _requiredFieldsFilled => _isNameFilled;
+
+  /// Whether Save is enabled. Create keeps its rule, a name. An edit form must
+  /// also have changed since it loaded, so there is always something to save.
+  bool get _canSubmit =>
+      !_isLoading &&
+      _isNameFilled &&
+      (!_isEditMode || (_requiredFieldsFilled && _changes.isDirty));
+
+  /// Whether an edit form differs from the customer it opened with. Reads every
+  /// value the user can edit; a picked image counts as a flag, never its bytes.
+  late final FormChangeTracker _changes = FormChangeTracker(
+    () => {
+      'name': _nameController.text.trim(),
+      'email': _emailController.text.trim(),
+      'phone': _phoneController.text.trim(),
+      'mobile': _mobileController.text.trim(),
+      'website': _websiteController.text.trim(),
+      'function': _functionController.text.trim(),
+      'isCompany': _isCompany,
+      'companyName': _companyNameController.text.trim(),
+      'vat': _vatController.text.trim(),
+      'industry': _industryController.text.trim(),
+      'creditLimit': _creditLimitController.text.trim(),
+      'street': _streetController.text.trim(),
+      'street2': _street2Controller.text.trim(),
+      'city': _cityController.text.trim(),
+      'country': _selectedCountryId,
+      'state': _selectedStateId,
+      'zip': _zipController.text.trim(),
+      'title': _selectedTitle,
+      'companyType': _selectedCompanyType,
+      'currency': _selectedCurrency,
+      'language': _selectedLanguage,
+      'timezone': _selectedTimezone,
+      'notes': _commentController.text.trim(),
+      'imagePicked': _pickedImageBase64 != null,
+    },
+  );
+
+  /// The text inputs [_changes] reads, which rebuild the screen as they change
+  /// so Save and the unsaved-changes check follow what is typed.
+  List<TextEditingController> get _trackedControllers => [
+    _nameController,
+    _emailController,
+    _phoneController,
+    _mobileController,
+    _websiteController,
+    _functionController,
+    _companyNameController,
+    _vatController,
+    _industryController,
+    _creditLimitController,
+    _streetController,
+    _street2Controller,
+    _cityController,
+    _zipController,
+    _commentController,
+  ];
+
+  void _onFormChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// Records the customer as loaded, the state an edit is measured against.
+  ///
+  /// Called as each loader finishes and acts once every asynchronous step that
+  /// fills the form has: the dropdown lists, which set the selected values, and
+  /// the country load, which fetches the country's states before it ends. Only
+  /// the first time; reloading the options re-marks it itself.
+  void _markBaselineIfLoaded() {
+    if (!_isEditMode || _changes.hasBaseline || !mounted) return;
+    if (_dropdownsLoading ||
+        _dropdownError != null ||
+        _isLoadingCountries ||
+        _countryOptions.isEmpty) {
+      return;
+    }
+    _changes.markClean();
+  }
+
   /// Which optional inputs this server can actually store.
   ///
   /// Asked of the server rather than derived from its version number. Odoo 19
@@ -311,6 +332,16 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
   /// version check would only ever cover the cases someone thought to add.
   bool _supportsMobile = true;
   bool _supportsTitle = true;
+
+  /// The same question for the company inputs, which Odoo 20 reworked: there is
+  /// no `company_type`, no free-text `company_name` (the company is the
+  /// `parent_id` relation now, which this form has no input for), and
+  /// `is_company` is computed from the VAT and the parent, so a value written
+  /// to it is overwritten again. An input the server cannot store is not shown,
+  /// rather than accepted and silently lost.
+  bool _supportsCompanyType = true;
+  bool _supportsCompanyName = true;
+  bool _supportsIsCompany = true;
 
   /// Converts a dropdown value to what Odoo expects for an id or integer
   /// field.
@@ -347,15 +378,56 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
     return null;
   }
 
+  /// Takes the inputs the connected server's version supports as the starting
+  /// point, so the form does not flash a field that is about to disappear.
+  /// Synchronous: it reads the session already in memory, and offers
+  /// everything while the version is unknown.
+  void _applyVersionSupport() {
+    final generation = OdooSessionManager.cachedServerGeneration;
+    _supportsMobile = odooHasPartnerMobile(generation);
+    _supportsTitle = odooHasPartnerTitle(generation);
+    _supportsCompanyType = odooHasPartnerCompanyType(generation);
+    _supportsCompanyName = odooHasPartnerCompanyName(generation);
+    _supportsIsCompany = odooPartnerIsCompanyWritable(generation);
+  }
+
+  /// Settles which inputs to offer from the server's own schema. The version
+  /// only answers when the schema could not be read.
   Future<void> _resolveOptionalFieldSupport() async {
     final service = CustomerService.instance;
-    final mobile = await service.isPartnerFieldWritable('mobile');
-    final title = await service.isPartnerFieldWritable('title');
+    final generation = await OdooSessionManager.serverGeneration();
+    final mobile = await service.isPartnerFieldWritable(
+      'mobile',
+      whenUnknown: odooHasPartnerMobile(generation),
+    );
+    final title = await service.isPartnerFieldWritable(
+      'title',
+      whenUnknown: odooHasPartnerTitle(generation),
+    );
+    final companyType = await service.isPartnerFieldWritable(
+      'company_type',
+      whenUnknown: odooHasPartnerCompanyType(generation),
+    );
+    final companyName = await service.isPartnerFieldWritable(
+      'company_name',
+      whenUnknown: odooHasPartnerCompanyName(generation),
+    );
+    final isCompany = await service.isPartnerFieldWritable(
+      'is_company',
+      whenUnknown: odooPartnerIsCompanyWritable(generation),
+    );
     if (!mounted) return;
-    if (mobile != _supportsMobile || title != _supportsTitle) {
+    if (mobile != _supportsMobile ||
+        title != _supportsTitle ||
+        companyType != _supportsCompanyType ||
+        companyName != _supportsCompanyName ||
+        isCompany != _supportsIsCompany) {
       setState(() {
         _supportsMobile = mobile;
         _supportsTitle = title;
+        _supportsCompanyType = companyType;
+        _supportsCompanyName = companyName;
+        _supportsIsCompany = isCompany;
       });
     }
   }
@@ -363,6 +435,7 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
   @override
   void initState() {
     super.initState();
+    _applyVersionSupport();
     _resolveOptionalFieldSupport();
     _isEditMode = widget.contact != null;
     if (_isEditMode && widget.contact != null) {
@@ -414,9 +487,9 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
     _selectedStateId = null;
     _fetchDropdowns();
     _fetchCountries();
-    _nameController.addListener(() {
-      setState(() {});
-    });
+    for (final controller in _trackedControllers) {
+      controller.addListener(_onFormChanged);
+    }
 
     _pickedImageFile = null;
     _pickedImageBase64 = null;
@@ -424,6 +497,9 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
 
   @override
   void dispose() {
+    for (final controller in _trackedControllers) {
+      controller.removeListener(_onFormChanged);
+    }
     _nameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
@@ -552,6 +628,106 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
     );
   }
 
+  /// The values to send to `res.partner` from what the form holds.
+  ///
+  /// An input the connected server cannot store (see the `_supports…` flags)
+  /// is left out: Odoo rejects a write naming a field it does not have as a
+  /// whole, so one stale key would lose every other value with it. Industry is
+  /// resolved to an id by the caller, which has to ask the server.
+  Map<String, dynamic> _buildPayload() {
+    final data = <String, dynamic>{};
+
+    // Odoo 20 checks the tax ID against the country on every write that names
+    // either of them, changed or not (`_inverse_vat`, in base now: until 19 it
+    // belonged to the optional base_vat module). Sending both back with every
+    // edit would make saving a phone number fail for a customer whose stored
+    // tax ID does not pass, so on an edit the pair goes only when it changed.
+    final vatChanged =
+        !_isEditMode ||
+        partnerTextChanged(widget.contact?.vat, _vatController.text);
+    final countryChanged =
+        !_isEditMode || _selectedCountryId != _originalCountryIdFromContact();
+
+    void addField(String key, String? value) {
+      if (value != null &&
+          value.trim().isNotEmpty &&
+          value.trim().toLowerCase() != 'false') {
+        data[key] = value.trim();
+      }
+    }
+
+    addField('name', _nameController.text);
+    addField('email', _emailController.text);
+    addField('phone', _phoneController.text);
+    if (_supportsMobile) {
+      addField('mobile', _mobileController.text);
+    }
+    addField('website', _websiteController.text);
+    addField('function', _functionController.text);
+    addField('street', _streetController.text);
+    addField('street2', _street2Controller.text);
+    addField('city', _cityController.text);
+    if (_selectedStateId != null) {
+      data['state_id'] = _selectedStateId;
+    }
+    addField('zip', _zipController.text);
+    if (_selectedCountryId != null && countryChanged) {
+      data['country_id'] = _selectedCountryId;
+    }
+    if (_supportsCompanyName) {
+      addField('company_name', _companyNameController.text);
+    }
+    if (vatChanged) addField('vat', _vatController.text);
+
+    if (_creditLimitController.text.trim().isNotEmpty) {
+      addField('credit_limit', _creditLimitController.text);
+    }
+    addField('comment', _commentController.text);
+    if (_supportsIsCompany) data['is_company'] = _isCompany;
+    if (_selectedTitle != null && _selectedTitle!.isNotEmpty) {
+      if (_supportsTitle) data['title'] = _asOdooId(_selectedTitle);
+    }
+    if (_supportsCompanyType &&
+        _selectedCompanyType != null &&
+        _selectedCompanyType!.isNotEmpty) {
+      data['company_type'] = _selectedCompanyType;
+    }
+
+    if (_selectedCustomerRank != null && _selectedCustomerRank!.isNotEmpty) {
+      data['customer_rank'] = _asOdooId(_selectedCustomerRank);
+    } else if (!_isEditMode) {
+      data['customer_rank'] = 1;
+    }
+
+    if (_selectedCurrency != null && _selectedCurrency!.isNotEmpty) {
+      data['currency_id'] = _asOdooId(_selectedCurrency);
+    }
+    if (_selectedLanguage != null && _selectedLanguage!.isNotEmpty) {
+      data['lang'] = _selectedLanguage;
+    }
+    if (_selectedTimezone != null && _selectedTimezone!.isNotEmpty) {
+      data['tz'] = _selectedTimezone;
+    }
+
+    if (_pickedImageBase64 != null) {
+      data['image_1920'] = _pickedImageBase64;
+    }
+
+    data['active'] = widget.contact?.isActive ?? true;
+
+    if (widget.contact?.paymentTermId != null) {
+      data['property_payment_term_id'] = widget.contact!.paymentTermId;
+    }
+
+    // `user_id` is deliberately not sent. The form has no salesperson input,
+    // and `Contact.salesperson` holds the salesperson's *name*: Odoo reads a
+    // string written to a many2one as "no record", so sending it back cleared
+    // the salesperson of every customer that was edited. Leaving the key out
+    // keeps what the record already has.
+
+    return data;
+  }
+
   Future<void> _save() async {
     final formState = _formKey.currentState;
     if (formState == null) {
@@ -565,42 +741,7 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
       _isLoading = true;
     });
     try {
-      final data = <String, dynamic>{};
-
-      void addField(String key, String? value) {
-        if (value != null &&
-            value.trim().isNotEmpty &&
-            value.trim().toLowerCase() != 'false') {
-          data[key] = value.trim();
-        }
-      }
-
-      void addFieldSafe(String key, String? value) async {
-        if (value != null &&
-            value.trim().isNotEmpty &&
-            value.trim().toLowerCase() != 'false') {
-          data[key] = value.trim();
-        }
-      }
-
-      addField('name', _nameController.text);
-      addField('email', _emailController.text);
-      addField('phone', _phoneController.text);
-      if (_supportsMobile) {
-        addField('mobile', _mobileController.text);
-      }
-      addField('website', _websiteController.text);
-      addField('function', _functionController.text);
-      addField('street', _streetController.text);
-      addField('street2', _street2Controller.text);
-      addField('city', _cityController.text);
-      if (_selectedStateId != null) {
-        data['state_id'] = _selectedStateId;
-      }
-      addField('zip', _zipController.text);
-      if (_selectedCountryId != null) data['country_id'] = _selectedCountryId;
-      addField('company_name', _companyNameController.text);
-      addField('vat', _vatController.text);
+      final data = _buildPayload();
 
       final industryName = _industryController.text.trim();
       if (industryName.isNotEmpty) {
@@ -608,50 +749,6 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
         if (industryId != null) data['industry_id'] = industryId;
       }
 
-      if (_creditLimitController.text.trim().isNotEmpty) {
-        try {
-          addField('credit_limit', _creditLimitController.text);
-        } catch (e) {}
-      }
-      addField('comment', _commentController.text);
-      data['is_company'] = _isCompany;
-      if (_selectedTitle != null && _selectedTitle!.isNotEmpty) {
-        if (_supportsTitle) data['title'] = _asOdooId(_selectedTitle);
-      }
-      if (_selectedCompanyType != null && _selectedCompanyType!.isNotEmpty) {
-        data['company_type'] = _selectedCompanyType;
-      }
-
-      if (_selectedCustomerRank != null && _selectedCustomerRank!.isNotEmpty) {
-        data['customer_rank'] = _asOdooId(_selectedCustomerRank);
-      } else if (!_isEditMode) {
-        data['customer_rank'] = 1;
-      }
-
-      if (_selectedCurrency != null && _selectedCurrency!.isNotEmpty) {
-        data['currency_id'] = _asOdooId(_selectedCurrency);
-      }
-      if (_selectedLanguage != null && _selectedLanguage!.isNotEmpty) {
-        data['lang'] = _selectedLanguage;
-      }
-      if (_selectedTimezone != null && _selectedTimezone!.isNotEmpty) {
-        data['tz'] = _selectedTimezone;
-      }
-
-      if (_pickedImageBase64 != null) {
-        data['image_1920'] = _pickedImageBase64;
-      }
-
-      data['active'] = widget.contact?.isActive ?? true;
-
-      if (widget.contact?.paymentTermId != null) {
-        data['property_payment_term_id'] = widget.contact!.paymentTermId;
-      }
-
-      if (widget.contact?.salesperson != null &&
-          widget.contact!.salesperson!.isNotEmpty) {
-        data['user_id'] = widget.contact!.salesperson;
-      }
       bool success = false;
       Contact? resultContact;
       if (_isEditMode) {
@@ -679,18 +776,32 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
           await showCustomerCreatedConfettiDialog(context, customerName);
 
           if (mounted) {
+            CustomSnackbar.showSuccess(
+              context,
+              'Customer created successfully',
+            );
             Navigator.pop(context, resultContact);
           }
         } else {
           setState(() {
             _hasBeenSaved = true;
+            _changes.markClean();
           });
+          // Shown from the app's own overlay, so it survives the pop below and
+          // is what the customer's page greets the user with.
+          CustomSnackbar.showSuccess(context, 'Customer updated successfully');
           if (mounted && Navigator.canPop(context)) {
             Navigator.pop(context, resultContact);
-          } else {}
+          }
         }
       } else if (!success) {
-        setState(() {});
+        if (mounted) {
+          setState(() {});
+          CustomSnackbar.showError(
+            context,
+            'The customer could not be saved. Please try again.',
+          );
+        }
       }
     } catch (e) {
       final errorString = e.toString().toLowerCase();
@@ -707,77 +818,8 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
               _isLoading = true;
             });
 
-            final data = <String, dynamic>{};
-            void addField(String key, String? value) {
-              if (value != null &&
-                  value.trim().isNotEmpty &&
-                  value.trim().toLowerCase() != 'false') {
-                data[key] = value.trim();
-              }
-            }
-
-            addField('name', _nameController.text);
-            addField('email', _emailController.text);
-            addField('phone', _phoneController.text);
-            if (_supportsMobile) {
-              addField('mobile', _mobileController.text);
-            }
-            addField('website', _websiteController.text);
-            addField('function', _functionController.text);
-            addField('street', _streetController.text);
-            addField('street2', _street2Controller.text);
-            addField('city', _cityController.text);
-            if (_selectedStateId != null) data['state_id'] = _selectedStateId;
-            addField('zip', _zipController.text);
-            if (_selectedCountryId != null) {
-              data['country_id'] = _selectedCountryId;
-            }
-            addField('company_name', _companyNameController.text);
-            addField('vat', _vatController.text);
-
-            if (_creditLimitController.text.trim().isNotEmpty) {
-              try {
-                addField('credit_limit', _creditLimitController.text);
-              } catch (e) {}
-            }
-            addField('comment', _commentController.text);
-            data['is_company'] = _isCompany;
-            if (_selectedTitle != null && _selectedTitle!.isNotEmpty) {
-              if (_supportsTitle) data['title'] = _asOdooId(_selectedTitle);
-            }
-            if (_selectedCompanyType != null &&
-                _selectedCompanyType!.isNotEmpty) {
-              data['company_type'] = _selectedCompanyType;
-            }
-
-            if (_selectedCustomerRank != null &&
-                _selectedCustomerRank!.isNotEmpty) {
-              data['customer_rank'] = _asOdooId(_selectedCustomerRank);
-            } else if (!_isEditMode) {
-              data['customer_rank'] = 1;
-            }
-
-            if (_selectedCurrency != null && _selectedCurrency!.isNotEmpty) {
-              data['currency_id'] = _asOdooId(_selectedCurrency);
-            }
-            if (_selectedLanguage != null && _selectedLanguage!.isNotEmpty) {
-              data['lang'] = _selectedLanguage;
-            }
-            if (_selectedTimezone != null && _selectedTimezone!.isNotEmpty) {
-              data['tz'] = _selectedTimezone;
-            }
-
-            if (_pickedImageBase64 != null) {
-              data['image_1920'] = _pickedImageBase64;
-            }
-            data['active'] = widget.contact?.isActive ?? true;
-            if (widget.contact?.paymentTermId != null) {
-              data['property_payment_term_id'] = widget.contact!.paymentTermId;
-            }
-            if (widget.contact?.salesperson != null &&
-                widget.contact!.salesperson!.isNotEmpty) {
-              data['user_id'] = widget.contact!.salesperson;
-            }
+            // The same values, without the industry the server rejected.
+            final data = _buildPayload();
 
             bool success = false;
             Contact? resultContact;
@@ -807,12 +849,21 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
                     resultContact?.name ?? _nameController.text.trim();
                 await showCustomerCreatedConfettiDialog(context, customerName);
                 if (mounted) {
+                  CustomSnackbar.showSuccess(
+                    context,
+                    'Customer created successfully',
+                  );
                   Navigator.pop(context, resultContact);
                 }
               } else {
                 setState(() {
                   _hasBeenSaved = true;
+                  _changes.markClean();
                 });
+                CustomSnackbar.showSuccess(
+                  context,
+                  'Customer updated successfully',
+                );
                 if (mounted && Navigator.canPop(context)) {
                   Navigator.pop(context, resultContact);
                 }
@@ -860,9 +911,11 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
         }
       }
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -1057,6 +1110,7 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
           );
         }
       });
+      _markBaselineIfLoaded();
     } catch (e) {
       if (!silentRevalidate) {
         setState(() {
@@ -1080,11 +1134,26 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
     } catch (_) {}
     try {
       CustomerService.instance.clearDropdownCaches();
+      final wasClean = !_changes.isDirty;
       await _fetchDropdowns(forceRefresh: true);
       await _fetchCountries();
       if (!mounted) return;
-      CustomSnackbar.showSuccess(context, 'Options updated');
+      // Lists that failed to load the first time now set their selected
+      // values, which is not an edit.
+      if (_isEditMode && wasClean) _changes.markClean();
+      // The "Refreshing options..." message has done its work; nothing says the
+      // refresh succeeded.
+      CustomSnackbar.dismiss();
     } catch (e) {}
+  }
+
+  Future<Future<dynamic> Function(Map<String, dynamic> payload)>
+  _lookupCallKw() async {
+    final override = widget.callKw;
+    if (override != null) return override;
+    final client = await OdooSessionManager.getClient();
+    if (client == null) throw Exception('No active Odoo session');
+    return client.callKw;
   }
 
   Future<void> _fetchCountries() async {
@@ -1092,9 +1161,8 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
       _isLoadingCountries = true;
     });
     try {
-      final client = await OdooSessionManager.getClient();
-      if (client == null) throw Exception('No active Odoo session');
-      final result = await client.callKw({
+      final callKw = await _lookupCallKw();
+      final result = await callKw({
         'model': 'res.country',
         'method': 'search_read',
         'args': [],
@@ -1103,6 +1171,7 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
           'order': 'name ASC',
         },
       });
+      if (!mounted) return;
       if (result is List) {
         setState(() {
           _countryOptions = List<Map<String, dynamic>>.from(result);
@@ -1132,7 +1201,7 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
         }
       }
     } catch (e) {
-      if (_isServerUnreachableError(e)) {
+      if (mounted && _isServerUnreachableError(e)) {
         setState(() {
           _isServerUnreachable = true;
           _dropdownError =
@@ -1140,9 +1209,13 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
         });
       }
     } finally {
-      setState(() {
-        _isLoadingCountries = false;
-      });
+      // The page may have been closed while the list was loading.
+      if (mounted) {
+        setState(() {
+          _isLoadingCountries = false;
+        });
+        _markBaselineIfLoaded();
+      }
     }
   }
 
@@ -1154,9 +1227,8 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
       _selectedStateId = null;
     });
     try {
-      final client = await OdooSessionManager.getClient();
-      if (client == null) throw Exception('No active Odoo session');
-      final result = await client.callKw({
+      final callKw = await _lookupCallKw();
+      final result = await callKw({
         'model': 'res.country.state',
         'method': 'search_read',
         'args': [
@@ -1378,6 +1450,16 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
         customerData: contact.toJson(),
       );
     } catch (e) {}
+  }
+
+  /// Options for a Mobo select over `{value, label}` string maps. Empty while
+  /// the dropdown lists are still loading.
+  List<MoboOption<String>> _stringOptions(List<Map<String, String>> items) {
+    if (_dropdownsLoading) return const [];
+    return [
+      for (final m in items)
+        MoboOption<String>(value: m['value']!, label: m['label']!),
+    ];
   }
 
   @override
@@ -1810,6 +1892,58 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
         ],
       ),
       backgroundColor: isDark ? Colors.grey[900] : Colors.grey[50],
+      bottomNavigationBar: MoboBottomActionBar(
+        child: SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
+            onPressed: !_canSubmit
+                ? null
+                : () {
+                    _save();
+                  },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: primaryColor,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              disabledBackgroundColor:
+                  Theme.of(context).brightness == Brightness.dark
+                  ? Colors.grey[700]!
+                  : Colors.grey[400]!,
+            ),
+            child: _isLoading
+                ? Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        _isEditMode ? 'Saving Changes' : 'Creating Customer',
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: Colors.grey.shade100,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      SizedBox(width: 8),
+                      LoadingAnimationWidget.staggeredDotsWave(
+                        color: Colors.white,
+                        size: 24,
+                      ),
+                    ],
+                  )
+                : Text(
+                    _isEditMode ? 'Save Changes' : 'Create Customer',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey.shade100,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+          ),
+        ),
+      ),
       body: SafeArea(
         top: false,
         left: false,
@@ -1856,7 +1990,8 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
 
                 CustomTextField(
                   controller: _nameController,
-                  labelText: 'Name *',
+                  labelText: 'Name',
+                  isRequired: true,
                   hintText: 'Enter full name',
                   isDark: isDark,
                   validator: (v) {
@@ -1920,24 +2055,24 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
                   isDark: isDark,
                   validator: (v) => null,
                 ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Checkbox(
-                      value: _isCompany,
-                      onChanged: (v) => setState(() => _isCompany = v ?? false),
-                    ),
-                    const Text('Is Company'),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                CustomTextField(
-                  controller: _companyNameController,
-                  labelText: 'Company Name',
-                  hintText: 'Enter company name',
-                  isDark: isDark,
-                  validator: (v) => null,
-                ),
+                if (_supportsIsCompany) ...[
+                  const SizedBox(height: 12),
+                  MoboCheckboxField(
+                    label: 'Is Company',
+                    value: _isCompany,
+                    onChanged: (v) => setState(() => _isCompany = v),
+                  ),
+                ],
+                if (_supportsCompanyName) ...[
+                  const SizedBox(height: 12),
+                  CustomTextField(
+                    controller: _companyNameController,
+                    labelText: 'Company Name',
+                    hintText: 'Enter company name',
+                    isDark: isDark,
+                    validator: (v) => null,
+                  ),
+                ],
                 const SizedBox(height: 12),
                 CustomTextField(
                   controller: _vatController,
@@ -1989,50 +2124,32 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
                 ),
                 const SizedBox(height: 12),
 
-                CustomGenericDropdownField<int>(
+                MoboSelectField<int>(
                   value: safeSelectedCountryId,
-                  labelText: 'Country',
+                  label: 'Country',
                   hintText: 'Choose your country',
-                  isDark: isDark,
-                  items: _isLoadingCountries
-                      ? [
-                          DropdownMenuItem(
-                            value: null,
-                            child: Text('Loading...'),
-                          ),
-                        ]
+                  searchable: true,
+                  isLoading: _isLoadingCountries,
+                  enabled: !_isLoadingCountries,
+                  options: _isLoadingCountries
+                      ? const []
                       : [
-                          DropdownMenuItem<int>(
-                            value: null,
-                            child: Text(
-                              'Select Country',
-                              style: TextStyle(fontStyle: FontStyle.italic),
-                            ),
-                          ),
-                          ..._countryOptions
-                              .where(
-                                (country) =>
-                                    country['id'] != null &&
-                                    country['name'] != null,
-                              )
-                              .map(
-                                (country) => DropdownMenuItem<int>(
-                                  value: country['id'],
-                                  child: Text(country['name']),
-                                ),
+                          for (final country in _countryOptions)
+                            if (country['id'] != null &&
+                                country['name'] != null)
+                              MoboOption<int>(
+                                value: country['id'] as int,
+                                label: country['name'].toString(),
                               ),
                         ],
-                  onChanged: _isLoadingCountries
-                      ? null
-                      : (v) {
-                          setState(() {
-                            _selectedCountryId = v;
-                            _selectedStateId = null;
-                            _stateOptions = [];
-                          });
-                          if (v != null) _fetchStates(v);
-                        },
-                  validator: (v) => null,
+                  onChanged: (v) {
+                    setState(() {
+                      _selectedCountryId = v;
+                      _selectedStateId = null;
+                      _stateOptions = [];
+                    });
+                    if (v != null) _fetchStates(v);
+                  },
                 ),
                 const SizedBox(height: 12),
 
@@ -2055,49 +2172,31 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
                     ),
                   )
                 else
-                  CustomGenericDropdownField<int>(
+                  MoboSelectField<int>(
                     value: safeSelectedStateId == -1
                         ? null
                         : safeSelectedStateId,
-                    labelText: 'State',
+                    label: 'State',
                     hintText: _selectedCountryId == null
                         ? 'Select a country first'
                         : 'Choose your state/province',
-                    isDark: isDark,
-                    items: _isLoadingStates
-                        ? [
-                            DropdownMenuItem(
-                              value: -1,
-                              child: Text('Loading...'),
-                            ),
-                          ]
+                    searchable: true,
+                    isLoading: _isLoadingStates,
+                    emptyText: _selectedCountryId == null
+                        ? 'Select a country first'
+                        : 'No matches',
+                    enabled: !(_selectedCountryId == null || _isLoadingStates),
+                    options: _isLoadingStates
+                        ? const []
                         : [
-                            DropdownMenuItem<int>(
-                              value: -1,
-                              child: Text(
-                                'Select State',
-                                style: TextStyle(fontStyle: FontStyle.italic),
-                              ),
-                            ),
-                            ..._stateOptions
-                                .where(
-                                  (state) =>
-                                      state['id'] != null &&
-                                      state['name'] != null,
-                                )
-                                .map(
-                                  (state) => DropdownMenuItem<int>(
-                                    value: state['id'] as int,
-                                    child: Text(state['name']),
-                                  ),
+                            for (final state in _stateOptions)
+                              if (state['id'] != null && state['name'] != null)
+                                MoboOption<int>(
+                                  value: state['id'] as int,
+                                  label: state['name'].toString(),
                                 ),
                           ],
-                    onChanged: (_selectedCountryId == null || _isLoadingStates)
-                        ? null
-                        : (v) => setState(
-                            () => _selectedStateId = v == -1 ? null : v,
-                          ),
-                    validator: (v) => null,
+                    onChanged: (v) => setState(() => _selectedStateId = v),
                   ),
                 const SizedBox(height: 12),
                 CustomTextField(
@@ -2109,158 +2208,78 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
                 ),
                 if (_supportsTitle) ...[
                   const SizedBox(height: 12),
-                  CustomDropdownField(
+                  MoboSelectField<String>(
                     value:
                         _titleOptions.any((m) => m['value'] == _selectedTitle)
                         ? _selectedTitle
                         : null,
-                    labelText: 'Title',
+                    label: 'Title',
                     hintText: 'Select title',
-                    isDark: isDark,
-                    items: _dropdownsLoading
-                        ? [
-                            DropdownMenuItem(
-                              value: null,
-                              child: Text('Loading...'),
-                            ),
-                          ]
-                        : _titleOptions
-                              .map(
-                                (m) => DropdownMenuItem(
-                                  value: m['value'],
-                                  child: Text(m['label']!),
-                                ),
-                              )
-                              .toList(),
-                    onChanged: _dropdownsLoading
-                        ? null
-                        : (v) => setState(() => _selectedTitle = v),
-                    validator: (v) => null,
+                    options: _stringOptions(_titleOptions),
+                    enabled: !_dropdownsLoading,
+                    onChanged: (v) => setState(() => _selectedTitle = v),
+                  ),
+                ],
+                if (_supportsCompanyType) ...[
+                  const SizedBox(height: 12),
+                  MoboSelectField<String>(
+                    value:
+                        _companyTypeOptions.any(
+                          (m) => m['value'] == _selectedCompanyType,
+                        )
+                        ? _selectedCompanyType
+                        : null,
+                    label: 'Company Type',
+                    hintText: 'Select company type',
+                    options: _stringOptions(_companyTypeOptions),
+                    enabled: !_dropdownsLoading,
+                    onChanged: (v) => setState(() => _selectedCompanyType = v),
                   ),
                 ],
                 const SizedBox(height: 12),
-                CustomDropdownField(
-                  value:
-                      _companyTypeOptions.any(
-                        (m) => m['value'] == _selectedCompanyType,
-                      )
-                      ? _selectedCompanyType
-                      : null,
-                  labelText: 'Company Type',
-                  hintText: 'Select company type',
-                  isDark: isDark,
-                  items: _dropdownsLoading
-                      ? [
-                          DropdownMenuItem(
-                            value: null,
-                            child: Text('Loading...'),
-                          ),
-                        ]
-                      : _companyTypeOptions
-                            .map(
-                              (m) => DropdownMenuItem(
-                                value: m['value'],
-                                child: Text(m['label']!),
-                              ),
-                            )
-                            .toList(),
-                  onChanged: _dropdownsLoading
-                      ? null
-                      : (v) => setState(() => _selectedCompanyType = v),
-                  validator: (v) => null,
-                ),
-                const SizedBox(height: 12),
-                CustomDropdownField(
+                MoboSelectField<String>(
                   value:
                       _currencyOptions.any(
                         (m) => m['value'] == _selectedCurrency,
                       )
                       ? _selectedCurrency
                       : null,
-                  labelText: 'Currency',
+                  label: 'Currency',
                   hintText: 'Select preferred currency',
-                  isDark: isDark,
-                  items: _dropdownsLoading
-                      ? [
-                          DropdownMenuItem(
-                            value: null,
-                            child: Text('Loading...'),
-                          ),
-                        ]
-                      : _currencyOptions
-                            .map(
-                              (m) => DropdownMenuItem(
-                                value: m['value'],
-                                child: Text(m['label']!),
-                              ),
-                            )
-                            .toList(),
-                  onChanged: _dropdownsLoading
-                      ? null
-                      : (v) => setState(() => _selectedCurrency = v),
-                  validator: (v) => null,
+                  searchable: true,
+                  options: _stringOptions(_currencyOptions),
+                  enabled: !_dropdownsLoading,
+                  onChanged: (v) => setState(() => _selectedCurrency = v),
                 ),
                 const SizedBox(height: 12),
-                CustomDropdownField(
+                MoboSelectField<String>(
                   value:
                       _languageOptions.any(
                         (m) => m['value'] == _selectedLanguage,
                       )
                       ? _selectedLanguage
                       : null,
-                  labelText: 'Language',
+                  label: 'Language',
                   hintText: 'Select preferred language',
-                  isDark: isDark,
-                  items: _dropdownsLoading
-                      ? [
-                          DropdownMenuItem(
-                            value: null,
-                            child: Text('Loading...'),
-                          ),
-                        ]
-                      : _languageOptions
-                            .map(
-                              (m) => DropdownMenuItem(
-                                value: m['value'],
-                                child: Text(m['label']!),
-                              ),
-                            )
-                            .toList(),
-                  onChanged: _dropdownsLoading
-                      ? null
-                      : (v) => setState(() => _selectedLanguage = v),
-                  validator: (v) => null,
+                  searchable: true,
+                  options: _stringOptions(_languageOptions),
+                  enabled: !_dropdownsLoading,
+                  onChanged: (v) => setState(() => _selectedLanguage = v),
                 ),
                 const SizedBox(height: 12),
-                CustomDropdownField(
+                MoboSelectField<String>(
                   value:
                       _timezoneOptions.any(
                         (m) => m['value'] == _selectedTimezone,
                       )
                       ? _selectedTimezone
                       : null,
-                  labelText: 'Timezone',
+                  label: 'Timezone',
                   hintText: 'Select timezone',
-                  isDark: isDark,
-                  items: _dropdownsLoading
-                      ? [
-                          DropdownMenuItem(
-                            value: null,
-                            child: Text('Loading...'),
-                          ),
-                        ]
-                      : _timezoneOptions
-                            .map(
-                              (m) => DropdownMenuItem(
-                                value: m['value'],
-                                child: Text(m['label']!),
-                              ),
-                            )
-                            .toList(),
-                  onChanged: _dropdownsLoading
-                      ? null
-                      : (v) => setState(() => _selectedTimezone = v),
-                  validator: (v) => null,
+                  searchable: true,
+                  options: _stringOptions(_timezoneOptions),
+                  enabled: !_dropdownsLoading,
+                  onChanged: (v) => setState(() => _selectedTimezone = v),
                 ),
                 const SizedBox(height: 12),
                 CustomTextField(
@@ -2270,92 +2289,31 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
                   maxLines: 2,
                   validator: (v) => null,
                 ),
-                const SizedBox(height: 24),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: (_isLoading || !_isNameFilled)
-                        ? null
-                        : () {
-                            _save();
-                          },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: primaryColor,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(
-                        vertical: 14,
-                        horizontal: 16,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      disabledBackgroundColor:
-                          Theme.of(context).brightness == Brightness.dark
-                          ? Colors.grey[700]!
-                          : Colors.grey[400]!,
-                    ),
-                    child: _isLoading
-                        ? Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text(
-                                _isEditMode
-                                    ? 'Saving Changes'
-                                    : 'Creating Customer',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  color: Colors.grey.shade100,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              SizedBox(width: 8),
-                              LoadingAnimationWidget.staggeredDotsWave(
-                                color: Colors.white,
-                                size: 24,
-                              ),
-                            ],
-                          )
-                        : Text(
-                            _isEditMode ? 'Save Changes' : 'Create Customer',
-                            style: TextStyle(
-                              fontSize: 16,
-                              color: Colors.grey.shade100,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                  ),
-                ),
               ],
             ),
           ),
         ),
       ),
       floatingActionButton: !_isEditMode
-          ? Padding(
-              padding: EdgeInsets.only(bottom: 42),
-              child: FloatingActionButton.extended(
-                onPressed: _isLoading || _isOcrLoading
-                    ? null
-                    : _showBusinessCardScanner,
-                backgroundColor: _isOcrLoading
-                    ? Colors.grey
-                    : Theme.of(context).primaryColor,
-                foregroundColor: Colors.white,
-                icon: _isOcrLoading
-                    ? SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                            Colors.white,
-                          ),
-                        ),
-                      )
-                    : Icon(HugeIcons.strokeRoundedScanImage),
-                label: Text(_isOcrLoading ? 'Scanning...' : 'Scan Card'),
-              ),
+          ? FloatingActionButton.extended(
+              onPressed: _isLoading || _isOcrLoading
+                  ? null
+                  : _showBusinessCardScanner,
+              backgroundColor: _isOcrLoading
+                  ? Colors.grey
+                  : Theme.of(context).primaryColor,
+              foregroundColor: Colors.white,
+              icon: _isOcrLoading
+                  ? SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    )
+                  : Icon(HugeIcons.strokeRoundedScanImage),
+              label: Text(_isOcrLoading ? 'Scanning...' : 'Scan Card'),
             )
           : null,
     );
@@ -2745,7 +2703,7 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
         if (website != null && website.isNotEmpty) {
           _websiteController.text = website;
         }
-        if (company != null && company.isNotEmpty) {
+        if (company != null && company.isNotEmpty && _supportsCompanyName) {
           _companyNameController.text = company;
         }
 

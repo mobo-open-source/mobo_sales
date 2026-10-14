@@ -77,14 +77,13 @@ class ResetPasswordService {
               responseBody = response.body;
 
               requiresRecaptcha = _detectRecaptcha(response.body);
-              if (requiresRecaptcha) {}
 
               final cookieHeader = response.headers['set-cookie'];
               if (cookieHeader != null) {
                 cookies = _parseCookies(cookieHeader);
               }
               break;
-            } else {}
+            }
           }
         } catch (e) {
           continue;
@@ -211,7 +210,10 @@ class ResetPasswordService {
                 'message': 'User not found or invalid email address.',
               };
             }
-          } catch (e) {}
+          } catch (_) {
+            // Following the redirect is best-effort; on failure fall through
+            // to the generic result below.
+          }
         }
 
         return {
@@ -327,15 +329,6 @@ class ResetPasswordService {
     return RegExp(
       r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$',
     ).hasMatch(email);
-  }
-
-  static bool isValidUrl(String url) {
-    try {
-      final uri = Uri.parse(url.startsWith('http') ? url : 'https://$url');
-      return uri.hasScheme && uri.hasAuthority;
-    } catch (e) {
-      return false;
-    }
   }
 
   static Map<String, String> _extractAllFormData(
@@ -504,8 +497,8 @@ class ResetPasswordService {
             'message':
                 'Password reset email sent successfully. Please check your email for reset instructions.',
           };
-        } else {}
-      } else {}
+        }
+      }
 
       return await _tryWebInterfaceReset(cleanUrl, database, login);
     } catch (e) {
@@ -521,43 +514,20 @@ class ResetPasswordService {
     try {
       final loginUrl = '$cleanUrl/web/login';
       final resetUrl = '$cleanUrl/web/reset_password';
+      final dbQuery = database.isNotEmpty ? '&db=$database' : '';
 
-      final initialGet = await http
-          .get(
-            Uri.parse('$loginUrl?redirect=/web/login'),
-            headers: {
-              'User-Agent':
-                  'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36',
-              'Accept':
-                  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            },
-          )
-          .timeout(const Duration(seconds: 15));
+      final Map<String, String> cookies = {};
 
-      if (initialGet.statusCode != 200) {}
+      final initialGet = await _getFollowingRedirects(
+        '$loginUrl?redirect=/web/login$dbQuery',
+        cookies,
+      );
 
-      Map<String, String> cookies = {};
-      final initialSetCookie = initialGet.headers['set-cookie'];
-      if (initialSetCookie != null) {
-        cookies.addAll(_parseCookies(initialSetCookie));
-      }
-
-      final resetGet = await http
-          .get(
-            Uri.parse('$resetUrl?redirect=/web/login'),
-            headers: {
-              'User-Agent':
-                  'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36',
-              'Accept':
-                  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-              if (cookies.isNotEmpty)
-                'Cookie': cookies.entries
-                    .map((e) => '${e.key}=${e.value}')
-                    .join('; '),
-              'Referer': '$loginUrl?redirect=/web/login',
-            },
-          )
-          .timeout(const Duration(seconds: 15));
+      final resetGet = await _getFollowingRedirects(
+        '$resetUrl?redirect=/web/login$dbQuery',
+        cookies,
+        referer: '$loginUrl?redirect=/web/login$dbQuery',
+      );
 
       if (resetGet.statusCode != 200) {
         return {
@@ -565,11 +535,6 @@ class ResetPasswordService {
           'message':
               'Unable to load reset form automatically (status ${resetGet.statusCode}). Please try again later.',
         };
-      }
-
-      final resetSetCookie = resetGet.headers['set-cookie'];
-      if (resetSetCookie != null) {
-        cookies.addAll(_parseCookies(resetSetCookie));
       }
 
       final csrfToken = _extractCsrfToken(resetGet.body);
@@ -580,7 +545,6 @@ class ResetPasswordService {
 
       formData['login'] = login;
       formData['redirect'] = '/web/login';
-
       final postHeaders = {
         'Content-Type': 'application/x-www-form-urlencoded',
         'User-Agent':
@@ -588,20 +552,32 @@ class ResetPasswordService {
         'Accept':
             'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Origin': cleanUrl,
-        'Referer': '$resetUrl?redirect=/web/login',
+        'Referer': '$resetUrl?redirect=/web/login$dbQuery',
         if (cookies.isNotEmpty)
           'Cookie': cookies.entries
               .map((e) => '${e.key}=${e.value}')
               .join('; '),
       };
 
-      final postResponse = await http
-          .post(
-            Uri.parse('$resetUrl?redirect=/web/login'),
-            headers: postHeaders,
-            body: Uri(queryParameters: formData).query,
-          )
-          .timeout(const Duration(seconds: 30));
+      final postRequest =
+          http.Request(
+              'POST',
+              Uri.parse('$resetUrl?redirect=/web/login$dbQuery'),
+            )
+            ..followRedirects = false
+            ..headers.addAll(postHeaders)
+            ..body = Uri(queryParameters: formData).query;
+
+      final postClient = http.Client();
+      final http.Response postResponse;
+      try {
+        final streamedResponse = await postClient
+            .send(postRequest)
+            .timeout(const Duration(seconds: 30));
+        postResponse = await http.Response.fromStream(streamedResponse);
+      } finally {
+        postClient.close();
+      }
 
       if (postResponse.statusCode == 302 || postResponse.statusCode == 303) {
         return {
@@ -646,6 +622,78 @@ class ResetPasswordService {
             'Unable to reset password automatically. Please try again later or contact your administrator.',
       };
     }
+  }
+
+  static Future<http.Response> _getFollowingRedirects(
+    String url,
+    Map<String, String> cookies, {
+    String? referer,
+    int maxHops = 5,
+  }) async {
+    var currentUrl = url;
+    var currentReferer = referer;
+    final visitedCookieState = <String, String>{};
+
+    for (var hop = 0; hop <= maxHops; hop++) {
+      final cookieHeaderNow = cookies.entries
+          .map((e) => '${e.key}=${e.value}')
+          .join('; ');
+
+      if (visitedCookieState[currentUrl] == cookieHeaderNow) {
+        throw http.ClientException(
+          'Redirect loop detected (same URL and cookies repeated)',
+          Uri.parse(currentUrl),
+        );
+      }
+      visitedCookieState[currentUrl] = cookieHeaderNow;
+
+      final request = http.Request('GET', Uri.parse(currentUrl))
+        ..followRedirects = false
+        ..headers['User-Agent'] =
+            'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36'
+        ..headers['Accept'] =
+            'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8';
+      if (cookies.isNotEmpty) {
+        request.headers['Cookie'] = cookies.entries
+            .map((e) => '${e.key}=${e.value}')
+            .join('; ');
+      }
+      if (currentReferer != null) {
+        request.headers['Referer'] = currentReferer;
+      }
+
+      final client = http.Client();
+      http.Response response;
+      try {
+        final streamedResponse = await client
+            .send(request)
+            .timeout(const Duration(seconds: 15));
+        response = await http.Response.fromStream(streamedResponse);
+      } finally {
+        client.close();
+      }
+
+      final setCookie = response.headers['set-cookie'];
+      if (setCookie != null) {
+        cookies.addAll(_parseCookies(setCookie));
+      }
+
+      if (response.statusCode < 300 || response.statusCode >= 400) {
+        return response;
+      }
+
+      final location = response.headers['location'];
+      if (location == null) {
+        return response;
+      }
+
+      currentReferer = currentUrl;
+      currentUrl = location.startsWith('http')
+          ? location
+          : Uri.parse(currentUrl).resolve(location).toString();
+    }
+
+    throw http.ClientException('Too many redirects', Uri.parse(currentUrl));
   }
 
   static Map<String, String> _parseCookies(String cookieHeader) {

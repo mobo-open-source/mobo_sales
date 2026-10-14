@@ -8,7 +8,9 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../models/contact.dart';
 import '../../services/connectivity_service.dart';
+import '../../services/data_change_bus.dart';
 import '../../services/session_service.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import '../../providers/contact_provider.dart';
 import '../../utils/app_theme.dart';
 import '../../widgets/connection_status_widget.dart';
@@ -59,7 +61,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
   final Map<String, bool> _expandedGroups = {};
   bool _allGroupsExpanded = false;
 
-  bool _showActiveOnly = true;
+  bool _showArchivedOnly = false;
+  bool _showCustomersOnly = true;
   bool _showCompaniesOnly = false;
   bool _showIndividualsOnly = false;
   bool _showCreditBreachesOnly = false;
@@ -80,7 +83,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
       _wasConnected = connectivityService.isConnected;
 
       setState(() {
-        _showActiveOnly = provider.showActiveOnly;
+        _showArchivedOnly = provider.showArchivedOnly;
+        _showCustomersOnly = provider.showCustomersOnly;
         _showCompaniesOnly = provider.showCompaniesOnly;
         _showIndividualsOnly = provider.showIndividualsOnly;
         _showCreditBreachesOnly = provider.showCreditBreachesOnly;
@@ -121,7 +125,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
     if (resetFilters) {
       final provider = Provider.of<ContactProvider>(context, listen: false);
       setState(() {
-        _showActiveOnly = true;
+        _showArchivedOnly = false;
+        _showCustomersOnly = false;
         _showCompaniesOnly = false;
         _showIndividualsOnly = false;
         _showCreditBreachesOnly = false;
@@ -149,16 +154,18 @@ class CustomerListScreenState extends State<CustomerListScreen>
     final provider = Provider.of<ContactProvider>(context, listen: false);
     await provider.clearData();
 
-    Map<String, dynamic>? filters;
+    // Clearing takes every filter off, "Customers only" with them, so say so
+    // explicitly: a read with no such key is the default, customers only.
+    Map<String, dynamic> filters = {'showCustomersOnly': false};
     if (!resetFilters) {
-      final tmp = <String, dynamic>{};
-      if (_showActiveOnly) tmp['showActiveOnly'] = true;
+      final tmp = <String, dynamic>{'showCustomersOnly': _showCustomersOnly};
+      if (_showArchivedOnly) tmp['showArchivedOnly'] = true;
       if (_showCompaniesOnly) tmp['showCompaniesOnly'] = true;
       if (_showIndividualsOnly) tmp['showIndividualsOnly'] = true;
       if (_showCreditBreachesOnly) tmp['showCreditBreachesOnly'] = true;
       if (_startDate != null) tmp['startDate'] = _startDate;
       if (_endDate != null) tmp['endDate'] = _endDate;
-      filters = tmp.isEmpty ? null : tmp;
+      filters = tmp;
     }
 
     await provider.fetchContacts(searchQuery: null, filters: filters);
@@ -183,7 +190,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
   }
 
   bool _hasActiveFilters(ContactProvider provider) {
-    return !provider.showActiveOnly ||
+    return provider.showArchivedOnly ||
+        provider.showCustomersOnly ||
         provider.showCompaniesOnly ||
         provider.showIndividualsOnly ||
         provider.showCreditBreachesOnly ||
@@ -200,7 +208,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
     bool hasGroupBy,
   ) {
     int count = 0;
-    if (!provider.showActiveOnly) count++;
+    if (provider.showArchivedOnly) count++;
+    if (provider.showCustomersOnly) count++;
     if (provider.showCompaniesOnly) count++;
     if (provider.showIndividualsOnly) count++;
     if (provider.showCreditBreachesOnly) count++;
@@ -321,7 +330,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
   Map<String, dynamic>? _buildCurrentFilters() {
     Map<String, dynamic> filters = {};
 
-    if (_showActiveOnly) filters['showActiveOnly'] = true;
+    if (_showArchivedOnly) filters['showArchivedOnly'] = true;
+    filters['showCustomersOnly'] = _showCustomersOnly;
     if (_showCompaniesOnly) filters['showCompaniesOnly'] = true;
     if (_showIndividualsOnly) filters['showIndividualsOnly'] = true;
     if (_showCreditBreachesOnly) filters['showCreditBreachesOnly'] = true;
@@ -339,7 +349,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
 
     if (connectivityService.isConnected && sessionService.hasValidSession) {
       Map<String, dynamic> filters = {};
-      if (_showActiveOnly) filters['showActiveOnly'] = true;
+      if (_showArchivedOnly) filters['showArchivedOnly'] = true;
+      filters['showCustomersOnly'] = _showCustomersOnly;
       if (_showCompaniesOnly) filters['showCompaniesOnly'] = true;
       if (_showIndividualsOnly) filters['showIndividualsOnly'] = true;
       if (_showCreditBreachesOnly) filters['showCreditBreachesOnly'] = true;
@@ -819,673 +830,6 @@ class CustomerListScreenState extends State<CustomerListScreen>
     }
   }
 
-  void _showOldCustomerFilterBottomSheet() {
-    bool tempShowActiveOnly = _showActiveOnly;
-    bool tempShowCompaniesOnly = _showCompaniesOnly;
-    bool tempShowIndividualsOnly = _showIndividualsOnly;
-    bool tempShowCreditBreachesOnly = _showCreditBreachesOnly;
-    String? tempSelectedIndustry = _selectedIndustry;
-    String? tempSelectedCountry = _selectedCountry;
-    DateTime? tempStartDate = _startDate;
-    DateTime? tempEndDate = _endDate;
-
-    final Map<String, String> statusFilters = {
-      'active_only': 'Active Only',
-      'credit_breaches': 'Credit Breaches',
-    };
-    final Map<String, String> typeFilters = {
-      'companies': 'Companies',
-      'individuals': 'Individuals',
-    };
-
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) {
-          final theme = Theme.of(context);
-          final isDark = theme.brightness == Brightness.dark;
-
-          return Container(
-            decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF232323) : Colors.white,
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(16),
-              ),
-            ),
-            child: SafeArea(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 16,
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          HugeIcons.strokeRoundedFilterHorizontal,
-                          color: isDark ? Colors.white : Colors.black87,
-                          size: 20,
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            'Filter Customers',
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              color: isDark ? Colors.white : Colors.black87,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          onPressed: () => Navigator.of(context).pop(),
-                          icon: Icon(
-                            Icons.close,
-                            color: isDark ? Colors.white : Colors.black54,
-                          ),
-                          splashRadius: 20,
-                        ),
-                      ],
-                    ),
-                  ),
-                  Divider(
-                    height: 1,
-                    thickness: 1,
-                    color: isDark ? Colors.grey[800] : Colors.grey[200],
-                  ),
-
-                  Flexible(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 8,
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (tempShowActiveOnly ||
-                              tempShowCreditBreachesOnly ||
-                              tempShowCompaniesOnly ||
-                              tempShowIndividualsOnly ||
-                              tempStartDate != null ||
-                              tempEndDate != null) ...[
-                            Text(
-                              'Active Filters',
-                              style: theme.textTheme.labelMedium?.copyWith(
-                                color: isDark
-                                    ? Colors.white
-                                    : theme.primaryColor,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 6,
-                              runSpacing: 6,
-                              children: [
-                                if (tempShowActiveOnly)
-                                  Chip(
-                                    label: Text(
-                                      'Active Only',
-                                      style: TextStyle(fontSize: 13),
-                                    ),
-                                    backgroundColor: isDark
-                                        ? Colors.white.withOpacity(.08)
-                                        : theme.primaryColor.withOpacity(0.08),
-                                    deleteIcon: Icon(Icons.close, size: 16),
-                                    onDeleted: () {
-                                      setDialogState(() {
-                                        tempShowActiveOnly = false;
-                                      });
-                                    },
-                                  ),
-                                if (tempShowCreditBreachesOnly)
-                                  Chip(
-                                    label: Text(
-                                      'Credit Breaches',
-                                      style: TextStyle(fontSize: 13),
-                                    ),
-                                    backgroundColor: isDark
-                                        ? Colors.white.withOpacity(.08)
-                                        : theme.primaryColor.withOpacity(0.08),
-                                    deleteIcon: Icon(Icons.close, size: 16),
-                                    onDeleted: () {
-                                      setDialogState(() {
-                                        tempShowCreditBreachesOnly = false;
-                                      });
-                                    },
-                                  ),
-                                if (tempShowCompaniesOnly)
-                                  Chip(
-                                    label: Text(
-                                      'Companies',
-                                      style: TextStyle(fontSize: 13),
-                                    ),
-                                    backgroundColor: isDark
-                                        ? Colors.white.withOpacity(.08)
-                                        : theme.primaryColor.withOpacity(0.08),
-                                    deleteIcon: Icon(Icons.close, size: 16),
-                                    onDeleted: () {
-                                      setDialogState(() {
-                                        tempShowCompaniesOnly = false;
-                                      });
-                                    },
-                                  ),
-                                if (tempShowIndividualsOnly)
-                                  Chip(
-                                    label: Text(
-                                      'Individuals',
-                                      style: TextStyle(fontSize: 13),
-                                    ),
-                                    backgroundColor: isDark
-                                        ? Colors.white.withOpacity(.08)
-                                        : theme.primaryColor.withOpacity(0.08),
-                                    deleteIcon: Icon(Icons.close, size: 16),
-                                    onDeleted: () {
-                                      setDialogState(() {
-                                        tempShowIndividualsOnly = false;
-                                      });
-                                    },
-                                  ),
-                                if (tempStartDate != null ||
-                                    tempEndDate != null)
-                                  Chip(
-                                    label: Text(
-                                      'Date: ${tempStartDate != null ? DateFormat('MMM dd').format(tempStartDate!) : '...'} - ${tempEndDate != null ? DateFormat('MMM dd, yyyy').format(tempEndDate!) : '...'}',
-                                      style: TextStyle(fontSize: 13),
-                                    ),
-                                    backgroundColor: isDark
-                                        ? Colors.white.withOpacity(.08)
-                                        : theme.primaryColor.withOpacity(0.08),
-                                    deleteIcon: Icon(Icons.close, size: 16),
-                                    onDeleted: () {
-                                      setDialogState(() {
-                                        tempStartDate = null;
-                                        tempEndDate = null;
-                                      });
-                                    },
-                                  ),
-                              ],
-                            ),
-                            const SizedBox(height: 16),
-                          ],
-                          Text(
-                            'Available Filters',
-                            style: theme.textTheme.labelMedium?.copyWith(
-                              color: isDark
-                                  ? Colors.grey[400]
-                                  : Colors.grey[600],
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-
-                          Text(
-                            'Status',
-                            style: theme.textTheme.labelMedium?.copyWith(
-                              color: isDark
-                                  ? Colors.grey[400]
-                                  : Colors.grey[600],
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 6,
-                            runSpacing: 6,
-                            children: statusFilters.entries.map((entry) {
-                              final selected =
-                                  (entry.key == 'active_only' &&
-                                      tempShowActiveOnly) ||
-                                  (entry.key == 'credit_breaches' &&
-                                      tempShowCreditBreachesOnly);
-                              return ChoiceChip(
-                                label: Text(
-                                  entry.value,
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: selected
-                                        ? FontWeight.w600
-                                        : FontWeight.w400,
-                                    color: selected
-                                        ? Colors.white
-                                        : (isDark
-                                              ? Colors.white
-                                              : Colors.black87),
-                                  ),
-                                ),
-                                selected: selected,
-                                selectedColor: theme.primaryColor,
-                                backgroundColor: isDark
-                                    ? Colors.white.withOpacity(.08)
-                                    : theme.primaryColor.withOpacity(0.08),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                  side: BorderSide(
-                                    color: isDark
-                                        ? Colors.grey[600]!
-                                        : Colors.grey[300]!,
-                                  ),
-                                ),
-                                onSelected: (isSelected) {
-                                  setDialogState(() {
-                                    if (entry.key == 'active_only') {
-                                      tempShowActiveOnly = isSelected;
-                                    } else if (entry.key == 'credit_breaches') {
-                                      tempShowCreditBreachesOnly = isSelected;
-                                    }
-                                  });
-                                },
-                              );
-                            }).toList(),
-                          ),
-                          const SizedBox(height: 16),
-
-                          Text(
-                            'Type',
-                            style: theme.textTheme.labelMedium?.copyWith(
-                              color: isDark
-                                  ? Colors.grey[400]
-                                  : Colors.grey[600],
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 6,
-                            runSpacing: 6,
-                            children: typeFilters.entries.map((entry) {
-                              final selected =
-                                  (entry.key == 'companies' &&
-                                      tempShowCompaniesOnly) ||
-                                  (entry.key == 'individuals' &&
-                                      tempShowIndividualsOnly);
-                              final disabled =
-                                  (entry.key == 'companies' &&
-                                      tempShowIndividualsOnly) ||
-                                  (entry.key == 'individuals' &&
-                                      tempShowCompaniesOnly);
-                              return ChoiceChip(
-                                label: Text(
-                                  entry.value,
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: selected
-                                        ? FontWeight.w600
-                                        : FontWeight.w400,
-                                    color: disabled
-                                        ? (isDark
-                                              ? Colors.grey[700]
-                                              : Colors.grey[400])
-                                        : (selected
-                                              ? Colors.white
-                                              : (isDark
-                                                    ? Colors.white
-                                                    : Colors.black87)),
-                                  ),
-                                ),
-                                selected: selected,
-                                selectedColor: theme.primaryColor,
-                                disabledColor: isDark
-                                    ? Colors.grey[800]
-                                    : Colors.grey[200],
-                                backgroundColor: isDark
-                                    ? Colors.white.withOpacity(.08)
-                                    : theme.primaryColor.withOpacity(0.08),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                  side: BorderSide(
-                                    color: isDark
-                                        ? Colors.grey[600]!
-                                        : Colors.grey[300]!,
-                                  ),
-                                ),
-                                onSelected: disabled
-                                    ? null
-                                    : (isSelected) {
-                                        setDialogState(() {
-                                          if (entry.key == 'companies') {
-                                            tempShowCompaniesOnly = isSelected;
-                                            if (isSelected) {
-                                              tempShowIndividualsOnly = false;
-                                            }
-                                          } else if (entry.key ==
-                                              'individuals') {
-                                            tempShowIndividualsOnly =
-                                                isSelected;
-                                            if (isSelected) {
-                                              tempShowCompaniesOnly = false;
-                                            }
-                                          }
-                                        });
-                                      },
-                              );
-                            }).toList(),
-                          ),
-
-                          const SizedBox(height: 16),
-                          Text(
-                            'Date Range',
-                            style: theme.textTheme.labelMedium?.copyWith(
-                              color: isDark
-                                  ? Colors.grey[400]
-                                  : Colors.grey[600],
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-
-                          InkWell(
-                            onTap: () async {
-                              final date =
-                                  await DatePickerUtils.showStandardDatePicker(
-                                    context: context,
-                                    initialDate:
-                                        tempStartDate ?? DateTime.now(),
-                                    firstDate: DateTime(2020),
-                                    lastDate: DateTime.now().add(
-                                      const Duration(days: 365),
-                                    ),
-                                  );
-                              if (date != null) {
-                                setDialogState(() {
-                                  tempStartDate = date;
-                                });
-                              }
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 12,
-                              ),
-                              decoration: BoxDecoration(
-                                color: isDark
-                                    ? Colors.grey[850]
-                                    : Colors.grey[50],
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: isDark
-                                      ? Colors.grey[700]!
-                                      : Colors.grey[300]!,
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    Icons.calendar_today,
-                                    size: 16,
-                                    color: isDark
-                                        ? Colors.grey[400]
-                                        : Colors.grey[600],
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      tempStartDate != null
-                                          ? 'From: ${DateFormat('MMM dd, yyyy').format(tempStartDate!)}'
-                                          : 'Select start date',
-                                      style: TextStyle(
-                                        color: tempStartDate != null
-                                            ? (isDark
-                                                  ? Colors.white
-                                                  : Colors.grey[800])
-                                            : (isDark
-                                                  ? Colors.grey[400]
-                                                  : Colors.grey[600]),
-                                      ),
-                                    ),
-                                  ),
-                                  if (tempStartDate != null)
-                                    IconButton(
-                                      onPressed: () {
-                                        setDialogState(() {
-                                          tempStartDate = null;
-                                        });
-                                      },
-                                      icon: Icon(
-                                        Icons.clear,
-                                        size: 16,
-                                        color: isDark
-                                            ? Colors.grey[400]
-                                            : Colors.grey[600],
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-
-                          InkWell(
-                            onTap: () async {
-                              final date =
-                                  await DatePickerUtils.showStandardDatePicker(
-                                    context: context,
-                                    initialDate: tempEndDate ?? DateTime.now(),
-                                    firstDate: tempStartDate ?? DateTime(2020),
-                                    lastDate: DateTime.now().add(
-                                      const Duration(days: 365),
-                                    ),
-                                  );
-                              if (date != null) {
-                                setDialogState(() {
-                                  tempEndDate = date;
-                                });
-                              }
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 12,
-                              ),
-                              decoration: BoxDecoration(
-                                color: isDark
-                                    ? Colors.grey[850]
-                                    : Colors.grey[50],
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: isDark
-                                      ? Colors.grey[700]!
-                                      : Colors.grey[300]!,
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    Icons.calendar_today,
-                                    size: 16,
-                                    color: isDark
-                                        ? Colors.grey[400]
-                                        : Colors.grey[600],
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      tempEndDate != null
-                                          ? 'To: ${DateFormat('MMM dd, yyyy').format(tempEndDate!)}'
-                                          : 'Select end date',
-                                      style: TextStyle(
-                                        color: tempEndDate != null
-                                            ? (isDark
-                                                  ? Colors.white
-                                                  : Colors.grey[800])
-                                            : (isDark
-                                                  ? Colors.grey[400]
-                                                  : Colors.grey[600]),
-                                      ),
-                                    ),
-                                  ),
-                                  if (tempEndDate != null)
-                                    IconButton(
-                                      onPressed: () {
-                                        setDialogState(() {
-                                          tempEndDate = null;
-                                        });
-                                      },
-                                      icon: Icon(
-                                        Icons.clear,
-                                        size: 16,
-                                        color: isDark
-                                            ? Colors.grey[400]
-                                            : Colors.grey[600],
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  Divider(
-                    height: 1,
-                    thickness: 1,
-                    color: isDark ? Colors.grey[800] : Colors.grey[200],
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: () {
-                              setDialogState(() {
-                                tempShowActiveOnly = true;
-                                tempShowCompaniesOnly = false;
-                                tempShowIndividualsOnly = false;
-                                tempShowCreditBreachesOnly = false;
-                                tempSelectedIndustry = null;
-                                tempSelectedCountry = null;
-                                tempStartDate = null;
-                                tempEndDate = null;
-                              });
-                            },
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: isDark
-                                  ? Colors.grey[300]
-                                  : Colors.grey[700],
-                              side: BorderSide(
-                                color: isDark
-                                    ? Colors.grey[700]!
-                                    : Colors.grey[300]!,
-                              ),
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                            ),
-                            child: Text(
-                              'Clear',
-                              style: TextStyle(fontWeight: FontWeight.w500),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: () {
-                              _applyCustomerFilters(
-                                tempShowActiveOnly,
-                                tempShowCompaniesOnly,
-                                tempShowIndividualsOnly,
-                                tempShowCreditBreachesOnly,
-                                tempSelectedIndustry,
-                                tempSelectedCountry,
-                                tempStartDate,
-                                tempEndDate,
-                              );
-                              Navigator.of(context).pop();
-                              final appliedCount = [
-                                if (tempShowActiveOnly) 'Active Only',
-                                if (tempShowCreditBreachesOnly)
-                                  'Credit Breaches',
-                                if (tempShowCompaniesOnly) 'Companies',
-                                if (tempShowIndividualsOnly) 'Individuals',
-                                if (tempStartDate != null ||
-                                    tempEndDate != null)
-                                  'Date Range',
-                              ].length;
-                              final message = (appliedCount > 0)
-                                  ? 'Applied $appliedCount filter${appliedCount > 1 ? 's' : ''}'
-                                  : 'All filters cleared';
-                              _showSnack(message);
-                            },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: isDark
-                                  ? Colors.grey[800]
-                                  : theme.primaryColor,
-                              foregroundColor: Colors.white,
-                              elevation: 0,
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                            ),
-                            child: Text(
-                              'Apply',
-                              style: TextStyle(fontWeight: FontWeight.w600),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  void _applyCustomerFilters(
-    bool showActiveOnly,
-    bool showCompaniesOnly,
-    bool showIndividualsOnly,
-    bool showCreditBreachesOnly,
-    String? selectedIndustry,
-    String? selectedCountry,
-    DateTime? startDate,
-    DateTime? endDate,
-  ) {
-    setState(() {
-      _showActiveOnly = showActiveOnly;
-      _showCompaniesOnly = showCompaniesOnly;
-      _showIndividualsOnly = showIndividualsOnly;
-      _showCreditBreachesOnly = showCreditBreachesOnly;
-      _selectedIndustry = selectedIndustry;
-      _selectedCountry = selectedCountry;
-      _startDate = startDate;
-      _endDate = endDate;
-    });
-
-    final provider = Provider.of<ContactProvider>(context, listen: false);
-
-    Map<String, dynamic> filters = {};
-    if (showActiveOnly) filters['showActiveOnly'] = true;
-    if (showCompaniesOnly) filters['showCompaniesOnly'] = true;
-    if (showIndividualsOnly) filters['showIndividualsOnly'] = true;
-    if (showCreditBreachesOnly) filters['showCreditBreachesOnly'] = true;
-    if (startDate != null) filters['startDate'] = startDate;
-    if (endDate != null) filters['endDate'] = endDate;
-
-    provider.refreshContacts(
-      searchQuery: _currentSearchQuery.isEmpty ? null : _currentSearchQuery,
-      filters: filters.isEmpty ? null : filters,
-    );
-  }
-
   Future<void> _openContactLocation(Contact contact) async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final primaryColor = Theme.of(context).primaryColor;
@@ -1514,57 +858,13 @@ class CustomerListScreenState extends State<CustomerListScreen>
                 : Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isDark ? primaryColor : primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Add Location',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Add Location',
+            onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
       ),
@@ -1627,6 +927,11 @@ class CustomerListScreenState extends State<CustomerListScreen>
                       listen: false,
                     );
                     provider.updateContactCoordinates(updatedContact);
+                    DataChangeBus.instance.publish(
+                      DataEntity.customer,
+                      DataChangeKind.updated,
+                      id: updatedContact.id,
+                    );
                     setState(() {});
                   },
                   suppressMapRedirect: true,
@@ -1677,13 +982,18 @@ class CustomerListScreenState extends State<CustomerListScreen>
                             ],
                             'kwargs': {},
                           });
-                          Future.microtask(() {
-                            _showSnack(
-                              'Location updated successfully!',
-                              type: SnackbarType.success,
-                            );
-                          });
                           if (result == true) {
+                            DataChangeBus.instance.publish(
+                              DataEntity.customer,
+                              DataChangeKind.updated,
+                              id: contact.id,
+                            );
+                            Future.microtask(() {
+                              _showSnack(
+                                'Location updated successfully!',
+                                type: SnackbarType.success,
+                              );
+                            });
                             WidgetsBinding.instance.addPostFrameCallback((_) {
                               if (mounted) {
                                 setState(() {
@@ -1781,30 +1091,20 @@ class CustomerListScreenState extends State<CustomerListScreen>
                       ),
                     );
                     if (result != null && mounted) {
-                      final filters = _buildCurrentFilters();
+                      // The new customer is announced on the data bus and the
+                      // provider re-reads the list by itself; asking again
+                      // here makes sure it is in by the time this screen is
+                      // back, and does it in place, so the list does not go
+                      // back to its loading skeleton.
                       Provider.of<ContactProvider>(
                         context,
                         listen: false,
-                      ).refreshContacts(
-                        searchQuery: _currentSearchQuery.isEmpty
-                            ? null
-                            : _currentSearchQuery,
-                        filters: filters?.isEmpty == true ? null : filters,
-                      );
+                      ).refreshQuietly();
                       if (mounted) setState(() {});
                     }
                   },
-                  backgroundColor:
-                      Theme.of(context).brightness == Brightness.dark
-                      ? Colors.white
-                      : Theme.of(context).primaryColor,
                   tooltip: 'Create Customer',
-                  child: Icon(
-                    HugeIcons.strokeRoundedUserAdd01,
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? Colors.black
-                        : Colors.white,
-                  ),
+                  child: const Icon(HugeIcons.strokeRoundedUserAdd01),
                 ),
               );
             },
@@ -2179,7 +1479,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
                         !isSearching &&
                         provider.hasInitiallyLoaded) {
                       final hasFilters =
-                          _showActiveOnly ||
+                          _showArchivedOnly ||
+                          _showCustomersOnly ||
                           _showCompaniesOnly ||
                           _showIndividualsOnly ||
                           _showCreditBreachesOnly ||
@@ -2517,12 +1818,11 @@ class CustomerListScreenState extends State<CustomerListScreen>
         builder: (context) => CustomerDetailsScreen(contact: contact),
       ),
     );
+    if (!mounted) return;
     if (result == true) {
-      final filters = _buildCurrentFilters();
-      Provider.of<ContactProvider>(context, listen: false).refreshContacts(
-        searchQuery: _currentSearchQuery.isEmpty ? null : _currentSearchQuery,
-        filters: filters?.isEmpty == true ? null : filters,
-      );
+      // Archived or deleted from the details page: the row is already out of
+      // the list, and the page and totals are settled in place.
+      Provider.of<ContactProvider>(context, listen: false).refreshQuietly();
       if (mounted) setState(() {});
     } else if (result != null && result is Contact) {
       Provider.of<ContactProvider>(
@@ -2575,7 +1875,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
       final provider = Provider.of<ContactProvider>(context, listen: false);
 
       final Map<String, dynamic> tempState = {
-        'showActiveOnly': _showActiveOnly,
+        'showArchivedOnly': _showArchivedOnly,
+        'showCustomersOnly': _showCustomersOnly,
         'showCompaniesOnly': _showCompaniesOnly,
         'showIndividualsOnly': _showIndividualsOnly,
         'showCreditBreachesOnly': _showCreditBreachesOnly,
@@ -2725,56 +2026,16 @@ class CustomerListScreenState extends State<CustomerListScreen>
                               ),
                             ),
                           ),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: OutlinedButton(
-                                  onPressed: () => _clearAllFilters(
-                                    setDialogState,
-                                    tempState,
-                                    provider,
-                                  ),
-                                  style: OutlinedButton.styleFrom(
-                                    foregroundColor: isDark
-                                        ? Colors.white
-                                        : Colors.black87,
-                                    side: BorderSide(
-                                      color: isDark
-                                          ? Colors.grey[600]!
-                                          : Colors.grey[300]!,
-                                    ),
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 12,
-                                    ),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                  ),
-                                  child: const Text('Clear All'),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                flex: 2,
-                                child: ElevatedButton(
-                                  onPressed: () => _applyFiltersAndGroupBy(
-                                    tempState,
-                                    provider,
-                                  ),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: theme.primaryColor,
-                                    foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 12,
-                                    ),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                  ),
-                                  child: const Text('Apply'),
-                                ),
-                              ),
-                            ],
+                          child: MoboDialogButtons(
+                            secondaryLabel: 'Clear All',
+                            onSecondary: () => _clearAllFilters(
+                              setDialogState,
+                              tempState,
+                              provider,
+                            ),
+                            primaryLabel: 'Apply',
+                            onPrimary: () =>
+                                _applyFiltersAndGroupBy(tempState, provider),
                           ),
                         ),
                       ],
@@ -2809,7 +2070,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (tempState['showActiveOnly'] == true ||
+          if (tempState['showArchivedOnly'] == true ||
+              tempState['showCustomersOnly'] == true ||
               tempState['showCompaniesOnly'] == true ||
               tempState['showIndividualsOnly'] == true ||
               tempState['showCreditBreachesOnly'] == true ||
@@ -2827,10 +2089,10 @@ class CustomerListScreenState extends State<CustomerListScreen>
               spacing: 6,
               runSpacing: 6,
               children: [
-                if (tempState['showActiveOnly'] == true)
+                if (tempState['showCustomersOnly'] == true)
                   Chip(
                     label: const Text(
-                      'Active Only',
+                      'Customers only',
                       style: TextStyle(fontSize: 13),
                     ),
                     backgroundColor: isDark
@@ -2838,7 +2100,21 @@ class CustomerListScreenState extends State<CustomerListScreen>
                         : theme.primaryColor.withOpacity(0.08),
                     deleteIcon: const Icon(Icons.close, size: 16),
                     onDeleted: () => setDialogState(
-                      () => tempState['showActiveOnly'] = false,
+                      () => tempState['showCustomersOnly'] = false,
+                    ),
+                  ),
+                if (tempState['showArchivedOnly'] == true)
+                  Chip(
+                    label: const Text(
+                      'Archived',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                    backgroundColor: isDark
+                        ? Colors.white.withOpacity(.08)
+                        : theme.primaryColor.withOpacity(0.08),
+                    deleteIcon: const Icon(Icons.close, size: 16),
+                    onDeleted: () => setDialogState(
+                      () => tempState['showArchivedOnly'] = false,
                     ),
                   ),
                 if (tempState['showCompaniesOnly'] == true)
@@ -2918,16 +2194,27 @@ class CustomerListScreenState extends State<CustomerListScreen>
             children: [
               ChoiceChip(
                 label: const Text(
-                  'Active Only',
+                  'Customers only',
                   style: TextStyle(fontSize: 13),
                 ),
-                selected: tempState['showActiveOnly'] == true,
+                selected: tempState['showCustomersOnly'] == true,
                 selectedColor: theme.primaryColor,
                 backgroundColor: isDark
                     ? Colors.white.withOpacity(.08)
                     : theme.primaryColor.withOpacity(0.08),
                 onSelected: (selected) => setDialogState(
-                  () => tempState['showActiveOnly'] = selected,
+                  () => tempState['showCustomersOnly'] = selected,
+                ),
+              ),
+              ChoiceChip(
+                label: const Text('Archived', style: TextStyle(fontSize: 13)),
+                selected: tempState['showArchivedOnly'] == true,
+                selectedColor: theme.primaryColor,
+                backgroundColor: isDark
+                    ? Colors.white.withOpacity(.08)
+                    : theme.primaryColor.withOpacity(0.08),
+                onSelected: (selected) => setDialogState(
+                  () => tempState['showArchivedOnly'] = selected,
                 ),
               ),
               ChoiceChip(
@@ -3265,7 +2552,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
     ContactProvider provider,
   ) {
     setDialogState(() {
-      tempState['showActiveOnly'] = true;
+      tempState['showArchivedOnly'] = false;
+      tempState['showCustomersOnly'] = false;
       tempState['showCompaniesOnly'] = false;
       tempState['showIndividualsOnly'] = false;
       tempState['showCreditBreachesOnly'] = false;
@@ -3277,7 +2565,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
     });
 
     setState(() {
-      _showActiveOnly = true;
+      _showArchivedOnly = false;
+      _showCustomersOnly = false;
       _showCompaniesOnly = false;
       _showIndividualsOnly = false;
       _showCreditBreachesOnly = false;
@@ -3291,7 +2580,10 @@ class CustomerListScreenState extends State<CustomerListScreen>
 
     provider.clearFilters();
     provider.setGroupBy(null);
-    provider.fetchContacts(searchQuery: null, filters: null);
+    provider.fetchContacts(
+      searchQuery: null,
+      filters: {'showCustomersOnly': false},
+    );
 
     Navigator.of(context).pop();
     CustomSnackbar.showInfo(context, 'All filters cleared');
@@ -3305,7 +2597,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
       Navigator.of(context).pop();
 
       setState(() {
-        _showActiveOnly = tempState['showActiveOnly'] ?? true;
+        _showArchivedOnly = tempState['showArchivedOnly'] ?? false;
+        _showCustomersOnly = tempState['showCustomersOnly'] ?? true;
         _showCompaniesOnly = tempState['showCompaniesOnly'] ?? false;
         _showIndividualsOnly = tempState['showIndividualsOnly'] ?? false;
         _showCreditBreachesOnly = tempState['showCreditBreachesOnly'] ?? false;
@@ -3316,7 +2609,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
       });
 
       provider.setFilterState(
-        showActiveOnly: _showActiveOnly,
+        showArchivedOnly: _showArchivedOnly,
+        showCustomersOnly: _showCustomersOnly,
         showCompaniesOnly: _showCompaniesOnly,
         showIndividualsOnly: _showIndividualsOnly,
         showCreditBreachesOnly: _showCreditBreachesOnly,
@@ -3334,7 +2628,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
       }
 
       Map<String, dynamic> filters = {};
-      if (_showActiveOnly == true) filters['showActiveOnly'] = true;
+      if (_showArchivedOnly == true) filters['showArchivedOnly'] = true;
+      filters['showCustomersOnly'] = _showCustomersOnly;
       if (_showCompaniesOnly == true) filters['showCompaniesOnly'] = true;
       if (_showIndividualsOnly == true) filters['showIndividualsOnly'] = true;
       if (_showCreditBreachesOnly == true) {
@@ -3362,7 +2657,8 @@ class CustomerListScreenState extends State<CustomerListScreen>
           });
 
       final appliedFilters = <String>[];
-      if (_showActiveOnly == true) appliedFilters.add('Active Only');
+      if (_showArchivedOnly == true) appliedFilters.add('Archived');
+      if (_showCustomersOnly == true) appliedFilters.add('Customers only');
       if (_showCreditBreachesOnly == true) {
         appliedFilters.add('Credit Breaches');
       }

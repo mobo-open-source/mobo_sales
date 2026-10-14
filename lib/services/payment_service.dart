@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:intl/intl.dart';
 import '../models/payment.dart';
 import '../models/invoice.dart';
+import 'data_change_bus.dart';
 import 'odoo_session_manager.dart';
 import 'permission_service.dart';
 
@@ -173,13 +175,31 @@ class PaymentService {
 
   static Map<String, OdooPaymentBehavior>? _odooBehaviorCache;
 
+  /// The bus a registered payment is announced on. Tests swap in their own.
+  @visibleForTesting
+  static DataChangeBus bus = DataChangeBus.instance;
+
+  /// Where the Odoo client comes from; a test swaps in a fake.
+  @visibleForTesting
+  static Future<dynamic> Function() clientProvider =
+      OdooSessionManager.getClient;
+
+  /// Announces that a payment was registered against [invoiceId], once the
+  /// server has accepted it: the payment itself is new, and the invoice's
+  /// payment state, residual amount and status chip have changed with it, so
+  /// every list and detail page that shows either brings itself up to date.
+  static void _announcePaymentRegistered(int invoiceId, int? paymentId) {
+    bus.paymentChanged(paymentId, kind: DataChangeKind.created);
+    bus.invoiceChanged(invoiceId);
+  }
+
   static Future<OdooPaymentBehavior> detectOdooPaymentBehavior() async {
     if (_odooBehaviorCache != null && _odooBehaviorCache!.isNotEmpty) {
       final cached = _odooBehaviorCache!.values.first;
       return cached;
     }
 
-    final client = await OdooSessionManager.getClient();
+    final client = await clientProvider();
     if (client == null) {
       return _getDefaultPaymentBehavior();
     }
@@ -247,6 +267,37 @@ class PaymentService {
     _odooBehaviorCache = null;
   }
 
+  /// The domain for the accounts offered as the write-off of a payment
+  /// difference (`account.payment.register.writeoff_account_id`).
+  ///
+  /// `account.account` changed shape twice. Odoo 18 replaced the single
+  /// `company_id` by the many2many `company_ids` (an account can belong to
+  /// several companies, and a branch uses its parent's), and Odoo 19 replaced
+  /// the `deprecated` flag by the standard `active`. Searching a field the
+  /// release does not have fails the whole call, so the company and the
+  /// "not deprecated" conditions are built per [generation]. From 19 an
+  /// inactive account is already left out of every search.
+  ///
+  /// An unknown generation (0) gets the Odoo 17 domain the app always sent.
+  static List<dynamic> writeoffAccountDomain({
+    required int generation,
+    required int companyId,
+  }) {
+    final hasCompanyIds = generation >= 18;
+    final hasDeprecated = generation < 19;
+    return [
+      hasCompanyIds
+          ? ['company_ids', 'parent_of', companyId]
+          : ['company_id', '=', companyId],
+      [
+        'account_type',
+        'in',
+        ['expense', 'asset_current', 'income_other'],
+      ],
+      if (hasDeprecated) ['deprecated', '=', false],
+    ];
+  }
+
   static Future<PaymentResult> _executeEnhancedWorkflow(
     dynamic client,
     int invoiceId,
@@ -278,14 +329,23 @@ class PaymentService {
         odooBehavior: odooBehavior,
       );
 
-      final updatedInvoice = await _getUpdatedInvoiceWithPayments(
-        client,
-        invoiceId,
-      );
+      // The payment is recorded; what follows only reads it back. A failed
+      // read must not report the payment itself as failed.
+      Invoice updatedInvoice;
+      try {
+        updatedInvoice = await _getUpdatedInvoiceWithPayments(
+          client,
+          invoiceId,
+        );
+      } catch (_) {
+        updatedInvoice = await _getSafeInvoiceData(invoiceId);
+      }
 
       Payment? payment;
       if (paymentResult['payment_id'] != null) {
-        payment = await getPaymentDetails(paymentResult['payment_id']);
+        try {
+          payment = await getPaymentDetails(paymentResult['payment_id']);
+        } catch (_) {}
       }
 
       return PaymentResult(
@@ -347,7 +407,7 @@ class PaymentService {
     PaymentOptions? options,
   }) async {
     try {
-      final client = await OdooSessionManager.getClient();
+      final client = await clientProvider();
       if (client == null) {
         throw PaymentError.network(
           message: 'No active Odoo session. Please log in again.',
@@ -415,7 +475,7 @@ class PaymentService {
     int? writeoffAccountId,
     String? writeoffLabel,
   }) async {
-    final client = await OdooSessionManager.getClient();
+    final client = await clientProvider();
     if (client == null) {
       throw Exception('No active Odoo session');
     }
@@ -455,11 +515,18 @@ class PaymentService {
         writeoffLabel: writeoffLabel,
       );
 
-      final updatedInvoice = await _getUpdatedInvoiceStatus(
-        client,
-        invoiceId,
-        companyId,
-      );
+      // The payment exists on the server from here on. Reading the invoice
+      // back is only a courtesy to the caller, so a failure of that read must
+      // not turn a recorded payment into a failed one (the caller would then
+      // fall back to recording it a second time).
+      Map<String, dynamic> updatedInvoice = {};
+      try {
+        updatedInvoice = await _getUpdatedInvoiceStatus(
+          client,
+          invoiceId,
+          companyId,
+        );
+      } catch (_) {}
 
       return {
         'success': true,
@@ -473,7 +540,7 @@ class PaymentService {
   }
 
   static Future<Payment> getPaymentDetails(int paymentId) async {
-    final client = await OdooSessionManager.getClient();
+    final client = await clientProvider();
     if (client == null) {
       throw Exception('No active Odoo session');
     }
@@ -530,7 +597,7 @@ class PaymentService {
   }
 
   static Future<List<Payment>> getInvoicePayments(int invoiceId) async {
-    final client = await OdooSessionManager.getClient();
+    final client = await clientProvider();
     if (client == null) {
       throw Exception('No active Odoo session');
     }
@@ -619,7 +686,7 @@ class PaymentService {
   }
 
   static Future<bool> reconcilePayment(int paymentId, int invoiceId) async {
-    final client = await OdooSessionManager.getClient();
+    final client = await clientProvider();
     if (client == null) {
       throw Exception('No active Odoo session');
     }
@@ -675,6 +742,10 @@ class PaymentService {
           })
           .timeout(_extendedTimeout);
 
+      // Reconciling moves the invoice from "in payment" to "paid".
+      bus.paymentChanged(paymentId, kind: DataChangeKind.updated);
+      bus.invoiceChanged(invoiceId);
+
       return true;
     } catch (e) {
       return false;
@@ -685,7 +756,7 @@ class PaymentService {
     int invoiceId,
   ) async {
     try {
-      final client = await OdooSessionManager.getClient();
+      final client = await clientProvider();
       if (client == null) {
         throw PaymentError.network(
           message: 'No active Odoo session',
@@ -721,7 +792,7 @@ class PaymentService {
     int paymentId,
   ) async {
     try {
-      final client = await OdooSessionManager.getClient();
+      final client = await clientProvider();
       if (client == null) {
         throw PaymentError.network(
           message: 'No active Odoo session',
@@ -751,13 +822,16 @@ class PaymentService {
       }
 
       final paymentData = paymentResult[0];
-      final state = paymentData['state'];
+      final state = Payment.parseOdooState(
+        paymentData['state'] is String ? paymentData['state'] : 'draft',
+      );
       final isReconciled = paymentData['is_reconciled'] ?? false;
 
       ReconciliationStatus status;
-      if (state == 'draft' || state == 'cancelled') {
+      if (state == OdooPaymentState.draft ||
+          state == OdooPaymentState.cancelled) {
         status = ReconciliationStatus.notRequired;
-      } else if (state == 'posted' && !isReconciled) {
+      } else if (state == OdooPaymentState.posted && !isReconciled) {
         final partialReconciliations = await _getPartialReconciliations(
           client,
           paymentId,
@@ -767,7 +841,7 @@ class PaymentService {
         } else {
           status = ReconciliationStatus.pending;
         }
-      } else if (isReconciled) {
+      } else if (isReconciled || state == OdooPaymentState.reconciled) {
         status = ReconciliationStatus.complete;
       } else {
         status = ReconciliationStatus.failed;
@@ -782,7 +856,7 @@ class PaymentService {
 
   static Future<bool> requiresReconciliation(int invoiceId) async {
     try {
-      final client = await OdooSessionManager.getClient();
+      final client = await clientProvider();
       if (client == null) {
         throw PaymentError.network(
           message: 'No active Odoo session',
@@ -1089,6 +1163,8 @@ class PaymentService {
       paymentId = result['res_id'];
     }
 
+    _announcePaymentRegistered(invoiceId, paymentId);
+
     await Future.delayed(const Duration(milliseconds: 500));
 
     return {
@@ -1365,6 +1441,8 @@ class PaymentService {
       }
     }
 
+    _announcePaymentRegistered(invoiceId, paymentId);
+
     await Future.delayed(const Duration(milliseconds: 500));
 
     if (odooBehavior.marksAsPaidDirectly) {
@@ -1606,7 +1684,7 @@ class PaymentService {
 
   static Future<Invoice> _getSafeInvoiceData(int invoiceId) async {
     try {
-      final client = await OdooSessionManager.getClient();
+      final client = await clientProvider();
       if (client != null) {
         final result = await client
             .callKw({

@@ -14,6 +14,7 @@ import 'screens/login/server_setup_screen.dart';
 import 'screens/others/webview_screen.dart';
 import 'screens/others/get_started_screen.dart';
 import 'services/connectivity_service.dart';
+import 'services/database_expiry_guard.dart';
 import 'services/session_service.dart';
 import 'package:provider/provider.dart';
 import 'providers/theme_provider.dart';
@@ -24,6 +25,7 @@ import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'auth/auth_check.dart';
 import 'screens/splash/splash_screen.dart';
 import 'services/review_service.dart';
+import 'widgets/keyboard_dismisser.dart';
 export 'package:flutter/material.dart' show navigatorKey;
 export 'package:flutter/material.dart' show GlobalKey, ScaffoldMessengerState;
 
@@ -34,6 +36,10 @@ final RouteObserver<ModalRoute<void>> routeObserver =
     RouteObserver<ModalRoute<void>>();
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  // On every return to the app: a database that expired meanwhile signs the
+  // account out.
+  DatabaseExpiryGuard.instance.start();
   runApp(
     MultiProvider(
       providers: [
@@ -75,6 +81,8 @@ class MyApp extends StatelessWidget {
           theme: themeProvider.lightTheme,
           darkTheme: themeProvider.darkTheme,
           themeMode: themeProvider.themeMode,
+          // A tap on nothing in particular closes the keyboard, on every screen.
+          builder: (context, child) => KeyboardDismisser(child: child),
           home: const SplashScreen(),
           routes: {
             '/get_started': (context) => const GetStartedScreen(),

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../utils/invoice_name.dart';
 import 'payment.dart';
 
 enum OdooInvoicePaymentState {
@@ -9,6 +10,15 @@ enum OdooInvoicePaymentState {
   reversed,
   blocked,
 }
+
+/// Whether the "Checked" flag of an `account.move` can be requested.
+///
+/// The field only exists in Odoo 18 and 19; 20 removed it. Reading a missing
+/// field fails the whole call, and a screen that asks for it anyway shows a
+/// "Checked: No" that nothing on the server says. An unknown generation (0)
+/// and 17 keep asking, as the app always did: the caller drops a field the
+/// server rejects.
+bool odooAccountMoveHasChecked(int generation) => generation < 20;
 
 /// Summarises payment activity for an invoice (amounts paid, pending, remaining).
 class PaymentSummary {
@@ -199,12 +209,10 @@ class Invoice {
       customerId = json['partner_id'];
     }
 
-    final invoiceName = (json['name'] != false && json['name'] != null)
-        ? json['name'].toString()
-        : 'Draft';
     final state = (json['state'] != null && json['state'] != false)
         ? json['state'].toString()
         : 'draft';
+    final invoiceName = invoiceDisplayName(json['name'], state);
     final paymentState =
         (json['payment_state'] != null && json['payment_state'] != false)
         ? json['payment_state'].toString()
@@ -335,7 +343,8 @@ class Invoice {
     return {
       'id': id,
       'name': name,
-      'partner_id': customerId,
+      // The shape Odoo sends, so reading this map back keeps the name.
+      'partner_id': customerId == null ? null : [customerId, customerName],
       'partner_email': customerEmail,
       'partner_phone': customerPhone,
       'partner_address': customerAddress,

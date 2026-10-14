@@ -331,6 +331,10 @@ class _LoginDropdownFieldState extends State<LoginDropdownField> {
     final selected = await showMenu<String>(
       context: context,
       color: Colors.white,
+      // The panel grows and shrinks while it opens and closes, and Flutter does
+      // not clip its rows to it by default, so the lower rows would hang out of
+      // the white panel for the length of the animation.
+      clipBehavior: Clip.antiAlias,
       position: RelativeRect.fromRect(
         openUpwards
             ? Rect.fromLTWH(offset.dx, offset.dy - menuHeight, size.width, 0)
@@ -452,8 +456,11 @@ class LoginErrorDisplay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Room for the longer messages (an expired database's runs to three lines
+    // on a phone); a short one keeps the 40 it always had.
+    final lines = error == null ? 1 : (error!.length / 42).ceil();
     return SizedBox(
-      height: 40,
+      height: lines <= 1 ? 40 : lines * 16.0 + 12,
       child: AnimatedSwitcher(
         duration: const Duration(milliseconds: 320),
         switchInCurve: Curves.easeOut,
@@ -553,6 +560,7 @@ class _LoginUrlTextFieldState extends State<LoginUrlTextField> {
     final selected = await showMenu<String>(
       context: context,
       color: Colors.white,
+      clipBehavior: Clip.antiAlias,
       position: RelativeRect.fromRect(
         Rect.fromLTWH(offset.dx, offset.dy + size.height, size.width, 0),
         Offset.zero & overlay.size,

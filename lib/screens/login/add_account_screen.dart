@@ -8,7 +8,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../services/session_service.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../services/odoo_api_service.dart';
-import '../../core/session/database_expiry.dart';
 import 'login_layout.dart'
     show
         LoginLayout,
@@ -20,6 +19,8 @@ import 'login_layout.dart'
         LoginUrlAutocompleteField;
 import '../../widgets/custom_snackbar.dart';
 import 'totp_page.dart';
+import '../../widgets/access_denied_dialog.dart';
+import '../../utils/database_expiry.dart';
 
 enum AddAccountStep { server, credentials }
 
@@ -391,17 +392,6 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
         return;
       }
 
-      if (await DatabaseExpiry.isExpired(
-        serverUrl: fullUrl,
-        sessionId: newSession.sessionId,
-      )) {
-        setState(() {
-          _errorMessage = DatabaseExpiredException.message;
-          _isLoading = false;
-        });
-        return;
-      }
-
       final sessionService = SessionService.instance;
       await sessionService.storeAccount(newSession, _passwordController.text);
 
@@ -418,10 +408,6 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
 
       await sessionService.switchToAccount(newSession);
 
-      try {
-        TextInput.finishAutofillContext(shouldSave: true);
-      } catch (_) {}
-
       if (!mounted) return;
 
       setState(() {
@@ -435,6 +421,31 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
         );
       });
     } catch (e) {
+      // An expired database is not added either, and the sign-in screen says
+      // so where it says "wrong password".
+      if (e is DatabaseExpiredException) {
+        if (mounted) {
+          setState(() {
+            _errorMessage = DatabaseExpiredException.message;
+            _isLoading = false;
+          });
+        }
+        return;
+      }
+
+      // An account without Sales access is not added: nothing was stored, and
+      // the session the user is signed in with stays as it was. OK on the popup
+      // takes the user back to Configuration.
+      if (mounted &&
+          await AccessDeniedDialog.showIfAccessError(
+            context,
+            e,
+            buttonLabel: 'OK',
+          )) {
+        _backToConfiguration();
+        return;
+      }
+
       final errorStr = e.toString().toLowerCase();
       if (errorStr.contains('mfa') ||
           errorStr.contains('two factor') ||
@@ -479,10 +490,6 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
                 } catch (_) {}
 
                 await sessionService.switchToAccount(session);
-                try {
-                  TextInput.finishAutofillContext(shouldSave: true);
-                } catch (_) {}
-
                 if (!mounted) return;
                 setState(() {
                   _isLoading = false;
@@ -499,6 +506,13 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
             } catch (e) {}
           }
 
+          // The code was right but the account may not use the app: TotpPage
+          // said why in its popup and closed with `false`.
+          if (result == false) {
+            _backToConfiguration();
+            return;
+          }
+
           setState(() {
             _isLoading = false;
           });
@@ -511,6 +525,15 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
         _isLoading = false;
       });
     }
+  }
+
+  /// The account was refused (no Sales access, no Sales module, a portal user,
+  /// an access check that could not be made) and the popup has been answered:
+  /// leave Add Account for the screen it was opened from. The screen stays
+  /// busy while it slides away, so nothing can be tapped twice.
+  void _backToConfiguration() {
+    if (!mounted) return;
+    Navigator.of(context).pop();
   }
 
   String _parseLoginError(String error) {
@@ -740,87 +763,80 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
                     : null,
               ),
             ] else ...[
-              AutofillGroup(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    LoginTextField(
-                      controller: _emailController,
-                      hint: 'Email / Username',
-                      prefixIcon: HugeIcons.strokeRoundedMail01,
-                      keyboardType: TextInputType.emailAddress,
-                      enabled: !_isLoading,
-                      focusNode: _emailFocus,
-                      hasError: _emailHasError,
-                      autofillHints: const [
-                        AutofillHints.username,
-                        AutofillHints.email,
-                      ],
-                      autovalidateMode: _shouldValidate
-                          ? AutovalidateMode.onUserInteraction
-                          : AutovalidateMode.disabled,
-                      validator: (value) {
-                        if (!_shouldValidate) return null;
-                        if (value == null || value.isEmpty) {
-                          return 'Email is required';
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  LoginTextField(
+                    controller: _emailController,
+                    hint: 'Email / Username',
+                    prefixIcon: HugeIcons.strokeRoundedMail01,
+                    keyboardType: TextInputType.emailAddress,
+                    enabled: !_isLoading,
+                    focusNode: _emailFocus,
+                    hasError: _emailHasError,
+                    autovalidateMode: _shouldValidate
+                        ? AutovalidateMode.onUserInteraction
+                        : AutovalidateMode.disabled,
+                    validator: (value) {
+                      if (!_shouldValidate) return null;
+                      if (value == null || value.isEmpty) {
+                        return 'Email is required';
+                      }
+                      return null;
+                    },
+                    onChanged: (val) {
+                      setState(() {
+                        _emailHasError = val.isEmpty;
+                        if (_inlineError != null) {
+                          _inlineError = null;
                         }
-                        return null;
-                      },
-                      onChanged: (val) {
-                        setState(() {
-                          _emailHasError = val.isEmpty;
-                          if (_inlineError != null) {
-                            _inlineError = null;
-                          }
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 16),
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 16),
 
-                    LoginTextField(
-                      controller: _passwordController,
-                      hint: 'Password',
-                      prefixIcon: HugeIcons.strokeRoundedLockPassword,
-                      obscureText: _obscurePassword,
-                      enabled: !_isLoading,
-                      focusNode: _passwordFocus,
-                      hasError: _passwordHasError,
-                      autofillHints: const [AutofillHints.password],
-                      autovalidateMode: _shouldValidate
-                          ? AutovalidateMode.onUserInteraction
-                          : AutovalidateMode.disabled,
-                      validator: (value) {
-                        if (!_shouldValidate) return null;
-                        if (value == null || value.isEmpty) {
-                          return 'Password is required';
-                        }
-                        return null;
-                      },
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _obscurePassword
-                              ? HugeIcons.strokeRoundedView
-                              : HugeIcons.strokeRoundedViewOff,
-                          size: 20,
-                          color: Colors.black54,
-                        ),
-                        onPressed: () {
-                          setState(() {
-                            _obscurePassword = !_obscurePassword;
-                          });
-                        },
+                  LoginTextField(
+                    controller: _passwordController,
+                    hint: 'Password',
+                    prefixIcon: HugeIcons.strokeRoundedLockPassword,
+                    obscureText: _obscurePassword,
+                    enabled: !_isLoading,
+                    focusNode: _passwordFocus,
+                    hasError: _passwordHasError,
+                    autovalidateMode: _shouldValidate
+                        ? AutovalidateMode.onUserInteraction
+                        : AutovalidateMode.disabled,
+                    validator: (value) {
+                      if (!_shouldValidate) return null;
+                      if (value == null || value.isEmpty) {
+                        return 'Password is required';
+                      }
+                      return null;
+                    },
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _obscurePassword
+                            ? HugeIcons.strokeRoundedView
+                            : HugeIcons.strokeRoundedViewOff,
+                        size: 20,
+                        color: Colors.black54,
                       ),
-                      onChanged: (val) {
+                      onPressed: () {
                         setState(() {
-                          _passwordHasError = val.isEmpty;
-                          if (_inlineError != null) {
-                            _inlineError = null;
-                          }
+                          _obscurePassword = !_obscurePassword;
                         });
                       },
                     ),
-                  ],
-                ),
+                    onChanged: (val) {
+                      setState(() {
+                        _passwordHasError = val.isEmpty;
+                        if (_inlineError != null) {
+                          _inlineError = null;
+                        }
+                      });
+                    },
+                  ),
+                ],
               ),
               const SizedBox(height: 16),
 

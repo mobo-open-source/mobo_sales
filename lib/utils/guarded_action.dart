@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../widgets/custom_snackbar.dart';
+import '../widgets/loading_dialog.dart';
 
 /// Upper bound on a single user-triggered server action.
 const Duration kActionTimeout = Duration(seconds: 30);
@@ -27,46 +28,28 @@ Future<T?> runGuardedAction<T>({
   required BuildContext context,
   required String message,
   required Future<T> Function() action,
+  String? subtitle,
   String? successMessage,
   String failurePrefix = 'Action failed',
   Duration timeout = kActionTimeout,
 }) async {
-  BuildContext? dialogContext;
-  var dialogOpen = true;
-
-  void dismiss() {
-    if (!dialogOpen) return;
-    dialogOpen = false;
-    final ctx = dialogContext;
-    dialogContext = null;
-    if (ctx == null) return;
-    final navigator = Navigator.of(ctx);
-    if (navigator.canPop()) navigator.pop();
-  }
-
-  unawaited(
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        dialogContext = ctx;
-        return _ProgressDialog(message: message);
-      },
-    ).whenComplete(() {
-      dialogOpen = false;
-      dialogContext = null;
-    }),
+  // The app's one loading popup. Its handle closes this dialog's own route,
+  // once, so a late `finally` can never pop the page underneath.
+  final loading = LoadingDialog.open(
+    context,
+    message: message,
+    subtitle: subtitle ?? LoadingCard.defaultSubtitle,
   );
 
   try {
     final result = await action().timeout(timeout);
-    dismiss();
+    loading.close();
     if (context.mounted && successMessage != null) {
       CustomSnackbar.showSuccess(context, successMessage);
     }
     return result;
   } catch (error) {
-    dismiss();
+    loading.close();
     if (context.mounted) {
       CustomSnackbar.showError(
         context,
@@ -75,7 +58,7 @@ Future<T?> runGuardedAction<T>({
     }
     return null;
   } finally {
-    dismiss();
+    loading.close();
   }
 }
 
@@ -91,37 +74,4 @@ String describeActionFailure(Object error, String fallbackPrefix) {
     return 'Session expired. Please log in again.';
   }
   return '$fallbackPrefix: $error';
-}
-
-class _ProgressDialog extends StatelessWidget {
-  const _ProgressDialog({required this.message});
-
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(
-              color: isDark ? Theme.of(context).primaryColor : null,
-            ),
-            const SizedBox(width: 16),
-            Flexible(
-              child: Text(
-                message,
-                style: TextStyle(color: isDark ? Colors.white : Colors.black87),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }

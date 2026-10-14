@@ -9,23 +9,31 @@ import '../models/attachment.dart';
 import '../services/odoo_session_manager.dart';
 import '../services/permission_service.dart';
 import '../services/connectivity_service.dart';
+import '../services/data_change_bus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:odoo_rpc/odoo_rpc.dart';
 import '../models/quote.dart';
+import '../models/sale_order_compat.dart';
 import '../services/field_validation_service.dart';
+import '../services/odoo_compat.dart';
 import '../services/odoo_error_classifier.dart';
 import '../utils/guarded_action.dart';
 
 class QuotationProvider with ChangeNotifier {
   final QuotationService _quotationService;
   final ConnectivityService _connectivityService;
+  final DataChangeBus _bus;
+  DataChangeSubscription? _busSub;
 
   QuotationProvider({
     QuotationService? quotationService,
     ConnectivityService? connectivityService,
+    DataChangeBus? bus,
   }) : _quotationService = quotationService ?? QuotationService(),
-       _connectivityService = connectivityService ?? ConnectivityService() {
+       _connectivityService = connectivityService ?? ConnectivityService(),
+       _bus = bus ?? DataChangeBus.instance {
     _setupConnectivityListener();
+    _listenToChanges();
     _searchController.addListener(() {
       final newText = _searchController.text.trim();
       if (newText == _searchQuery) return;
@@ -459,7 +467,10 @@ class QuotationProvider with ChangeNotifier {
     }
   }
 
-  Future<void> _fetchGroupSummary() async {
+  /// Reads how many quotations each group holds. [quiet] is for a refresh of
+  /// a view that is already showing: a failure then leaves it as it was
+  /// instead of putting an error on the screen.
+  Future<void> _fetchGroupSummary({bool quiet = false}) async {
     if (!_isGrouped || _selectedGroupBy == null) return;
 
     try {
@@ -477,59 +488,52 @@ class QuotationProvider with ChangeNotifier {
         granularity = parts[1];
       }
 
-      final result = await OdooSessionManager.safeCallKw({
-        'model': 'sale.order',
-        'method': 'read_group',
-        'args': [domain],
-        'kwargs': {
-          'fields': <String>[],
-          'groupby': [
-            granularity != null ? '$groupByField:$granularity' : groupByField,
-          ],
-          'lazy': false,
-        },
-      }).timeout(const Duration(seconds: 30));
+      // `read_group` has a different signature from Odoo 19 and returns tuples
+      // in 20; the compat call hands back the old row shape on every version.
+      final groups = await OdooCompat.readGroup(
+        model: 'sale.order',
+        domain: domain,
+        fields: <String>[],
+        groupby: [
+          granularity != null ? '$groupByField:$granularity' : groupByField,
+        ],
+        callKw: OdooSessionManager.safeCallKw,
+      ).timeout(const Duration(seconds: 30));
 
-      if (result is List) {
-        _groupSummary.clear();
-        _groupedQuotations.clear();
+      _groupSummary.clear();
+      _groupedQuotations.clear();
 
-        int totalGroupedCount = 0;
-        for (final group in result) {
-          if (group is Map) {
-            final groupKey = _getGroupKeyFromReadGroup(
-              group.cast<String, dynamic>(),
-              _selectedGroupBy!,
-            );
-            final count = group['__count'] ?? 0;
-            _groupSummary[groupKey] = count;
-            totalGroupedCount += count as int;
+      int totalGroupedCount = 0;
+      for (final group in groups) {
+        final groupKey = _getGroupKeyFromReadGroup(group, _selectedGroupBy!);
+        final count = group['__count'] ?? 0;
+        _groupSummary[groupKey] = count;
+        totalGroupedCount += count as int;
 
-            _groupedQuotations[groupKey] = [];
-          }
-        }
-
-        if (_totalQuotations > totalGroupedCount) {
-          final missingCount = _totalQuotations - totalGroupedCount;
-          String undefinedLabel;
-
-          if (groupByField.contains('date')) {
-            undefinedLabel = 'No Date';
-          } else if (groupByField == 'user_id') {
-            undefinedLabel = 'Unassigned';
-          } else if (groupByField == 'partner_id') {
-            undefinedLabel = 'Unknown Customer';
-          } else {
-            undefinedLabel = 'Undefined';
-          }
-
-          _groupSummary[undefinedLabel] = missingCount;
-          _groupedQuotations[undefinedLabel] = [];
-        }
-
-        notifyListeners();
+        _groupedQuotations[groupKey] = [];
       }
+
+      if (_totalQuotations > totalGroupedCount) {
+        final missingCount = _totalQuotations - totalGroupedCount;
+        String undefinedLabel;
+
+        if (groupByField.contains('date')) {
+          undefinedLabel = 'No Date';
+        } else if (groupByField == 'user_id') {
+          undefinedLabel = 'Unassigned';
+        } else if (groupByField == 'partner_id') {
+          undefinedLabel = 'Unknown Customer';
+        } else {
+          undefinedLabel = 'Undefined';
+        }
+
+        _groupSummary[undefinedLabel] = missingCount;
+        _groupedQuotations[undefinedLabel] = [];
+      }
+
+      notifyListeners();
     } catch (e) {
+      if (quiet) return;
       _errorMessage = describeActionFailure(e, "Could not group quotations");
       notifyListeners();
     }
@@ -814,45 +818,68 @@ class QuotationProvider with ChangeNotifier {
     if (_loadedGroups.containsKey(groupKey)) return;
 
     try {
-      final client = await OdooSessionManager.getClient();
-      if (client == null) return;
-
-      List<dynamic> domain = _buildDomain();
-
-      final groupDomain = _buildGroupDomain(groupKey, _selectedGroupBy!);
-
-      domain.addAll(groupDomain);
-
-      final result = await OdooSessionManager.safeCallKw({
-        'model': 'sale.order',
-        'method': 'search_read',
-        'args': [domain],
-        'kwargs': {
-          'fields': [
-            'id',
-            'name',
-            'partner_id',
-            'date_order',
-            'validity_date',
-            'state',
-            'amount_total',
-            'currency_id',
-            'user_id',
-            'amount_untaxed',
-          ],
-          'order': 'date_order desc, id desc',
-        },
-      });
-
-      if (result is List) {
-        final quotations = result
-            .map((data) => Quote.fromJson(Map<String, dynamic>.from(data)))
-            .toList();
+      final quotations = await _readGroup(groupKey);
+      if (quotations != null) {
         _loadedGroups[groupKey] = quotations;
 
         notifyListeners();
       }
     } catch (e) {}
+  }
+
+  /// The quotations of one group of the grouped view, read from the server
+  /// with the same fields as a list row; null when there is no session.
+  Future<List<Quote>?> _readGroup(String groupKey) async {
+    final client = await OdooSessionManager.getClient();
+    if (client == null) return null;
+
+    final List<dynamic> domain = _buildDomain()
+      ..addAll(_buildGroupDomain(groupKey, _selectedGroupBy!));
+
+    final rows =
+        await FieldValidationService.executeWithFieldValidation<
+          List<Map<String, dynamic>>
+        >(
+          model: 'sale.order',
+          initialFields: _listFields(),
+          apiCall: (fields) async {
+            final res = await OdooSessionManager.safeCallKw({
+              'model': 'sale.order',
+              'method': 'search_read',
+              'args': [domain],
+              'kwargs': {'fields': fields, 'order': 'date_order desc, id desc'},
+            });
+            return res is List
+                ? res.whereType<Map>().map(Map<String, dynamic>.from).toList()
+                : <Map<String, dynamic>>[];
+          },
+        );
+    return rows.map(Quote.fromJson).toList();
+  }
+
+  /// Brings the grouped view up to date: the count of every group, and the
+  /// quotations of the groups the user has opened. A group that no longer has
+  /// any quotation closes; one that cannot be read keeps what it showed.
+  Future<void> _refreshGroups() async {
+    if (!_isGrouped || _selectedGroupBy == null) return;
+
+    final opened = _loadedGroups.keys.toList();
+    await _fetchGroupSummary(quiet: true);
+    if (opened.isEmpty) return;
+
+    final fresh = <String, List<Quote>>{};
+    for (final key in opened) {
+      if (!_groupSummary.containsKey(key)) continue;
+      try {
+        fresh[key] = await _readGroup(key) ?? _loadedGroups[key] ?? [];
+      } catch (_) {
+        fresh[key] = _loadedGroups[key] ?? [];
+      }
+    }
+    _loadedGroups
+      ..clear()
+      ..addAll(fresh);
+    notifyListeners();
   }
 
   String _getAmountRange(double amount, {String? currencyCode}) {
@@ -993,10 +1020,8 @@ class QuotationProvider with ChangeNotifier {
             domain.add(['invoice_status', '=', 'to invoice']);
             break;
           case 'delivered':
-            domain.add(['delivery_status', '=', 'delivered']);
-            break;
           case 'to_deliver':
-            domain.add(['delivery_status', '=', 'to deliver']);
+            domain.add(deliveryStatusLeaf(filter)!);
             break;
           case 'expired':
             final now = DateTime.now();
@@ -1051,12 +1076,35 @@ class QuotationProvider with ChangeNotifier {
     return domain;
   }
 
+  /// The fields a list row is made of — the same whether the page is fetched
+  /// or one row is read again after a change, so a refreshed row is never
+  /// poorer than the ones around it.
+  List<String> _listFields() => [
+    'id',
+    'name',
+    'partner_id',
+    'date_order',
+    'state',
+    'amount_total',
+    'currency_id',
+    'user_id',
+    'validity_date',
+    'create_date',
+    'write_date',
+    'amount_untaxed',
+    'amount_tax',
+    'order_line',
+    if (_availableFields.contains('invoice_status')) 'invoice_status',
+    if (_availableFields.contains('delivery_status')) 'delivery_status',
+  ];
+
   Future<void> _fetchSpecificPage() async {
     if (_isLoadingMore) {
       return;
     }
 
     _isLoadingMore = true;
+    _loadEpoch++;
     _errorMessage = null;
     notifyListeners();
 
@@ -1077,99 +1125,23 @@ class QuotationProvider with ChangeNotifier {
         return;
       }
 
-      List<dynamic> domain = _buildDomain();
+      final page = await _readQuotes(
+        offset: _currentPage * _pageSize,
+        limit: _pageSize,
+      );
 
-      final countFuture = OdooSessionManager.safeCallKw({
-        'model': 'sale.order',
-        'method': 'search_count',
-        'args': [domain],
-        'kwargs': {},
-      });
-
-      final List<String> fieldsToFetch = [
-        'id',
-        'name',
-        'partner_id',
-        'date_order',
-        'state',
-        'amount_total',
-        'currency_id',
-        'user_id',
-        'validity_date',
-        'create_date',
-        'write_date',
-        'amount_untaxed',
-        'amount_tax',
-        'order_line',
-      ];
-
-      if (_availableFields.contains('invoice_status')) {
-        fieldsToFetch.add('invoice_status');
+      _totalQuotations = page.total;
+      if (_currentPage == 0) {
+        _allQuotations = page.rows;
+      } else {
+        _allQuotations.addAll(page.rows);
       }
-      if (_availableFields.contains('delivery_status')) {
-        fieldsToFetch.add('delivery_status');
-      }
+      _filteredQuotations = List.from(_allQuotations);
+      _hasMoreData = _allQuotations.length < _totalQuotations;
 
-      final listFuture =
-          FieldValidationService.executeWithFieldValidation<
-            List<Map<String, dynamic>>
-          >(
-            model: 'sale.order',
-            initialFields: fieldsToFetch,
-            apiCall: (currentFields) async {
-              final res = await OdooSessionManager.safeCallKw({
-                'model': 'sale.order',
-                'method': 'search_read',
-                'args': [domain],
-                'kwargs': {
-                  'fields': currentFields,
-                  'order': 'date_order desc, id desc',
-                  'limit': _pageSize,
-                  'offset': _currentPage * _pageSize,
-                },
-              });
-              if (res is List) {
-                return res.cast<Map<String, dynamic>>();
-              }
-              return [];
-            },
-          );
-
-      final results = await Future.wait<dynamic>([countFuture, listFuture]);
-
-      final totalCount = results[0] as int;
-      final result = results[1];
-
-      _totalQuotations = totalCount;
-      if (result is List) {
-        final fetchedQuotations = result
-            .map((data) {
-              if (data is Map) {
-                try {
-                  return Quote.fromJson(Map<String, dynamic>.from(data));
-                } catch (e) {
-                  return null;
-                }
-              } else if (data is int) {
-                return null;
-              }
-              return null;
-            })
-            .whereType<Quote>()
-            .toList();
-
-        if (_currentPage == 0) {
-          _allQuotations = fetchedQuotations;
-        } else {
-          _allQuotations.addAll(fetchedQuotations);
-        }
-        _filteredQuotations = List.from(_allQuotations);
-        _hasMoreData = _allQuotations.length < _totalQuotations;
-
-        if (_isGrouped && _selectedGroupBy != null) {
-          if (_groupSummary.isEmpty) {
-            _fetchGroupSummary();
-          }
+      if (_isGrouped && _selectedGroupBy != null) {
+        if (_groupSummary.isEmpty) {
+          _fetchGroupSummary();
         }
       }
 
@@ -1178,6 +1150,7 @@ class QuotationProvider with ChangeNotifier {
       _isLoadingMore = false;
       _errorMessage = null;
       notifyListeners();
+      _runPendingQuietReload();
     } catch (e) {
       if (e.toString().contains('odoo.exceptions.AccessError') ||
           e.toString().contains('You are not allowed to access')) {
@@ -1191,7 +1164,67 @@ class QuotationProvider with ChangeNotifier {
       _isLoading = false;
       _isLoadingMore = false;
       notifyListeners();
+      _runPendingQuietReload();
     }
+  }
+
+  /// Reads [limit] quotations from [offset] of what the list shows — its
+  /// filters, search and dates — and how many match in all, straight from the
+  /// server.
+  Future<({int total, List<Quote> rows})> _readQuotes({
+    required int offset,
+    required int limit,
+  }) async {
+    final List<dynamic> domain = _buildDomain();
+
+    final countFuture = OdooSessionManager.safeCallKw({
+      'model': 'sale.order',
+      'method': 'search_count',
+      'args': [domain],
+      'kwargs': {},
+    });
+
+    final listFuture =
+        FieldValidationService.executeWithFieldValidation<
+          List<Map<String, dynamic>>
+        >(
+          model: 'sale.order',
+          initialFields: _listFields(),
+          apiCall: (currentFields) async {
+            final res = await OdooSessionManager.safeCallKw({
+              'model': 'sale.order',
+              'method': 'search_read',
+              'args': [domain],
+              'kwargs': {
+                'fields': currentFields,
+                'order': 'date_order desc, id desc',
+                'limit': limit,
+                'offset': offset,
+              },
+            });
+            if (res is List) {
+              return res.cast<Map<String, dynamic>>();
+            }
+            return [];
+          },
+        );
+
+    final results = await Future.wait<dynamic>([countFuture, listFuture]);
+
+    final rows = (results[1] as List)
+        .map((data) {
+          if (data is Map) {
+            try {
+              return Quote.fromJson(Map<String, dynamic>.from(data));
+            } catch (e) {
+              return null;
+            }
+          }
+          return null;
+        })
+        .whereType<Quote>()
+        .toList();
+    return (total: results[0] as int, rows: rows);
   }
 
   static List<Quote> _cachedQuotations = [];
@@ -1268,6 +1301,7 @@ class QuotationProvider with ChangeNotifier {
     }
     _retryTimer?.cancel();
     _debounce?.cancel();
+    _busSub?.cancel();
     _searchController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -1330,19 +1364,22 @@ class QuotationProvider with ChangeNotifier {
 
       final base64File = base64Encode(fileBytes as List<int>);
 
+      // The file goes in `datas` up to Odoo 19 and in `raw` from 20, which
+      // removed `datas`: sent there, it is ignored and an empty file is stored.
+      final generation = await OdooSessionManager.serverGeneration();
+
       await OdooSessionManager.safeCallKw({
         'model': 'ir.attachment',
         'method': 'create',
         'args': [
-          {
-            'name': fileName,
-            'type': 'binary',
-            'datas': base64File,
-            'res_model': 'sale.order',
-            'res_id': orderId,
-            'mimetype': mimetype,
-            if (description != null) 'description': description,
-          },
+          attachmentCreateValues(
+            generation: generation,
+            orderId: orderId,
+            name: fileName,
+            base64Data: base64File,
+            mimetype: mimetype,
+            description: description,
+          ),
         ],
         'kwargs': {},
       });
@@ -1488,6 +1525,7 @@ class QuotationProvider with ChangeNotifier {
 
     if (!isLoadMore) {
       _isLoading = true;
+      _loadEpoch++;
       _allQuotations.clear();
       _filteredQuotations.clear();
       _currentPage = 0;
@@ -1687,10 +1725,8 @@ class QuotationProvider with ChangeNotifier {
               domain.add(['invoice_status', '=', 'to invoice']);
               break;
             case 'delivered':
-              domain.add(['delivery_status', '=', 'delivered']);
-              break;
             case 'to_deliver':
-              domain.add(['delivery_status', '=', 'to deliver']);
+              domain.add(deliveryStatusLeaf(filter)!);
               break;
             case 'expired':
               final now = DateTime.now();
@@ -1910,21 +1946,10 @@ class QuotationProvider with ChangeNotifier {
       dynamic result;
       String taxField = '';
 
-      try {
-        result = await OdooSessionManager.safeCallKw({
-          'model': 'sale.order.line',
-          'method': 'search_read',
-          'args': [
-            [
-              ['order_id', '=', quotationId],
-            ],
-          ],
-          'kwargs': {
-            'fields': [...baseFields, 'tax_ids'],
-          },
-        });
-        taxField = 'tax_ids';
-      } catch (e) {
+      // The taxes field is `tax_id` up to Odoo 18 and `tax_ids` from 19. A
+      // known generation asks for its own spelling; an unknown one tries both.
+      final generation = await OdooSessionManager.serverGeneration();
+      for (final spelling in SaleLineFields.candidates(generation)) {
         try {
           result = await OdooSessionManager.safeCallKw({
             'model': 'sale.order.line',
@@ -1935,29 +1960,33 @@ class QuotationProvider with ChangeNotifier {
               ],
             ],
             'kwargs': {
-              'fields': [...baseFields, 'tax_id'],
+              'fields': [...baseFields, spelling.tax],
             },
           });
-          taxField = 'tax_id';
-        } catch (e2) {
-          result = await OdooSessionManager.safeCallKw({
-            'model': 'sale.order.line',
-            'method': 'search_read',
-            'args': [
-              [
-                ['order_id', '=', quotationId],
-              ],
-            ],
-            'kwargs': {'fields': baseFields},
-          });
-          taxField = '';
+          taxField = spelling.tax;
+          break;
+        } catch (_) {
+          // This server spells the field the other way; try the next one.
         }
+      }
+
+      if (taxField.isEmpty) {
+        result = await OdooSessionManager.safeCallKw({
+          'model': 'sale.order.line',
+          'method': 'search_read',
+          'args': [
+            [
+              ['order_id', '=', quotationId],
+            ],
+          ],
+          'kwargs': {'fields': baseFields},
+        });
       }
 
       if (result is List) {
         _orderLines = List<Map<String, dynamic>>.from(result);
 
-        if (taxField == 'tax_ids') {
+        if (taxField == SaleLineFields.current.tax) {
           for (final line in _orderLines) {
             if (line['tax_ids'] != null) {
               line['tax_id'] = line['tax_ids'];
@@ -2198,6 +2227,7 @@ class QuotationProvider with ChangeNotifier {
 
       if (currentState == 'sale' || currentState == 'done') {
         await _updateQuotationStatus(quotationId, currentState);
+        _bus.quotationChanged(quotationId, origin: this);
 
         return;
       }
@@ -2234,6 +2264,7 @@ class QuotationProvider with ChangeNotifier {
           quotationId,
           newState.isEmpty ? 'sale' : newState,
         );
+        _bus.quotationChanged(quotationId, origin: this);
 
         return;
       }
@@ -2262,6 +2293,7 @@ class QuotationProvider with ChangeNotifier {
               : '';
           if (state == 'sale' || state == 'done') {
             await _updateQuotationStatus(quotationId, state);
+            _bus.quotationChanged(quotationId, origin: this);
 
             return;
           }
@@ -2272,56 +2304,173 @@ class QuotationProvider with ChangeNotifier {
   }
 
   Future<void> _updateQuotationStatus(int quotationId, String newState) async {
+    // The action itself has succeeded by the time this runs. Failing to read
+    // the row again must not turn that into "failed": the announcement that
+    // follows makes every screen read it again.
     try {
-      List<String> fields = [
-        'name',
-        'partner_id',
-        'date_order',
-        'amount_total',
-        'state',
-        'currency_id',
-        'note',
-      ];
-      if (_availableFields.contains('delivery_status')) {
-        fields.add('delivery_status');
-      }
-      if (_availableFields.contains('invoice_status')) {
-        fields.add('invoice_status');
-      }
+      await refreshQuotation(quotationId);
+    } catch (_) {}
+    // The row is right; the list under its filter, its count and its groups
+    // are read again in the background.
+    unawaited(quietReload());
+  }
 
-      final result = await OdooSessionManager.safeCallKw({
-        'model': 'sale.order',
-        'method': 'read',
-        'args': [
-          [quotationId],
-        ],
-        'kwargs': {'fields': fields},
-      });
-
-      if (result.isNotEmpty) {
-        final updatedQuotation = result[0] as Map<String, dynamic>;
-
-        final allIndex = _allQuotations.indexWhere((q) => q.id == quotationId);
-        if (allIndex != -1) {
-          _allQuotations[allIndex] = Quote.fromJson(updatedQuotation);
-        }
-        final filteredIndex = _filteredQuotations.indexWhere(
-          (q) => q.id == quotationId,
+  /// Reads quotation [id] again and puts the fresh row wherever the list holds
+  /// it — the loaded page, the filtered view and the cache — then tells the
+  /// screens. Called after an action here, and when a change made elsewhere is
+  /// announced on the bus.
+  Future<void> refreshQuotation(int id) async {
+    final rows =
+        await FieldValidationService.executeWithFieldValidation<
+          List<Map<String, dynamic>>
+        >(
+          model: 'sale.order',
+          initialFields: _listFields(),
+          apiCall: (fields) async {
+            final res = await OdooSessionManager.safeCallKw({
+              'model': 'sale.order',
+              'method': 'read',
+              'args': [
+                [id],
+              ],
+              'kwargs': {'fields': fields},
+            });
+            return res is List
+                ? res.whereType<Map>().map(Map<String, dynamic>.from).toList()
+                : <Map<String, dynamic>>[];
+          },
         );
-        if (filteredIndex != -1) {
-          _filteredQuotations[filteredIndex] = Quote.fromJson(updatedQuotation);
-        }
-        final cacheIndex = _cachedQuotations.indexWhere(
-          (q) => q.id == quotationId,
-        );
-        if (cacheIndex != -1) {
-          _cachedQuotations[cacheIndex] = Quote.fromJson(updatedQuotation);
-        }
 
-        notifyListeners();
+    if (rows.isEmpty) {
+      _removeLocally(id);
+      return;
+    }
+
+    final fresh = Quote.fromJson(rows.first);
+    var found = false;
+    for (final list in [
+      _allQuotations,
+      _filteredQuotations,
+      _cachedQuotations,
+      ..._loadedGroups.values,
+    ]) {
+      final index = list.indexWhere((q) => q.id == id);
+      if (index != -1) {
+        list[index] = fresh;
+        found = true;
       }
-    } catch (e) {
-      rethrow;
+    }
+    // Not on the page the user has loaded: nothing to replace, and a quotation
+    // that is only now being found is a creation, which reloads the list.
+    if (found) notifyListeners();
+  }
+
+  void _removeLocally(int id) {
+    final before = _allQuotations.length;
+    _allQuotations.removeWhere((q) => q.id == id);
+    _filteredQuotations.removeWhere((q) => q.id == id);
+    _cachedQuotations.removeWhere((q) => q.id == id);
+    for (final rows in _loadedGroups.values) {
+      rows.removeWhere((q) => q.id == id);
+    }
+    if (_allQuotations.length != before) {
+      _totalQuotations = (_totalQuotations - 1).clamp(0, 1 << 31);
+      notifyListeners();
+    }
+  }
+
+  // ---- Changes made elsewhere ------------------------------------------------
+
+  bool _quietReloadRunning = false;
+  bool _quietReloadPending = false;
+
+  void _listenToChanges() {
+    _busSub = _bus.listen(
+      where: (c) =>
+          c.origin != this &&
+          (c.isQuotation ||
+              c.isInvoice ||
+              c.entity == DataEntity.payment ||
+              c.entity == DataEntity.customer),
+      onChange: (burst) => unawaited(_onDataChanged(burst)),
+    );
+  }
+
+  /// Brings the list up to date with changes announced by other screens: a
+  /// quotation edited, confirmed, cancelled or deleted there, an invoice or a
+  /// payment that moved its invoice status, a customer renamed, a new
+  /// quotation. Whatever the change, the list reads what it shows again from
+  /// the server, so a row that no longer matches the active filter leaves, the
+  /// count is right and the grouped view follows.
+  Future<void> _onDataChanged(List<DataChange> burst) async {
+    if (!_hasInitiallyLoaded) return;
+    try {
+      for (final c in burst) {
+        if (c.isQuotation && c.kind == DataChangeKind.deleted && c.id != null) {
+          _removeLocally(c.id!);
+        }
+      }
+      await quietReload();
+    } catch (_) {
+      // A refresh that fails leaves the list as it was; the next one retries.
+    }
+  }
+
+  /// Which load the list is on. A reload that began before a newer load
+  /// started (another filter, a search, a page) read the old list and must not
+  /// replace the new one.
+  int _loadEpoch = 0;
+
+  /// Runs the reload that was asked for while a load was in flight.
+  void _runPendingQuietReload() {
+    if (!_quietReloadPending || _quietReloadRunning) return;
+    if (_isLoading || _isLoadingMore) return;
+    _quietReloadPending = false;
+    unawaited(quietReload());
+  }
+
+  /// Reads the list again from the server without clearing it first: the rows
+  /// on screen stay until the new ones arrive, with no shimmer and no scroll
+  /// jump. It reads every row that is loaded — the first page and the ones
+  /// scrolled to — under the filters, search and grouping that are active, so
+  /// the rows, their order, the total and the groups are what the database
+  /// holds now.
+  Future<void> quietReload() async {
+    if (!_hasInitiallyLoaded) return;
+    if (_isLoading || _isLoadingMore || _quietReloadRunning) {
+      // A load is in flight and may have read before the change, or a reload
+      // is: one more runs when it ends.
+      _quietReloadPending = true;
+      return;
+    }
+    _quietReloadRunning = true;
+    try {
+      _cachedQuotations.clear();
+      _cachedTotalCount = 0;
+      _lastFetchTime = null;
+
+      final epoch = _loadEpoch;
+      final window = await _readQuotes(
+        offset: 0,
+        limit: (_currentPage + 1) * _pageSize,
+      );
+      if (epoch != _loadEpoch) {
+        _quietReloadPending = true;
+        return;
+      }
+
+      _totalQuotations = window.total;
+      _allQuotations = window.rows;
+      _filteredQuotations = List.from(window.rows);
+      _hasMoreData = window.rows.length < window.total;
+      notifyListeners();
+
+      await _refreshGroups();
+    } catch (_) {
+      // The list keeps what it has; the next change or a pull-down reads again.
+    } finally {
+      _quietReloadRunning = false;
+      _runPendingQuietReload();
     }
   }
 
@@ -2335,6 +2484,13 @@ class QuotationProvider with ChangeNotifier {
       _totalQuotations = (_totalQuotations - 1).clamp(0, 1 << 31);
 
       notifyListeners();
+      _bus.quotationChanged(
+        orderId,
+        kind: DataChangeKind.deleted,
+        origin: this,
+      );
+      // The page the row left is filled up again and the counts follow.
+      unawaited(quietReload());
     } catch (e) {
       rethrow;
     }
@@ -2394,6 +2550,7 @@ class QuotationProvider with ChangeNotifier {
       });
 
       await _updateQuotationStatus(quotationId, 'cancel');
+      _bus.quotationChanged(quotationId, origin: this);
     } catch (e) {
       rethrow;
     }
@@ -2437,6 +2594,7 @@ class QuotationProvider with ChangeNotifier {
         _allQuotations[index] = _allQuotations[index].copyWith(notes: notes);
         notifyListeners();
       }
+      _bus.quotationChanged(quotationId, origin: this);
     } catch (e) {
       throw Exception('Failed to update notes: $e');
     }

@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import '../services/data_change_bus.dart';
 import '../services/odoo_session_manager.dart';
 
 import '../services/settings_service.dart';
@@ -11,9 +13,37 @@ import '../services/settings_service.dart';
 /// Manages user preferences, profile data, and local/Odoo settings synchronisation.
 class SettingsProvider extends ChangeNotifier {
   final SettingsService _settingsService;
+  DataChangeSubscription? _profileSubscription;
 
-  SettingsProvider({SettingsService? settingsService})
-    : _settingsService = settingsService ?? SettingsService.instance;
+  SettingsProvider({SettingsService? settingsService, DataChangeBus? bus})
+    : _settingsService = settingsService ?? SettingsService.instance {
+    // The signed-in user's own profile was edited (on the profile screens):
+    // read it again, so the name and photo every screen takes from here — the
+    // app bar avatar, the dashboard's fallback — follow the edit, and the
+    // cached copy that is shown first on the next start is the new one.
+    _profileSubscription = (bus ?? DataChangeBus.instance).listen(
+      where: (change) => change.isProfile,
+      onChange: (_) => unawaited(fetchUserProfile()),
+    );
+  }
+
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _profileSubscription?.cancel();
+    _profileSubscription = null;
+    super.dispose();
+  }
+
+  /// A read that was in flight when the provider went away announces itself
+  /// from a post-frame callback, after [dispose]; that is nobody's error.
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    super.notifyListeners();
+  }
 
   bool _isLoading = false;
   bool _isLoadingLanguages = false;

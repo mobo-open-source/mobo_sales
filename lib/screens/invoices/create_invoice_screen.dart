@@ -1,31 +1,40 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:hugeicons/hugeicons.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
-import 'package:mobo_sales/utils/app_theme.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:loading_animation_widget/loading_animation_widget.dart';
 import '../../services/connectivity_service.dart';
+import '../../services/invoice_service.dart';
 import '../../services/session_service.dart';
+import '../../shared/widgets/mobo/mobo_bottom_action_bar.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../../shared/widgets/mobo/mobo_option.dart';
+import '../../shared/widgets/mobo/mobo_select_field.dart';
 import '../../widgets/custom_snackbar.dart';
+import '../../widgets/loading_dialog.dart';
 import '../../widgets/connection_status_widget.dart';
 import '../../models/contact.dart';
 import '../../providers/currency_provider.dart';
 import '../../providers/invoice_creation_provider.dart';
 import '../../widgets/confetti_dialogs.dart';
 import '../../utils/data_loss_warning_mixin.dart';
+import '../../utils/form_change_tracker.dart';
 import '../../providers/contact_provider.dart';
 import '../../widgets/custom_text_field.dart';
-import '../../widgets/custom_dropdown.dart';
 import '../../widgets/customer_typeahead.dart';
 import '../../widgets/product_typeahead.dart';
 import '../../widgets/custom_date_picker.dart';
 import '../../utils/date_picker_utils.dart';
+import '../../services/odoo_error_handler.dart';
+import '../../models/payment_term.dart';
+import '../../models/invoice_line_values.dart';
+import '../../utils/html_text.dart';
+import '../../utils/invoice_name.dart';
 import '../../models/product.dart';
 import '../../models/quote.dart';
 import '../../services/odoo_session_manager.dart';
@@ -53,18 +62,46 @@ class CreateInvoiceScreen extends StatefulWidget {
 class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
     with DataLossWarningMixin {
   final _formKey = GlobalKey<FormState>();
-  final TextEditingController _customerSearchController =
-      TextEditingController();
   final TextEditingController _notesController = TextEditingController();
+
+  /// Every value the user can edit on the form, so an edit form can tell
+  /// whether it differs from the invoice it loaded. The baseline is taken once
+  /// [_loadInvoiceForEditing] has filled in the customer, date, notes and lines.
+  late final FormChangeTracker _changes = FormChangeTracker(() {
+    final provider = context.read<CreateInvoiceProvider>();
+    return {
+      'customer': provider.selectedCustomer?.id,
+      'invoiceDate': _dayOf(provider.invoiceDate),
+      'dueDate': _dayOf(provider.dueDate),
+      'paymentTerm': provider.selectedPaymentTerm?.id,
+      'notes': _notesController.text.trim(),
+      'lines': [
+        for (final line in provider.invoiceLines)
+          {
+            'product': line['product_id'],
+            'quantity': line['quantity'],
+            'unitPrice': line['unit_price'],
+          },
+      ],
+    };
+  });
   late CreateInvoiceProvider _invoiceProvider;
   bool _isInitialized = false;
+
+  /// The note as it was when the invoice was opened for editing, as text.
+  /// Saving writes the note only if it differs: Odoo's HTML may hold more than
+  /// plain text can (a link, bold), and rewriting it from the text would flatten
+  /// it for nothing.
+  String _loadedNotes = '';
+
+  /// True from the first frame of an edit until [_loadInvoiceForEditing] has
+  /// filled the form, so the skeleton shows instead of an empty form.
+  bool _isLoadingForEdit = false;
   final bool _isLoadingSaleOrder = false;
   String? _invoiceName;
   int? _invoiceId;
   Timer? _debounce;
 
-  final TextEditingController _productSearchController =
-      TextEditingController();
   Timer? _productDebounce;
   final bool _isSearchingProducts = false;
   final bool _showProductDropdown = false;
@@ -73,6 +110,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
   @override
   bool get hasUnsavedData {
     if (!_isInitialized) return false;
+
+    // An edit form has unsaved work only once it differs from the invoice it
+    // loaded; the checks below would read that invoice's own customer and
+    // lines as new work.
+    if (widget.invoiceToEdit != null) return _changes.isDirty;
 
     final provider = context.read<CreateInvoiceProvider>();
     return provider.selectedCustomer != null ||
@@ -99,16 +141,35 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
   @override
   void initState() {
     super.initState();
+    // The form lives in an app-wide provider: whatever the last invoice left
+    // in it (an invoice that was being edited, a half-made one) must not show
+    // on this one.
+    _invoiceProvider = context.read<CreateInvoiceProvider>()..claimForm(this);
+    if (widget.invoiceToEdit != null) {
+      _isLoadingForEdit = true;
+      _notesController.addListener(_onFormChanged);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final invoiceProvider = context.read<CreateInvoiceProvider>();
 
       if (widget.invoiceType != null) {}
 
       if (widget.invoiceToEdit != null) {
-        await _loadInvoiceForEditing(widget.invoiceToEdit!);
+        try {
+          await _loadInvoiceForEditing(widget.invoiceToEdit!);
+          if (mounted) {
+            // The customer, date, notes and every line are in place by now. The
+            // payment-term and product fetches below only fill option lists,
+            // and the tax recalculation only rewrites the derived tax total, so
+            // none of them touches a value tracked in [_changes].
+            _changes.markClean();
+          }
+        } finally {
+          // Clears the skeleton even when the load failed.
+          if (mounted) setState(() => _isLoadingForEdit = false);
+        }
       } else if (widget.customer != null) {
         invoiceProvider.setSelectedCustomer(widget.customer!);
-        _customerSearchController.text = widget.customer!.name;
       }
 
       if (widget.invoiceToEdit == null) {
@@ -120,6 +181,18 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
       _isInitialized = true;
     });
   }
+
+  /// Re-evaluates the submit button and the leave prompt as the notes change.
+  /// Every other editable value lives in [CreateInvoiceProvider], whose
+  /// Consumer already rebuilds the screen.
+  void _onFormChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// A date by its day alone: the picker returns midnight while the provider's
+  /// defaults carry a time of day, and only the day is saved.
+  DateTime? _dayOf(DateTime? date) =>
+      date == null ? null : DateTime(date.year, date.month, date.day);
 
   Future<void> _loadInvoiceForEditing(Map<String, dynamic> invoice) async {
     try {
@@ -143,6 +216,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
         try {
           final client = await OdooSessionManager.getClient();
           if (client != null) {
+            final generation = await OdooSessionManager.serverGeneration();
             final customerData = await client.callKw({
               'model': 'res.partner',
               'method': 'read',
@@ -150,22 +224,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
                 [customerId],
               ],
               'kwargs': {
-                'fields': [
-                  'id',
-                  'name',
-                  'email',
-                  'phone',
-                  'mobile',
-                  'street',
-                  'street2',
-                  'city',
-                  'state_id',
-                  'zip',
-                  'country_id',
-                  'image_1920',
-                  'company_name',
-                  'vat',
-                ],
+                'fields': InvoiceService.customerPrefillFields(generation),
               },
             });
 
@@ -195,7 +254,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
               );
 
               invoiceProvider.setSelectedCustomer(customer);
-              _customerSearchController.text = customer.name;
             } else {
               final customer = Contact(
                 id: customerId,
@@ -205,7 +263,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
                 mobile: '',
               );
               invoiceProvider.setSelectedCustomer(customer);
-              _customerSearchController.text = customerName;
             }
           }
         } catch (e) {
@@ -217,13 +274,13 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
             mobile: '',
           );
           invoiceProvider.setSelectedCustomer(customer);
-          _customerSearchController.text = customerName;
         }
       }
 
-      if (invoice['narration'] != null && invoice['narration'] != false) {
-        _notesController.text = invoice['narration'].toString();
-      }
+      // Odoo keeps the note as HTML (`<p>…</p>`); the text box shows it as
+      // text.
+      _loadedNotes = htmlToPlainText(invoice['narration']);
+      _notesController.text = _loadedNotes;
 
       if (invoice['invoice_date'] != null && invoice['invoice_date'] != false) {
         try {
@@ -231,6 +288,24 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
             DateTime.parse(invoice['invoice_date'].toString()),
           );
         } catch (e) {}
+      }
+
+      // The invoice's own due date and payment term. Saving writes both, so
+      // leaving them out would put the form's defaults (today plus 30 days, no
+      // term) on the invoice.
+      if (invoice['invoice_date_due'] != null &&
+          invoice['invoice_date_due'] != false) {
+        try {
+          invoiceProvider.setDueDate(
+            DateTime.parse(invoice['invoice_date_due'].toString()),
+          );
+        } catch (e) {}
+      }
+      final term = invoice['invoice_payment_term_id'];
+      if (term is List && term.length > 1 && term[0] is int) {
+        invoiceProvider.setSelectedPaymentTerm(
+          PaymentTerm(id: term[0] as int, name: term[1].toString()),
+        );
       }
 
       if (invoice['invoice_line_ids'] != null &&
@@ -246,6 +321,10 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
             'quantity',
             'price_unit',
             'price_subtotal',
+            // The same on Odoo 17 to 20: kept so saving the invoice does not
+            // lose a line's discount or turn a heading into a billed item.
+            'discount',
+            'display_type',
           ];
 
           String? uomField;
@@ -298,48 +377,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
           }
 
           if (linesData != null && linesData is List) {
-            invoiceProvider.invoiceLines.clear();
-
-            for (var line in linesData) {
-              try {
-                final bool hasProduct =
-                    line['product_id'] != null && line['product_id'] != false;
-
-                final int productId;
-                final String productName;
-
-                if (hasProduct) {
-                  productId = line['product_id'] is List
-                      ? line['product_id'][0]
-                      : line['product_id'];
-                  productName = line['product_id'] is List
-                      ? line['product_id'][1]
-                      : line['name'];
-                } else {
-                  productId = 0;
-                  productName = line['name'] ?? 'Unnamed line';
-                }
-
-                final quantity = (line['quantity'] as num?)?.toDouble() ?? 1.0;
-                final unitPrice =
-                    (line['price_unit'] as num?)?.toDouble() ?? 0.0;
-
-                final product = Product(
-                  id: productId.toString(),
-                  name: productName,
-                  listPrice: unitPrice,
-                  qtyAvailable: 0,
-                  variantCount: 1,
-                  defaultCode: '',
-                );
-
-                await invoiceProvider.addInvoiceLine(
-                  product,
-                  quantity,
-                  unitPrice,
-                );
-              } catch (lineError) {}
-            }
+            // Each line as the invoice has it — its own taxes, unit of
+            // measure, discount and text, and no product at all when it has
+            // none (a down payment, a free-text item) — in the invoice's order.
+            await invoiceProvider.loadInvoiceLines([
+              for (final row in linesData)
+                if (row is Map)
+                  invoiceLineFromMoveLine(row.cast<String, dynamic>()),
+            ]);
           } else {}
         } else {}
       } else {}
@@ -352,10 +397,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
 
   Future<void> _updateInvoice(CreateInvoiceProvider invoiceProvider) async {
     try {
-      final client = await OdooSessionManager.getClient();
-      if (client == null) throw Exception('No active session');
-
-      final invoiceId = widget.invoiceToEdit!['id'];
+      final invoiceId = widget.invoiceToEdit!['id'] as int;
 
       Map<String, dynamic> updateData = {
         'partner_id': invoiceProvider.selectedCustomer!.id,
@@ -383,47 +425,27 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
         updateData['invoice_origin'] = invoiceProvider.selectedSaleOrder!.name;
       }
 
-      if (_notesController.text.trim().isNotEmpty) {
-        updateData['narration'] = _notesController.text.trim();
-      } else {
-        updateData['narration'] = false;
+      final notes = _notesController.text.trim();
+      if (notes != _loadedNotes.trim()) {
+        updateData['narration'] = plainTextToHtml(notes) ?? false;
       }
 
-      final invoiceLines = <List<dynamic>>[];
-
-      if (widget.invoiceToEdit!['invoice_line_ids'] != null) {
-        final existingLineIds =
-            (widget.invoiceToEdit!['invoice_line_ids'] as List).cast<int>();
-        for (final lineId in existingLineIds) {
-          invoiceLines.add([2, lineId, false]);
-        }
-      }
-
-      for (final line in invoiceProvider.invoiceLines) {
-        final productId = line['product_id'];
-        if (productId == null) continue;
-
-        final lineData = {
-          'product_id': productId,
-          'name': line['product_name'],
-          'quantity': line['quantity'],
-          'price_unit': line['unit_price'],
-        };
-
-        invoiceLines.add([0, 0, lineData]);
-      }
+      // A line that was on the invoice is updated where it is, so what Odoo
+      // hangs on it (the sale order line it bills) stays; new lines are
+      // created and the ones taken out deleted. No line is sent with a product
+      // id of 0: a line without a product is sent without one.
+      final existingLineIds = widget.invoiceToEdit!['invoice_line_ids'] is List
+          ? (widget.invoiceToEdit!['invoice_line_ids'] as List).cast<int>()
+          : const <int>[];
+      final invoiceLines = invoiceLineCommands(
+        existingLineIds,
+        invoiceProvider.invoiceLines,
+      );
 
       updateData['invoice_line_ids'] = invoiceLines;
 
-      await client.callKw({
-        'model': 'account.move',
-        'method': 'write',
-        'args': [
-          [invoiceId],
-          updateData,
-        ],
-        'kwargs': {},
-      });
+      // Writes it and tells every list and page that shows the invoice.
+      await InvoiceService.instance.updateInvoice(invoiceId, updateData);
     } catch (e) {
       rethrow;
     }
@@ -431,15 +453,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
 
   @override
   void dispose() {
+    // After this frame: the provider tells its listeners, which must not
+    // happen while the tree is being taken down. The provider is held, not
+    // looked up: this screen's context is gone by then.
+    final provider = _invoiceProvider;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      try {
-        final provider = context.read<CreateInvoiceProvider>();
-        provider.resetForm();
-      } catch (_) {}
+      provider.releaseForm(this);
     });
-    _customerSearchController.dispose();
+    _notesController.removeListener(_onFormChanged);
     _notesController.dispose();
-    _productSearchController.dispose();
     _debounce?.cancel();
 
     super.dispose();
@@ -648,20 +670,11 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
   }
 
   Widget _buildCustomerDropdown(CreateInvoiceProvider invoiceProvider) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return CustomerTypeAhead(
-      controller: _customerSearchController,
       labelText: 'Customer',
-      isDark: isDark,
-      onCustomerSelected: (customer) {
-        invoiceProvider.setSelectedCustomer(customer);
-        _customerSearchController.text = customer.name;
-      },
-      onClear: () {
-        invoiceProvider.setSelectedCustomer(null);
-        _customerSearchController.clear();
-      },
+      isRequired: true,
+      onCustomerSelected: invoiceProvider.setSelectedCustomer,
+      onClear: () => invoiceProvider.setSelectedCustomer(null),
       validator: (value) => invoiceProvider.selectedCustomer == null
           ? 'Please select a customer'
           : null,
@@ -796,7 +809,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
                     icon: const Icon(HugeIcons.strokeRoundedCancel01),
                     onPressed: () {
                       invoiceProvider.setSelectedCustomer(null);
-                      _customerSearchController.clear();
                     },
                   ),
               ],
@@ -925,34 +937,24 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
                   ],
                 ),
                 const SizedBox(height: 12),
-                CustomDropdownField(
-                  value: invoiceProvider.selectedPaymentTerm?.id.toString(),
-                  labelText: 'Payment Terms',
+                MoboSelectField<int>(
+                  label: 'Payment Terms',
                   hintText: 'Select payment terms',
-                  isDark: isDark,
-                  items: [
-                    const DropdownMenuItem<String>(
-                      value: null,
-                      child: Text('Select Payment Term'),
-                    ),
-                    ...invoiceProvider.paymentTerms.map(
-                      (term) => DropdownMenuItem<String>(
-                        value: term.id.toString(),
-                        child: Text(term.name),
-                      ),
-                    ),
+                  value: invoiceProvider.selectedPaymentTerm?.id,
+                  options: [
+                    for (final term in invoiceProvider.paymentTerms)
+                      MoboOption(value: term.id, label: term.name),
                   ],
-                  onChanged: (value) {
-                    if (value == null) {
+                  onChanged: (id) {
+                    if (id == null) {
                       invoiceProvider.setSelectedPaymentTerm(null);
                     } else {
                       final term = invoiceProvider.paymentTerms.firstWhere(
-                        (t) => t.id.toString() == value,
+                        (t) => t.id == id,
                       );
                       invoiceProvider.setSelectedPaymentTerm(term);
                     }
                   },
-                  validator: (value) => null,
                 ),
               ],
             ),
@@ -1085,16 +1087,14 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 ProductTypeAhead(
-                  controller: _productSearchController,
                   labelText: 'Search Product to Add',
-                  isDark: isDark,
+                  isRequired: true,
                   onProductSelected: (product) {
                     invoiceProvider.addInvoiceLine(
                       product,
                       1.0,
                       product.listPrice,
                     );
-                    _productSearchController.clear();
                   },
                 ),
                 const SizedBox(height: 20),
@@ -2501,60 +2501,30 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
 
     final isEditing = widget.invoiceToEdit != null;
 
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primaryColor = Theme.of(context).primaryColor;
-    BuildContext? dialogContext;
+    // The loading dialog is closed exactly once, on whichever path ends the
+    // save, and before the page is popped or an error is shown. `showDialog`
+    // has pushed its route by the time it returns, so the pop below takes the
+    // dialog off even when the save fails before the dialog has been built —
+    // which tracking the builder's context could not (it was still null then,
+    // and the dialog stayed up for good). A second pop would take this page
+    // off the stack instead.
+    final navigator = Navigator.of(context, rootNavigator: true);
+    var dialogOpen = true;
+    void closeDialog() {
+      if (!dialogOpen) return;
+      dialogOpen = false;
+      if (navigator.canPop()) navigator.pop();
+    }
 
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
-        dialogContext = ctx;
-        return Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-          elevation: 8,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  decoration: BoxDecoration(
-                    color: primaryColor.withOpacity(0.08),
-                    shape: BoxShape.circle,
-                  ),
-                  padding: const EdgeInsets.all(16),
-                  child: LoadingAnimationWidget.fourRotatingDots(
-                    color: Theme.of(context).colorScheme.primary,
-                    size: 50,
-                  ),
-                ),
-                const SizedBox(height: 24),
-                Text(
-                  isEditing ? 'Updating invoice...' : 'Creating invoice...',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  isEditing
-                      ? 'Please wait while we update your invoice.'
-                      : 'Please wait while we create your invoice.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: isDark ? Colors.grey[300] : Colors.grey[700],
-                  ),
-                ),
-              ],
-            ),
-          ),
+        return LoadingDialog(
+          message: isEditing ? 'Updating invoice...' : 'Creating invoice...',
+          subtitle: isEditing
+              ? 'Please wait while we update your invoice.'
+              : 'Please wait while we create your invoice.',
         );
       },
     );
@@ -2563,14 +2533,15 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
       if (isEditing) {
         await _updateInvoice(invoiceProvider);
 
-        if (dialogContext != null && Navigator.of(dialogContext!).canPop()) {
-          Navigator.of(dialogContext!).pop();
-        }
+        closeDialog();
 
+        // The invoice page that opened this edit reloads itself and says
+        // "Invoice updated successfully" once the new figures are on screen.
         if (mounted) {
           Navigator.pop(context, true);
         }
       } else {
+        invoiceProvider.setNotes(_notesController.text);
         await invoiceProvider.createInvoice(
           context,
           invoiceType: widget.invoiceType ?? 'regular',
@@ -2578,188 +2549,46 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
           downPaymentAmount: widget.downPaymentAmount,
         );
 
-        if (dialogContext != null && Navigator.of(dialogContext!).canPop()) {
-          Navigator.of(dialogContext!).pop();
-        }
+        closeDialog();
 
         if (mounted) {
           final invoiceName = invoiceProvider.lastCreatedInvoiceName;
           final errorMsg = invoiceProvider.errorMessage;
 
           if (errorMsg.isNotEmpty) {
-            final isDark = Theme.of(context).brightness == Brightness.dark;
-            showDialog(
-              context: context,
-              barrierDismissible: true,
-              builder: (ctx) => AlertDialog(
-                backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                elevation: isDark ? 0 : 8,
-                title: Text(
-                  'Failed to Create Invoice',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: isDark
-                        ? Colors.white
-                        : Theme.of(context).colorScheme.onSurface,
-                  ),
-                ),
-                content: Text(
-                  errorMsg,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: isDark
-                        ? Colors.grey[300]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                actionsPadding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
-                ),
-                actions: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: () => Navigator.of(ctx).pop(),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: isDark
-                                ? Colors.grey[800]
-                                : Theme.of(context).colorScheme.primary,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 12,
-                            ),
-                            elevation: isDark ? 0 : 3,
-                          ),
-                          child: const Text(
-                            'OK',
-                            style: TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+            // Only the reason, in a snackbar.
+            CustomSnackbar.showError(
+              context,
+              OdooErrorHandler.toSnackbarMessage(
+                errorMsg,
+                fallback: 'Could not create the invoice. Please try again.',
               ),
             );
           } else if (invoiceName != null && invoiceName.isNotEmpty) {
             await showInvoiceCreatedConfettiDialog(context, invoiceName);
-            Navigator.pop(context, true);
+            if (mounted) {
+              // The message is not a route: popping straight after it pops
+              // this page, and it stays up over the page behind.
+              CustomSnackbar.showSuccess(
+                context,
+                invoiceCreatedMessage(invoiceName),
+              );
+              Navigator.pop(context, true);
+            }
           }
         }
       }
     } catch (e) {
-      if (dialogContext != null && Navigator.of(dialogContext!).canPop()) {
-        Navigator.of(dialogContext!).pop();
-      }
+      closeDialog();
 
       if (mounted) {
-        String errorMessage = e.toString();
-
-        if (errorMessage.contains('message:')) {
-          try {
-            final messageStart = errorMessage.indexOf('message:');
-            final messageContent = errorMessage.substring(
-              messageStart + 'message:'.length,
-            );
-
-            var messageEnd = messageContent.indexOf(', arguments:');
-            if (messageEnd == -1) {
-              messageEnd = messageContent.indexOf(', context:');
-            }
-            if (messageEnd == -1) {
-              messageEnd = messageContent.indexOf(', debug:');
-            }
-
-            if (messageEnd > 0) {
-              errorMessage = messageContent.substring(0, messageEnd).trim();
-
-              errorMessage = errorMessage
-                  .replaceAll(RegExp(r'\s+'), ' ')
-                  .trim();
-            }
-          } catch (parseError) {}
-        }
-
-        if (errorMessage.contains('Exception: ')) {
-          errorMessage = errorMessage.split('Exception: ')[1];
-        }
-
-        if (errorMessage.length > 500 ||
-            errorMessage.contains('OdooException')) {
-          errorMessage =
-              'An unexpected error occurred. Please try again or contact support if the problem persists.';
-        }
-
-        final isDark = Theme.of(context).brightness == Brightness.dark;
-        showDialog(
-          context: context,
-          barrierDismissible: true,
-          builder: (ctx) => AlertDialog(
-            backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            elevation: isDark ? 0 : 8,
-            title: Text(
-              isEditing
-                  ? 'Failed to Update Invoice'
-                  : 'Failed to Create Invoice',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w700,
-                color: isDark
-                    ? Colors.white
-                    : Theme.of(context).colorScheme.onSurface,
-              ),
-            ),
-            content: Text(
-              errorMessage,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: isDark
-                    ? Colors.grey[300]
-                    : Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-            actionsPadding: const EdgeInsets.symmetric(
-              horizontal: 16,
-              vertical: 12,
-            ),
-            actions: [
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: () => Navigator.of(ctx).pop(),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: isDark
-                            ? Colors.grey[800]
-                            : Theme.of(context).colorScheme.primary,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 12,
-                        ),
-                        elevation: isDark ? 0 : 3,
-                      ),
-                      child: const Text(
-                        'OK',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
+        CustomSnackbar.showError(
+          context,
+          OdooErrorHandler.toSnackbarMessage(
+            e,
+            fallback: isEditing
+                ? 'Could not update the invoice. Please try again.'
+                : 'Could not create the invoice. Please try again.',
           ),
         );
       }
@@ -3287,9 +3116,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
               ),
             ),
           );
-          return (Platform.isAndroid && hasUnsavedData)
-              ? WillPopScope(onWillPop: () => handleWillPop(), child: popChild)
-              : popChild;
+          return withBackGuard(popChild);
         }
 
         final contactProvider = context.watch<ContactProvider>();
@@ -3333,11 +3160,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
 
         return Consumer<CreateInvoiceProvider>(
           builder: (context, invoiceProvider, _) {
-            if (widget.customer != null) {
-              _customerSearchController.text = widget.customer!.name;
-            }
-
-            if (invoiceProvider.isLoadingCustomers ||
+            if (_isLoadingForEdit ||
+                invoiceProvider.isLoadingCustomers ||
                 invoiceProvider.isLoadingSaleOrders) {
               final popChildLoading = PopScope(
                 canPop: !hasUnsavedData,
@@ -3377,12 +3201,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
                   body: _buildCreateInvoiceShimmer(),
                 ),
               );
-              return (Platform.isAndroid && hasUnsavedData)
-                  ? WillPopScope(
-                      onWillPop: () => handleWillPop(),
-                      child: popChildLoading,
-                    )
-                  : popChildLoading;
+              return withBackGuard(popChildLoading);
             }
 
             final popChildMain = PopScope(
@@ -3454,22 +3273,20 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
                             _buildTotalsSection(context, invoiceProvider),
 
                           _buildNotesSection(context),
-                          const SizedBox(height: 24),
-                          _buildCreateInvoiceButton(context, invoiceProvider),
-                          const SizedBox(height: 16),
                         ],
                       ),
                     ),
                   ),
                 ),
+                bottomNavigationBar: MoboBottomActionBar(
+                  child: _buildCreateInvoiceButton(context, invoiceProvider),
+                ),
               ),
             );
-            return (Platform.isAndroid && hasUnsavedData)
-                ? WillPopScope(
-                    onWillPop: () => handleWillPop(),
-                    child: popChildMain,
-                  )
-                : popChildMain;
+            // The back guard depends on the platform alone, so the form is
+            // never rebuilt from scratch (and sent back to the top) when it is
+            // first changed.
+            return withBackGuard(popChildMain);
           },
         );
       },
@@ -3700,6 +3517,16 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
     );
   }
 
+  /// What the form refuses to submit without: a customer and, unless this is a
+  /// down payment (whose one line is generated), at least one invoice line.
+  bool get _requiredFieldsFilled {
+    final provider = context.read<CreateInvoiceProvider>();
+    final isDownPayment =
+        widget.invoiceType == 'percentage' || widget.invoiceType == 'fixed';
+    return provider.selectedCustomer != null &&
+        (isDownPayment || provider.invoiceLines.isNotEmpty);
+  }
+
   Widget _buildCreateInvoiceButton(
     BuildContext context,
     CreateInvoiceProvider invoiceProvider,
@@ -3708,79 +3535,64 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
     final isDark = theme.brightness == Brightness.dark;
     final buttonColor = theme.primaryColor;
 
-    final isDownPayment =
-        widget.invoiceType == 'percentage' || widget.invoiceType == 'fixed';
+    // Editing also needs a real change, so Update stays off until there is
+    // something to save.
     final canCreate =
-        invoiceProvider.selectedCustomer != null &&
-        (isDownPayment || invoiceProvider.invoiceLines.isNotEmpty) &&
+        _requiredFieldsFilled &&
         !invoiceProvider.isLoading &&
-        !invoiceProvider.isCreatingInvoice;
+        !invoiceProvider.isCreatingInvoice &&
+        (widget.invoiceToEdit == null || _changes.isDirty);
 
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(8),
-        boxShadow: [
-          BoxShadow(
-            color: isDark
-                ? Colors.black.withOpacity(0.18)
-                : Colors.black.withOpacity(0.06),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: SizedBox(
-        width: double.infinity,
-        child: ElevatedButton.icon(
-          icon: (invoiceProvider.isLoading || invoiceProvider.isCreatingInvoice)
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                  ),
-                )
-              : const Icon(
-                  HugeIcons.strokeRoundedInvoice01,
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton.icon(
+        icon: (invoiceProvider.isLoading || invoiceProvider.isCreatingInvoice)
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
+              )
+            : const Icon(
+                HugeIcons.strokeRoundedInvoice01,
+                color: Colors.white,
+                size: 20,
+              ),
+        label: (invoiceProvider.isLoading || invoiceProvider.isCreatingInvoice)
+            ? const Text(
+                'Creating Invoice...',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
                   color: Colors.white,
-                  size: 20,
                 ),
-          label:
-              (invoiceProvider.isLoading || invoiceProvider.isCreatingInvoice)
-              ? const Text(
-                  'Creating Invoice...',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
-                  ),
-                )
-              : Text(
-                  widget.invoiceToEdit != null
-                      ? 'Update Invoice'
-                      : 'Create Invoice',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
-                  ),
+              )
+            : Text(
+                widget.invoiceToEdit != null
+                    ? 'Update Invoice'
+                    : 'Create Invoice',
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
                 ),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: buttonColor,
-            foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-            elevation: 0,
-            shadowColor: Colors.transparent,
-            disabledBackgroundColor: isDark
-                ? Colors.grey[700]!
-                : Colors.grey[400]!,
+              ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: buttonColor,
+          foregroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
           ),
-          onPressed: canCreate ? () => _saveInvoice(invoiceProvider) : null,
+          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+          elevation: 0,
+          shadowColor: Colors.transparent,
+          disabledBackgroundColor: isDark
+              ? Colors.grey[700]!
+              : Colors.grey[400]!,
         ),
+        onPressed: canCreate ? () => _saveInvoice(invoiceProvider) : null,
       ),
     );
   }
@@ -5034,6 +4846,7 @@ class _QuantityDialogState extends State<QuantityDialog> {
                     child: CustomTextField(
                       controller: _quantityController,
                       labelText: 'Quantity',
+                      isRequired: true,
                       isDark: isDark,
                       keyboardType: const TextInputType.numberWithOptions(
                         decimal: true,
@@ -5067,6 +4880,7 @@ class _QuantityDialogState extends State<QuantityDialog> {
                         return CustomTextField(
                           controller: _priceController,
                           labelText: 'Unit Price ($currencySymbol)',
+                          isRequired: true,
                           isDark: isDark,
                           keyboardType: const TextInputType.numberWithOptions(
                             decimal: true,
@@ -5153,50 +4967,12 @@ class _QuantityDialogState extends State<QuantityDialog> {
                 ),
               ),
               const SizedBox(height: 24),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed: _isLoading ? null : () => Navigator.pop(context),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 12,
-                      ),
-                    ),
-                    child: Text(
-                      'Cancel',
-                      style: TextStyle(
-                        color: isDark ? Colors.white : AppTheme.primaryColor,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  FilledButton(
-                    onPressed: _isLoading ? null : _handleConfirm,
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 12,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                    child: _isLoading
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : Text(
-                            'Add to Invoice',
-                            style: TextStyle(
-                              color: isDark ? Colors.white : Colors.white,
-                            ),
-                          ),
-                  ),
-                ],
+              MoboDialogButtons(
+                secondaryLabel: 'Cancel',
+                onSecondary: () => Navigator.pop(context),
+                primaryLabel: 'Add to Invoice',
+                onPrimary: _handleConfirm,
+                isLoading: _isLoading,
               ),
             ],
           ),

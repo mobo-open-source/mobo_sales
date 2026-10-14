@@ -5,6 +5,7 @@ import '../../models/product.dart';
 import '../../services/product_service.dart';
 import '../../widgets/confetti_dialogs.dart';
 import '../../utils/data_loss_warning_mixin.dart';
+import '../../utils/form_change_tracker.dart';
 import 'dart:io';
 import 'dart:convert';
 import 'package:image_picker/image_picker.dart';
@@ -14,8 +15,11 @@ import '../../services/connectivity_service.dart';
 import '../../services/session_service.dart';
 import '../../widgets/connection_status_widget.dart';
 import '../../widgets/custom_text_field.dart';
-import '../../widgets/custom_dropdown.dart';
+import '../../shared/widgets/mobo/mobo_bottom_action_bar.dart';
+import '../../shared/widgets/mobo/mobo_checkbox.dart';
+import '../../shared/widgets/mobo/mobo_select_field.dart';
 import '../../widgets/custom_snackbar.dart';
+import '../../widgets/loading_dialog.dart';
 import '../../services/odoo_error_classifier.dart';
 
 class CreateProductScreen extends StatefulWidget {
@@ -43,6 +47,9 @@ class _CreateProductScreenState extends State<CreateProductScreen>
   @override
   bool get hasUnsavedData {
     if (_dropdownsLoading) return false;
+    // An edit form has unsaved data only once it differs from the product it
+    // opened with, not because the product fills its fields.
+    if (_isEditMode) return _changes.isDirty;
 
     return _nameController.text.trim().isNotEmpty ||
         _defaultCodeController.text.trim().isNotEmpty ||
@@ -115,7 +122,53 @@ class _CreateProductScreenState extends State<CreateProductScreen>
   String? _pickedImageBase64;
   final ImagePicker _picker = ImagePicker();
 
+  /// The product's own photo, decoded once. The screen rebuilds as the user
+  /// types, and a new [MemoryImage] on every build would reload the photo.
+  MemoryImage? _existingPhoto;
+
   bool get _isNameFilled => _nameController.text.trim().isNotEmpty;
+
+  /// Every text field the user can edit.
+  List<TextEditingController> get _trackedControllers => [
+    _nameController,
+    _defaultCodeController,
+    _barcodeController,
+    _descriptionController,
+    _listPriceController,
+    _standardPriceController,
+    _weightController,
+    _volumeController,
+  ];
+
+  /// Whether an edit form differs from the product it opened with. The submit
+  /// button and [hasUnsavedData] read it; [_fetchDropdowns], the last step that
+  /// fills the form in, sets the baseline.
+  late final FormChangeTracker _changes = FormChangeTracker(
+    () => {
+      'name': _nameController.text.trim(),
+      'defaultCode': _defaultCodeController.text.trim(),
+      'barcode': _barcodeController.text.trim(),
+      'description': _descriptionController.text.trim(),
+      'listPrice': _listPriceController.text.trim(),
+      'costPrice': _standardPriceController.text.trim(),
+      'weight': _weightController.text.trim(),
+      'volume': _volumeController.text.trim(),
+      'category': _selectedCategory,
+      'tax': _selectedTax,
+      'uom': _selectedUOM,
+      'currency': _selectedCurrency,
+      'active': _isActive,
+      'canBeSold': _canBeSold,
+      'canBePurchased': _canBePurchased,
+      // A flag, not the bytes: the map is rebuilt on every check. The base64 is
+      // what the save sends, so it is the one that says a new image is ready.
+      'imageChanged': _pickedImageBase64 != null,
+    },
+  );
+
+  void _onFormChanged() {
+    if (mounted) setState(() {});
+  }
 
   @override
   void initState() {
@@ -156,9 +209,12 @@ class _CreateProductScreenState extends State<CreateProductScreen>
     _canBePurchased = p?.purchaseOk ?? true;
 
     _fetchDropdowns();
-    _nameController.addListener(() {
-      setState(() {});
-    });
+    // Rebuild as the user types so the submit button follows the form. Create
+    // mode has only ever followed the name; an edit form follows every field,
+    // for its changed check and the unsaved-changes guard.
+    for (final c in _isEditMode ? _trackedControllers : [_nameController]) {
+      c.addListener(_onFormChanged);
+    }
 
     _pickedImageFile = null;
     _pickedImageBase64 = null;
@@ -166,6 +222,9 @@ class _CreateProductScreenState extends State<CreateProductScreen>
 
   @override
   void dispose() {
+    for (final c in _trackedControllers) {
+      c.removeListener(_onFormChanged);
+    }
     _nameController.dispose();
     _defaultCodeController.dispose();
     _barcodeController.dispose();
@@ -317,6 +376,14 @@ class _CreateProductScreenState extends State<CreateProductScreen>
       _isLoading = true;
     });
 
+    // A modal dialog keeps the form untouched while the server works: nothing
+    // behind it can be edited or tapped until the save has finished.
+    final loading = LoadingDialog.open(
+      context,
+      message: _isEditMode ? 'Saving Changes' : 'Creating Product',
+      subtitle: 'Please wait while we save the product',
+    );
+
     try {
       if (!_isEditMode) {
         final allowed = await ProductService.instance.canCreateProduct();
@@ -358,6 +425,8 @@ class _CreateProductScreenState extends State<CreateProductScreen>
           return;
         }
 
+        loading.close();
+
         if (success) {
           if (mounted) {
             Navigator.pop(context, true);
@@ -378,6 +447,9 @@ class _CreateProductScreenState extends State<CreateProductScreen>
         if (!mounted) {
           return;
         }
+
+        // The saving dialog goes before the confetti one opens, not under it.
+        loading.close();
 
         if (resultProduct != null) {
           final productName = resultProduct.name ?? _nameController.text.trim();
@@ -408,6 +480,9 @@ class _CreateProductScreenState extends State<CreateProductScreen>
         } catch (e) {}
       }
     } finally {
+      // Whatever way the save ended (success, a refusal, an error, a timeout),
+      // the dialog must not outlive it. Closing twice does nothing.
+      loading.close();
       if (mounted) {
         setState(() {
           _isLoading = false;
@@ -665,6 +740,11 @@ class _CreateProductScreenState extends State<CreateProductScreen>
         return;
       }
 
+      // Asked before the fill below changes the selects. An untouched edit form
+      // is baselined after it; one the user has edited (a reload from the form)
+      // keeps its edits as changes.
+      final untouched = _isEditMode && !_changes.isDirty;
+
       setState(() {
         _categoryOptions = results[0] ?? [];
         _taxOptions = results[1] ?? [];
@@ -699,6 +779,10 @@ class _CreateProductScreenState extends State<CreateProductScreen>
             }
           }
         }
+
+        // The options were the last thing to fill the form in, so this is the
+        // product as the user first sees it.
+        if (untouched) _changes.markClean();
 
         if (!silentRevalidate) {
           _dropdownsLoading = false;
@@ -759,7 +843,9 @@ class _CreateProductScreenState extends State<CreateProductScreen>
       ProductService.instance.clearDropdownCaches();
       await _fetchDropdowns(forceRefresh: true);
       if (!mounted) return;
-      CustomSnackbar.showSuccess(context, 'Options updated');
+      // The "Refreshing options..." message has done its work; nothing says the
+      // refresh succeeded.
+      CustomSnackbar.dismiss();
     } catch (e) {}
   }
 
@@ -829,6 +915,17 @@ class _CreateProductScreenState extends State<CreateProductScreen>
         ],
       ),
     );
+  }
+
+  /// Options for a Mobo select over the `{value, label}` maps the product
+  /// service returns. Entries without a value cannot be selected, so they are
+  /// skipped.
+  List<MoboOption<String>> _mapOptions(List<Map<String, String>> items) {
+    return [
+      for (final m in items)
+        if (m['value'] != null)
+          MoboOption<String>(value: m['value']!, label: m['label'] ?? ''),
+    ];
   }
 
   Widget _shimmerField(bool isDark, {double height = 44}) {
@@ -1015,9 +1112,7 @@ class _CreateProductScreenState extends State<CreateProductScreen>
           },
           child: _buildContent(context, isDark, primaryColor),
         );
-        return (Platform.isAndroid && hasUnsavedData)
-            ? WillPopScope(onWillPop: () => handleWillPop(), child: popChild)
-            : popChild;
+        return withBackGuard(popChild);
       },
     );
   }
@@ -1143,6 +1238,13 @@ class _CreateProductScreenState extends State<CreateProductScreen>
                             _taxOptions = [];
                             _uomOptions = [];
                             _currencyOptions = [];
+
+                            // The options never loaded, so the form is as loaded
+                            // as it will get. Baseline it, unless the user has
+                            // already edited it.
+                            if (_isEditMode && !_changes.isDirty) {
+                              _changes.markClean();
+                            }
                           });
                         },
                         icon: Icon(
@@ -1363,13 +1465,13 @@ class _CreateProductScreenState extends State<CreateProductScreen>
           final base64String = imageUrl.contains(',')
               ? imageUrl.split(',').last
               : imageUrl;
-          final bytes = base64Decode(base64String);
+          _existingPhoto ??= MemoryImage(base64Decode(base64String));
           photoWidget = CircleAvatar(
             radius: 48,
             backgroundColor: isDark
                 ? Colors.grey.shade200
                 : Theme.of(context).primaryColor.withOpacity(.1),
-            backgroundImage: MemoryImage(bytes),
+            backgroundImage: _existingPhoto,
           );
         } catch (e) {
           photoWidget = CircleAvatar(
@@ -1427,6 +1529,47 @@ class _CreateProductScreenState extends State<CreateProductScreen>
         ],
       ),
       backgroundColor: isDark ? Colors.grey[900] : Colors.white,
+      bottomNavigationBar: MoboBottomActionBar(
+        child: SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
+            // An edit form also needs something to save: it stays disabled
+            // until a value differs from the product it opened with.
+            onPressed:
+                (_isLoading ||
+                    !_isNameFilled ||
+                    (_isEditMode && !_changes.isDirty))
+                ? null
+                : save,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: primaryColor,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              disabledBackgroundColor:
+                  Theme.of(context).brightness == Brightness.dark
+                  ? Colors.grey[700]!
+                  : Colors.grey[400]!,
+            ),
+            child: _isLoading
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      color: Colors.white,
+                      strokeWidth: 2,
+                    ),
+                  )
+                : Text(
+                    _isEditMode ? 'Save Changes' : 'Create Product',
+                    style: TextStyle(fontSize: 16),
+                  ),
+          ),
+        ),
+      ),
       body: SafeArea(
         top: false,
         left: false,
@@ -1471,7 +1614,8 @@ class _CreateProductScreenState extends State<CreateProductScreen>
                 const SizedBox(height: 16),
                 CustomTextField(
                   controller: _nameController,
-                  labelText: 'Product Name *',
+                  labelText: 'Product Name',
+                  isRequired: true,
                   hintText: 'Enter product name',
                   isDark: isDark,
                   validator: (v) {
@@ -1503,35 +1647,23 @@ class _CreateProductScreenState extends State<CreateProductScreen>
                   ),
                 ),
                 const SizedBox(height: 12),
-                CustomDropdownField(
+                MoboSelectField<String>(
                   value:
                       _categoryOptions.any(
                         (m) => m['value'] == _selectedCategory,
                       )
                       ? _selectedCategory
                       : null,
-                  labelText: 'Category',
-                  hintText: 'Select a product category',
-                  isDark: isDark,
-                  items: _dropdownsLoading
-                      ? [
-                          DropdownMenuItem(
-                            value: null,
-                            child: Text('Loading...'),
-                          ),
-                        ]
-                      : _categoryOptions
-                            .map(
-                              (m) => DropdownMenuItem(
-                                value: m['value'],
-                                child: Text(m['label']!),
-                              ),
-                            )
-                            .toList(),
-                  onChanged: _dropdownsLoading
-                      ? null
-                      : (v) => setState(() => _selectedCategory = v),
-                  validator: (v) => null,
+                  label: 'Category',
+                  hintText: _dropdownsLoading
+                      ? 'Loading...'
+                      : 'Select a product category',
+                  options: _dropdownsLoading
+                      ? const []
+                      : _mapOptions(_categoryOptions),
+                  searchable: true,
+                  enabled: !_dropdownsLoading,
+                  onChanged: (v) => setState(() => _selectedCategory = v),
                 ),
                 const SizedBox(height: 12),
                 CustomTextField(
@@ -1566,91 +1698,53 @@ class _CreateProductScreenState extends State<CreateProductScreen>
                   },
                 ),
                 const SizedBox(height: 12),
-                CustomDropdownField(
+                MoboSelectField<String>(
                   value: _taxOptions.any((m) => m['value'] == _selectedTax)
                       ? _selectedTax
                       : null,
-                  labelText: 'Tax',
-                  hintText: 'Select applicable tax',
-                  isDark: isDark,
-                  items: _dropdownsLoading
-                      ? [
-                          DropdownMenuItem(
-                            value: null,
-                            child: Text('Loading...'),
-                          ),
-                        ]
-                      : _taxOptions
-                            .map(
-                              (m) => DropdownMenuItem(
-                                value: m['value'],
-                                child: Text(m['label']!),
-                              ),
-                            )
-                            .toList(),
-                  onChanged: _dropdownsLoading
-                      ? null
-                      : (v) => setState(() => _selectedTax = v),
-                  validator: (v) => null,
+                  label: 'Tax',
+                  hintText: _dropdownsLoading
+                      ? 'Loading...'
+                      : 'Select applicable tax',
+                  options: _dropdownsLoading
+                      ? const []
+                      : _mapOptions(_taxOptions),
+                  searchable: true,
+                  enabled: !_dropdownsLoading,
+                  onChanged: (v) => setState(() => _selectedTax = v),
                 ),
                 const SizedBox(height: 12),
-                CustomDropdownField(
+                MoboSelectField<String>(
                   value: _uomOptions.any((m) => m['value'] == _selectedUOM)
                       ? _selectedUOM
                       : null,
-                  labelText: 'Unit of Measure',
-                  hintText: 'Select unit',
-                  isDark: isDark,
-                  items: _dropdownsLoading
-                      ? [
-                          DropdownMenuItem(
-                            value: null,
-                            child: Text('Loading...'),
-                          ),
-                        ]
-                      : _uomOptions
-                            .map(
-                              (m) => DropdownMenuItem(
-                                value: m['value'],
-                                child: Text(m['label']!),
-                              ),
-                            )
-                            .toList(),
-                  onChanged: _dropdownsLoading
-                      ? null
-                      : (v) => setState(() => _selectedUOM = v),
-                  validator: (v) => null,
+                  label: 'Unit of Measure',
+                  hintText: _dropdownsLoading ? 'Loading...' : 'Select unit',
+                  options: _dropdownsLoading
+                      ? const []
+                      : _mapOptions(_uomOptions),
+                  searchable: true,
+                  enabled: !_dropdownsLoading,
+                  onChanged: (v) => setState(() => _selectedUOM = v),
                 ),
                 const SizedBox(height: 12),
-                CustomDropdownField(
+                MoboSelectField<String>(
                   value:
                       _currencyOptions.any(
                         (m) => m['value'] == _selectedCurrency,
                       )
                       ? _selectedCurrency
                       : null,
-                  labelText: 'Currency',
-                  hintText: 'Select currency',
-                  isDark: isDark,
-                  items: _dropdownsLoading
-                      ? [
-                          DropdownMenuItem(
-                            value: null,
-                            child: Text('Loading...'),
-                          ),
-                        ]
-                      : _currencyOptions
-                            .map(
-                              (m) => DropdownMenuItem(
-                                value: m['value'],
-                                child: Text(m['label']!),
-                              ),
-                            )
-                            .toList(),
-                  onChanged: _dropdownsLoading
-                      ? null
-                      : (v) => setState(() => _selectedCurrency = v),
-                  validator: (v) => null,
+                  label: 'Currency',
+                  hintText: _dropdownsLoading
+                      ? 'Loading...'
+                      : 'Select currency',
+                  options: _dropdownsLoading
+                      ? const []
+                      : _mapOptions(_currencyOptions),
+                  searchable: true,
+                  enabled: !_dropdownsLoading,
+                  onChanged: (v) => setState(() => _selectedCurrency = v),
                 ),
                 const SizedBox(height: 12),
                 CustomTextField(
@@ -1694,77 +1788,22 @@ class _CreateProductScreenState extends State<CreateProductScreen>
                   validator: (v) => null,
                 ),
                 const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Checkbox(
-                      checkColor: Colors.white,
-                      activeColor: isDark ? Colors.grey : primaryColor,
-                      value: _isActive,
-                      onChanged: (v) => setState(() => _isActive = v ?? true),
-                    ),
-                    const Text('Active'),
-                  ],
+                MoboCheckboxField(
+                  label: 'Active',
+                  value: _isActive,
+                  onChanged: (v) => setState(() => _isActive = v),
                 ),
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Checkbox(
-                      checkColor: Colors.white,
-                      activeColor: isDark ? Colors.grey : primaryColor,
-                      value: _canBeSold,
-                      onChanged: (v) => setState(() => _canBeSold = v ?? true),
-                    ),
-                    const Text('Can be Sold'),
-                  ],
+                MoboCheckboxField(
+                  label: 'Can be Sold',
+                  value: _canBeSold,
+                  onChanged: (v) => setState(() => _canBeSold = v),
                 ),
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Checkbox(
-                      checkColor: Colors.white,
-                      activeColor: isDark ? Colors.grey : primaryColor,
-                      value: _canBePurchased,
-                      onChanged: (v) =>
-                          setState(() => _canBePurchased = v ?? true),
-                    ),
-                    const Text('Can be Purchased'),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: (_isLoading || !_isNameFilled) ? null : save,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: primaryColor,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(
-                        vertical: 14,
-                        horizontal: 16,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      disabledBackgroundColor:
-                          Theme.of(context).brightness == Brightness.dark
-                          ? Colors.grey[700]!
-                          : Colors.grey[400]!,
-                    ),
-                    child: _isLoading
-                        ? const SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
-                            ),
-                          )
-                        : Text(
-                            _isEditMode ? 'Save Changes' : 'Create Product',
-                            style: TextStyle(fontSize: 16),
-                          ),
-                  ),
+                MoboCheckboxField(
+                  label: 'Can be Purchased',
+                  value: _canBePurchased,
+                  onChanged: (v) => setState(() => _canBePurchased = v),
                 ),
               ],
             ),

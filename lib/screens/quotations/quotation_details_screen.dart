@@ -5,7 +5,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:hugeicons/hugeicons.dart';
-import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'package:mobo_sales/screens/invoices/invoice_details_screen.dart';
 import 'package:mobo_sales/screens/invoices/invoice_list_screen.dart';
 import 'package:mobo_sales/screens/deliveries/delivery_list_screen.dart';
@@ -26,10 +25,19 @@ import '../../providers/quotation_provider.dart';
 import '../../providers/last_opened_provider.dart';
 import '../../models/contact.dart';
 import '../../models/quote.dart';
+import '../../models/sale_order_compat.dart';
+import '../../services/field_validation_service.dart';
+import '../../services/odoo_error_handler.dart';
 import '../../services/odoo_session_manager.dart';
+import '../../utils/invoice_name.dart';
+import '../../utils/odoo_version.dart';
+import '../../utils/quotation_status.dart';
 import 'package:flutter/foundation.dart';
 import '../../services/quotation_service.dart';
+import '../../shared/widgets/mobo/mobo_field_label.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import '../../widgets/attachment_card.dart';
+import '../../widgets/loading_dialog.dart';
 import '../../widgets/pdf_widget.dart';
 import '../../widgets/full_image_screen.dart';
 import '../../widgets/signature_widget.dart';
@@ -38,6 +46,8 @@ import '../quotations/create_quote_screen.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:open_file/open_file.dart';
+import 'package:mobo_sales/widgets/loading_skeletons.dart';
+import '../../services/data_change_bus.dart';
 
 String _safeString(dynamic value) {
   if (value == null || value == false) return '';
@@ -151,7 +161,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                 await _generatePdfWithDialog(
                   ({onBeforeOpen}) => PDFGenerator.generatePdfQuote(
                     context,
-                    widget.quotation,
+                    _localQuotation,
                     onBeforeOpen: onBeforeOpen,
                   ),
                 );
@@ -174,7 +184,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                 await _generatePdfWithDialog(
                   ({onBeforeOpen}) => PDFGenerator.generateAndSavePdf(
                     context,
-                    widget.quotation,
+                    _localQuotation,
                     onBeforeOpen: onBeforeOpen,
                   ),
                 );
@@ -189,69 +199,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
   Future<void> _generatePdfWithDialog(
     Future<void> Function({VoidCallback? onBeforeOpen}) pdfGenerator,
   ) async {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     showDialog(
       context: context,
-      barrierDismissible: true,
+      barrierDismissible: false,
       builder: (dialogContext) {
-        return Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-          elevation: 8,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Align(
-                  alignment: Alignment.topRight,
-                  child: IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.of(dialogContext).pop(),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    iconSize: 20,
-                    color: isDark ? Colors.grey[400] : Colors.grey[600],
-                  ),
-                ),
-                Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    color: isDark
-                        ? Colors.white.withOpacity(0.1)
-                        : Theme.of(context).primaryColor.withOpacity(0.1),
-                    shape: BoxShape.circle,
-                  ),
-                  child: LoadingAnimationWidget.fourRotatingDots(
-                    color: isDark
-                        ? Colors.white
-                        : Theme.of(context).primaryColor,
-                    size: 35,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  'Generating PDF',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white : Colors.grey[800],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Please wait while we prepare your document',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: isDark ? Colors.grey[300] : Colors.grey[600],
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
+        return const LoadingDialog(
+          message: 'Generating PDF...',
+          subtitle: 'Please wait while we prepare your document',
         );
       },
     );
@@ -271,7 +225,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       await pdfGenerator(onBeforeOpen: dismissDialog);
     } catch (e) {
       dismissDialog();
-      _showSnackSafe('PDF generation failed: ${e.toString()}', error: true);
+      _showSnackSafe(
+        OdooErrorHandler.toSnackbarMessage(
+          e,
+          fallback: 'Could not create the PDF. Please try again.',
+        ),
+        error: true,
+      );
     }
   }
 
@@ -280,63 +240,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       context,
       listen: false,
     );
-    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => Center(
-        child: Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-          elevation: 8,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    color: isDark
-                        ? Colors.white.withOpacity(0.1)
-                        : Theme.of(context).primaryColor.withOpacity(0.1),
-                    shape: BoxShape.circle,
-                  ),
-                  child: LoadingAnimationWidget.fourRotatingDots(
-                    color: isDark
-                        ? Colors.white
-                        : Theme.of(context).primaryColor,
-                    size: 35,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  'Deleting Quotation',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? Colors.white
-                        : Colors.grey[800],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Please wait while we process your request',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? Colors.grey[300]
-                        : Colors.grey[600],
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-        ),
+      builder: (context) => const LoadingDialog(
+        message: 'Deleting Quotation...',
+        subtitle: 'Please wait while we process your request',
       ),
     );
 
@@ -351,64 +261,25 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     } catch (e) {
       if (!mounted) return;
       Navigator.pop(context);
-      CustomSnackbar.showError(context, 'Failed to delete quotation: $e');
+      CustomSnackbar.showError(
+        context,
+        OdooErrorHandler.toSnackbarMessage(
+          e,
+          fallback: 'Could not delete the quotation. Please try again.',
+        ),
+      );
     }
   }
 
   Future<void> _navigateToCreateInvoice(Quote saleOrder) async {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     try {
       showDialog(
         context: context,
         barrierDismissible: false,
         builder: (ctx) {
-          return Dialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-            elevation: 8,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 60,
-                    height: 60,
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? Colors.white.withOpacity(0.1)
-                          : Theme.of(context).primaryColor.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: LoadingAnimationWidget.fourRotatingDots(
-                      color: isDark
-                          ? Colors.white
-                          : Theme.of(context).primaryColor,
-                      size: 35,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    'Checking Sale Order',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white : Colors.grey[800],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Please wait while we prepare the invoice',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: isDark ? Colors.grey[300] : Colors.grey[600],
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
+          return const LoadingDialog(
+            message: 'Checking Sale Order...',
+            subtitle: 'Please wait while we prepare the invoice',
           );
         },
       );
@@ -435,52 +306,9 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         context: context,
         barrierDismissible: false,
         builder: (ctx) {
-          return Dialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-            elevation: 8,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 60,
-                    height: 60,
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? Colors.white.withOpacity(0.1)
-                          : Theme.of(context).primaryColor.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: LoadingAnimationWidget.fourRotatingDots(
-                      color: isDark
-                          ? Colors.white
-                          : Theme.of(context).primaryColor,
-                      size: 35,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    'Loading Sale Order',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white : Colors.grey[800],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Preparing invoice data...',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: isDark ? Colors.grey[300] : Colors.grey[600],
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
+          return const LoadingDialog(
+            message: 'Loading Sale Order...',
+            subtitle: 'Preparing invoice data...',
           );
         },
       );
@@ -498,9 +326,9 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
 
       if (invoiceProvider.errorMessage.isNotEmpty) {
         if (mounted) {
-          _showErrorDialog(
-            'Invoice Creation Failed',
-            invoiceProvider.errorMessage,
+          CustomSnackbar.showError(
+            context,
+            OdooErrorHandler.toSnackbarMessage(invoiceProvider.errorMessage),
           );
         }
         return;
@@ -511,52 +339,9 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         context: context,
         barrierDismissible: false,
         builder: (ctx) {
-          return Dialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-            elevation: 8,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 60,
-                    height: 60,
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? Colors.white.withOpacity(0.1)
-                          : Theme.of(context).primaryColor.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: LoadingAnimationWidget.fourRotatingDots(
-                      color: isDark
-                          ? Colors.white
-                          : Theme.of(context).primaryColor,
-                      size: 35,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    'Creating Draft Invoice',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white : Colors.grey[800],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Please wait...',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: isDark ? Colors.grey[300] : Colors.grey[600],
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
+          return const LoadingDialog(
+            message: 'Creating Draft Invoice...',
+            subtitle: 'Please wait...',
           );
         },
       );
@@ -580,7 +365,10 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         if (mounted) {
           CustomSnackbar.showSuccess(
             context,
-            'Draft invoice ${invoiceProvider.lastCreatedInvoiceName} created successfully',
+            invoiceCreatedMessage(
+              invoiceProvider.lastCreatedInvoiceName!,
+              kind: 'Draft invoice',
+            ),
           );
         }
 
@@ -597,9 +385,9 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         }
       } else if (invoiceProvider.errorMessage.isNotEmpty) {
         if (mounted) {
-          _showErrorDialog(
-            'Invoice Creation Failed',
-            invoiceProvider.errorMessage,
+          CustomSnackbar.showError(
+            context,
+            OdooErrorHandler.toSnackbarMessage(invoiceProvider.errorMessage),
           );
         }
       }
@@ -609,11 +397,10 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
           Navigator.pop(context);
         } catch (_) {}
 
-        String errorMessage = e.toString();
-        if (errorMessage.contains('Exception: ')) {
-          errorMessage = errorMessage.split('Exception: ')[1];
-        }
-        _showErrorDialog('Error', errorMessage);
+        CustomSnackbar.showError(
+          context,
+          OdooErrorHandler.toSnackbarMessage(e),
+        );
       }
     }
   }
@@ -915,7 +702,10 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                       controller: percentageController,
                       keyboardType: TextInputType.number,
                       decoration: InputDecoration(
-                        labelText: 'Percentage',
+                        label: const MoboFieldLabel(
+                          'Percentage',
+                          isRequired: true,
+                        ),
                         hintText: 'Enter percentage (e.g., 20 for 20%)',
                         suffixText: '%',
                         border: OutlineInputBorder(
@@ -943,7 +733,10 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                       controller: fixedAmountController,
                       keyboardType: TextInputType.number,
                       decoration: InputDecoration(
-                        labelText: 'Fixed Amount',
+                        label: const MoboFieldLabel(
+                          'Fixed Amount',
+                          isRequired: true,
+                        ),
                         hintText: 'Enter fixed amount',
                         prefixText: currencyProvider.getCurrencySymbol(
                           currencyCode ?? 'USD',
@@ -976,69 +769,25 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
               ),
             ),
           ),
-          actionsPadding: const EdgeInsets.symmetric(
-            horizontal: 16,
-            vertical: 12,
-          ),
+          actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
           actions: [
-            Row(
-              children: [
-                Expanded(
-                  child: TextButton(
-                    onPressed: () => Navigator.of(ctx).pop(null),
-                    style: TextButton.styleFrom(
-                      foregroundColor: isDark
-                          ? Colors.grey[400]
-                          : Theme.of(context).colorScheme.onSurfaceVariant,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                    ),
-                    child: const Text(
-                      'Cancel',
-                      style: TextStyle(fontWeight: FontWeight.w500),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: () {
-                      if (formKey.currentState!.validate()) {
-                        Navigator.of(ctx).pop({
-                          'type': invoiceType,
-                          'percentage': invoiceType == 'percentage'
-                              ? double.tryParse(percentageController.text)
-                              : null,
-                          'fixedAmount': invoiceType == 'fixed'
-                              ? double.tryParse(fixedAmountController.text)
-                              : null,
-                        });
-                      }
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.primaryColor,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 12,
-                      ),
-                      elevation: isDark ? 0 : 3,
-                    ),
-                    child: const Text(
-                      'Create Draft',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                ),
-              ],
+            MoboDialogButtons(
+              secondaryLabel: 'Cancel',
+              onSecondary: () => Navigator.of(ctx).pop(null),
+              primaryLabel: 'Create Draft',
+              onPrimary: () {
+                if (formKey.currentState!.validate()) {
+                  Navigator.of(ctx).pop({
+                    'type': invoiceType,
+                    'percentage': invoiceType == 'percentage'
+                        ? double.tryParse(percentageController.text)
+                        : null,
+                    'fixedAmount': invoiceType == 'fixed'
+                        ? double.tryParse(fixedAmountController.text)
+                        : null,
+                  });
+                }
+              },
             ),
           ],
         ),
@@ -1116,7 +865,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
 
   Future<void> _confirmDelete() async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final quotationName = widget.quotation.name;
+    final quotationName = _localQuotation.name;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1142,57 +891,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                 : Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red[600],
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Delete',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Delete',
+            onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
       ),
@@ -1205,7 +910,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
 
   Future<void> _confirmCancelQuotation() async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final quotationName = widget.quotation.name;
+    final quotationName = _localQuotation.name;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1231,57 +936,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                 : Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Back',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Back',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Cancel',
+            onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
       ),
@@ -1297,44 +958,14 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       context,
       listen: false,
     );
-    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (BuildContext context) {
-        return Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-          child: Padding(
-            padding: const EdgeInsets.all(20.0),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                LoadingAnimationWidget.fourRotatingDots(
-                  color: Theme.of(context).colorScheme.primary,
-                  size: 50,
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  'Cancelling Quotation',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Please wait...',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: isDark ? Colors.grey[300] : Colors.grey[600],
-                  ),
-                ),
-              ],
-            ),
-          ),
+        return const LoadingDialog(
+          message: 'Cancelling Quotation...',
+          subtitle: 'Please wait...',
         );
       },
     );
@@ -1343,21 +974,33 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       await quotationProvider.cancelQuotation(widget.quotation.id!);
       if (!mounted) return;
 
+      // The screen shows the cancelled quotation before the card goes away.
+      final refreshed = await _reloadAfterAction();
+      if (!mounted) return;
+
       Navigator.pop(context);
 
-      _showSnackSafe('Quotation cancelled successfully');
-
-      Navigator.of(context).pop(true);
+      _showSnackSafe(
+        refreshed
+            ? 'Quotation cancelled successfully'
+            : 'Quotation cancelled. Pull down to refresh the details.',
+      );
     } catch (e) {
       if (!mounted) return;
       Navigator.pop(context);
-      CustomSnackbar.showError(context, 'Failed to cancel quotation: $e');
+      CustomSnackbar.showError(
+        context,
+        OdooErrorHandler.toSnackbarMessage(
+          e,
+          fallback: 'Could not cancel the quotation. Please try again.',
+        ),
+      );
     }
   }
 
   Future<void> _convertToOrder() async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final quotationName = widget.quotation.name;
+    final quotationName = _localQuotation.name;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1383,59 +1026,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                 : Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isDark
-                        ? AppTheme.primaryColor
-                        : AppTheme.primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Convert',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Convert',
+            onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
       ),
@@ -1447,7 +1044,6 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
   }
 
   Future<void> _performConversion() async {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     final quotationProvider = Provider.of<QuotationProvider>(
       context,
       listen: false,
@@ -1457,52 +1053,9 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
-        return Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-          elevation: 8,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    color: isDark
-                        ? Colors.white.withOpacity(0.1)
-                        : Theme.of(context).primaryColor.withOpacity(0.1),
-                    shape: BoxShape.circle,
-                  ),
-                  child: LoadingAnimationWidget.fourRotatingDots(
-                    color: isDark
-                        ? Colors.white
-                        : Theme.of(context).primaryColor,
-                    size: 35,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  'Converting to Sale Order',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white : Colors.grey[800],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Please wait while we process your request',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: isDark ? Colors.grey[300] : Colors.grey[600],
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
+        return const LoadingDialog(
+          message: 'Converting to Sale Order...',
+          subtitle: 'Please wait while we process your request',
         );
       },
     );
@@ -1518,34 +1071,27 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
           );
 
       if (mounted) {
+        // The screen shows the sale order before the card goes away.
+        final refreshed = await _reloadAfterAction();
+        if (!mounted) return;
+
         Navigator.of(context).pop();
 
-        _showSnackSafe('Quotation converted to sale order successfully');
-
-        Navigator.of(context).pop(true);
+        _showSnackSafe(
+          refreshed
+              ? 'Quotation converted to sale order successfully'
+              : 'Quotation converted. Pull down to refresh the details.',
+        );
       }
     } catch (e) {
       if (mounted) {
         Navigator.of(context).pop();
 
-        String msg = e.toString();
-        String? details;
-        if (e is TimeoutException) {
-          msg = 'Request timed out';
-          details =
-              'The server took too long to respond. Please check your internet connection and try again.';
-        } else {
-          final regex = RegExp(r'message: ([^,}]+)');
-          final match = regex.firstMatch(msg);
-          if (match != null) {
-            msg = match.group(1)!;
-            details = e.toString();
-          } else {
-            details = e.toString();
-          }
-        }
-
-        _showErrorDialog('Conversion Failed', msg, details: details);
+        // Only the reason, in a snackbar: no dialog, no raw exception text.
+        CustomSnackbar.showError(
+          context,
+          OdooErrorHandler.toSnackbarMessage(e),
+        );
       }
     }
   }
@@ -1600,6 +1146,14 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     super.initState();
     _isMounted = true;
     _quotationProvider = Provider.of<QuotationProvider>(context, listen: false);
+    _changeSub = DataChangeBus.instance.listen(
+      where: (c) =>
+          (c.isQuotation && c.kind != DataChangeKind.deleted) ||
+          c.isInvoice ||
+          c.entity == DataEntity.payment ||
+          c.entity == DataEntity.customer,
+      onChange: (burst) => unawaited(_onDataChanged(burst)),
+    );
     _animationController = AnimationController(
       duration: const Duration(milliseconds: 500),
       vsync: this,
@@ -1607,7 +1161,9 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _animationController, curve: Curves.easeInOut),
     );
-    _tabController = TabController(length: 4, vsync: this);
+    // Three tabs until the "other info" read says the order has a signature
+    // tab (see _syncTabs).
+    _tabController = TabController(length: 3, vsync: this);
 
     _localQuotation = widget.quotation;
     _trackQuotationAccess();
@@ -1637,7 +1193,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         listen: false,
       );
       final quotationId = widget.quotation.id?.toString() ?? '';
-      final quotationName = widget.quotation.name;
+      final quotationName = _localQuotation.name;
 
       String customerName = widget.quotation.customerName ?? 'Customer';
 
@@ -1653,15 +1209,26 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
   Future<void> _loadInitialData() async {
     if (!mounted) return;
 
+    // The order handed to this page is what the list, the dashboard card or
+    // the link last read, which may be old. The order is read first thing and
+    // what depends on it — its customer, its deliveries, its documents — waits
+    // for that read. If the read fails the page falls back to the copy it was
+    // given.
+    _lastReloadStartedAt = DateTime.now();
+    final header = _refreshQuotationData().then<void>((_) {}, onError: (_) {});
+
     try {
       await Future.wait([
-        _fetchCustomerDetails(),
+        header,
+        header.then((_) => _fetchCustomerDetails()),
         _fetchCompanyInfoAndLogo(),
         _fetchRelatedInvoices(),
-        _fetchRelatedDeliveries(),
+        header.then((_) => _fetchRelatedDeliveries()),
         _fetchAdditionalInfo(),
         _fetchQuoteBuilderData(),
-        if (widget.quotation.status == 'sale') _loadAttachments(),
+        header.then((_) async {
+          if (_localQuotation.status == 'sale') await _loadAttachments();
+        }),
       ]);
     } finally {
       if (mounted) {
@@ -1670,6 +1237,14 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         });
 
         _animationController.forward();
+
+        // A change announced while the page was loading may have come after
+        // what it read: read once more.
+        if (_changedWhileLoading) {
+          _changedWhileLoading = false;
+          _changedWhileReloading = true;
+          _readAgainIfChanged();
+        }
       }
     }
   }
@@ -1712,7 +1287,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         bytes = await File(file.path!).readAsBytes();
       } catch (e) {
         if (mounted) {
-          CustomSnackbar.showError(context, 'Unable to read selected file: $e');
+          CustomSnackbar.showError(
+            context,
+            OdooErrorHandler.toSnackbarMessage(
+              e,
+              fallback: 'Could not read the selected file.',
+            ),
+          );
         }
         return;
       }
@@ -1727,62 +1308,12 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     final String? description = null;
 
     if (!mounted) return;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => Center(
-        child: Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-          elevation: 8,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    color: isDark
-                        ? Colors.white.withOpacity(0.1)
-                        : Theme.of(context).primaryColor.withOpacity(0.1),
-                    shape: BoxShape.circle,
-                  ),
-                  child: LoadingAnimationWidget.fourRotatingDots(
-                    color: isDark
-                        ? Colors.white
-                        : Theme.of(context).primaryColor,
-                    size: 35,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  'Uploading Attachment',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? Colors.white
-                        : Colors.grey[800],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Please wait while we process your request',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? Colors.grey[300]
-                        : Colors.grey[600],
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-        ),
+      builder: (context) => const LoadingDialog(
+        message: 'Uploading Attachment...',
+        subtitle: 'Please wait while we process your request',
       ),
     );
 
@@ -1827,7 +1358,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       await _loadAttachments();
     } catch (e) {
       if (!mounted) return;
-      CustomSnackbar.showError(context, 'Failed to upload attachment: $e');
+      CustomSnackbar.showError(
+        context,
+        OdooErrorHandler.toSnackbarMessage(
+          e,
+          fallback: 'Could not upload the attachment. Please try again.',
+        ),
+      );
     } finally {
       if (mounted) Navigator.pop(context);
     }
@@ -2019,62 +1556,12 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
 
     if (mounted) {
       isDialogOpen = true;
-      final isDark = Theme.of(context).brightness == Brightness.dark;
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (_) => Center(
-          child: Dialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-            elevation: 8,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 60,
-                    height: 60,
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? Colors.white.withOpacity(0.1)
-                          : Theme.of(context).primaryColor.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: LoadingAnimationWidget.fourRotatingDots(
-                      color: isDark
-                          ? Colors.white
-                          : Theme.of(context).primaryColor,
-                      size: 35,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    'Fetching Attachment',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? Colors.white
-                          : Colors.grey[800],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Please wait while we process your request',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? Colors.grey[300]
-                          : Colors.grey[600],
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
-          ),
+        builder: (_) => const LoadingDialog(
+          message: 'Fetching Attachment...',
+          subtitle: 'Please wait while we process your request',
         ),
       );
     }
@@ -2123,63 +1610,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     String? suggestedName,
     String? mimetype,
   }) async {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     if (!mounted) return;
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => Center(
-        child: Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-          elevation: 8,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    color: isDark
-                        ? Colors.white.withOpacity(0.1)
-                        : Theme.of(context).primaryColor.withOpacity(0.1),
-                    shape: BoxShape.circle,
-                  ),
-                  child: LoadingAnimationWidget.fourRotatingDots(
-                    color: isDark
-                        ? Colors.white
-                        : Theme.of(context).primaryColor,
-                    size: 35,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  'Fetching Attachment',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? Colors.white
-                        : Colors.grey[800],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Please wait while we process your request',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? Colors.grey[300]
-                        : Colors.grey[600],
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-        ),
+      builder: (_) => const LoadingDialog(
+        message: 'Fetching Attachment...',
+        subtitle: 'Please wait while we process your request',
       ),
     );
     try {
@@ -2213,7 +1650,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       }
     } catch (e) {
       if (mounted) {
-        CustomSnackbar.showError(context, 'Failed to open attachment: $e');
+        CustomSnackbar.showError(
+          context,
+          OdooErrorHandler.toSnackbarMessage(
+            e,
+            fallback: 'Could not open the attachment. Please try again.',
+          ),
+        );
       }
     } finally {
       if (mounted) Navigator.of(context).pop();
@@ -2270,35 +1713,17 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
             ),
           ],
         ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          TextButton(
-            onPressed: () {
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () {
               Navigator.of(dialogContext).pop(false);
             },
-            child: Text(
-              'Cancel',
-              style: TextStyle(
-                color: isDark ? Colors.grey[400] : Colors.grey,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-          ElevatedButton(
-            onPressed: () {
+            primaryLabel: 'Delete',
+            onPrimary: () {
               Navigator.of(dialogContext).pop(true);
             },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: isDark ? Colors.red[400] : Colors.red[600],
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            ),
-            child: const Text(
-              'Delete',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
           ),
         ],
       ),
@@ -2310,58 +1735,9 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => Center(
-        child: Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-          elevation: 8,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    color: isDark
-                        ? Colors.white.withOpacity(0.1)
-                        : Theme.of(context).primaryColor.withOpacity(0.1),
-                    shape: BoxShape.circle,
-                  ),
-                  child: LoadingAnimationWidget.fourRotatingDots(
-                    color: isDark
-                        ? Colors.white
-                        : Theme.of(context).primaryColor,
-                    size: 35,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  'Deleting attachment',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? Colors.white
-                        : Colors.grey[800],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Please wait while we process your request',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? Colors.grey[300]
-                        : Colors.grey[600],
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-        ),
+      builder: (context) => const LoadingDialog(
+        message: 'Deleting attachment...',
+        subtitle: 'Please wait while we process your request',
       ),
     );
 
@@ -2371,23 +1747,31 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       await _loadAttachments();
     } catch (e) {
       if (!mounted) return;
-      CustomSnackbar.showError(context, 'Failed to delete attachment: $e');
+      CustomSnackbar.showError(
+        context,
+        OdooErrorHandler.toSnackbarMessage(
+          e,
+          fallback: 'Could not delete the attachment. Please try again.',
+        ),
+      );
     } finally {
       if (mounted) Navigator.pop(context);
     }
   }
 
-  Future<void> _fetchRelatedInvoices() async {
+  /// Reads the invoices of this order. [quiet] keeps the ones on screen until
+  /// the new ones arrive, for a refresh of a page that is already showing.
+  Future<void> _fetchRelatedInvoices({bool quiet = false}) async {
     if (!mounted) return;
     setState(() {
       _isLoadingRelatedInvoices = true;
-      _relatedInvoices = [];
+      if (!quiet) _relatedInvoices = [];
     });
     try {
       final client = await OdooSessionManager.getClient();
       if (client == null) throw Exception('No active Odoo session');
 
-      final saleOrderId = widget.quotation.id;
+      final saleOrderId = _localQuotation.id;
 
       final saleOrderResult = await client.callKw({
         'model': 'sale.order',
@@ -2451,23 +1835,23 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _relatedInvoices = [];
+        if (!quiet) _relatedInvoices = [];
         _isLoadingRelatedInvoices = false;
       });
     }
   }
 
-  Future<void> _fetchRelatedDeliveries() async {
+  Future<void> _fetchRelatedDeliveries({bool quiet = false}) async {
     if (!mounted) return;
     setState(() {
       _isLoadingRelatedDeliveries = true;
-      _relatedDeliveries = [];
+      if (!quiet) _relatedDeliveries = [];
     });
     try {
       final client = await OdooSessionManager.getClient();
       if (client == null) throw Exception('No active Odoo session');
 
-      final originName = widget.quotation.name;
+      final originName = _localQuotation.name;
       if (originName == 'N/A') {
         setState(() {
           _isLoadingRelatedDeliveries = false;
@@ -2504,15 +1888,18 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _relatedDeliveries = [];
+        if (!quiet) _relatedDeliveries = [];
         _isLoadingRelatedDeliveries = false;
       });
     }
   }
 
+  /// Reads the "other info" of this order. [quiet] keeps what the tab shows
+  /// while it reads, for a refresh of a page that is already showing.
   Future<void> _fetchAdditionalInfo({
     List<String>? invalidFields,
     int retryCount = 0,
+    bool quiet = false,
   }) async {
     if (!mounted) return;
 
@@ -2526,7 +1913,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     }
 
     setState(() {
-      _isLoadingAdditionalInfo = true;
+      _isLoadingAdditionalInfo = !quiet;
     });
 
     try {
@@ -2535,6 +1922,10 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         return;
       }
 
+      // `require_payment` is gone in Odoo 20; whether online payment is
+      // required is then `prepayment_percent > 0`.
+      final generation = await OdooSessionManager.serverGeneration();
+
       final List<String> fieldsToFetch = [
         'user_id',
         'team_id',
@@ -2542,7 +1933,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         'medium_id',
         'source_id',
         'require_signature',
-        'require_payment',
+        ...saleOrderPaymentFields(generation),
 
         'payment_term_id',
         'fiscal_position_id',
@@ -2576,7 +1967,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         'model': 'sale.order',
         'method': 'read',
         'args': [
-          [widget.quotation.id],
+          [_localQuotation.id],
         ],
         'kwargs': {'fields': fieldsToFetch},
       });
@@ -2584,7 +1975,10 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       if (result != null && result is List && result.isNotEmpty) {
         if (mounted) {
           setState(() {
-            _additionalInfo = Map<String, dynamic>.from(result[0]);
+            _additionalInfo = withRequirePayment(
+              Map<String, dynamic>.from(result[0]),
+            );
+            _syncTabs();
           });
         }
       }
@@ -2608,6 +2002,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
           return _fetchAdditionalInfo(
             invalidFields: allInvalidFields,
             retryCount: retryCount + 1,
+            quiet: quiet,
           );
         }
       }
@@ -2620,11 +2015,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     }
   }
 
-  Future<void> _fetchQuoteBuilderData() async {
+  /// Reads the quote builder's documents for this order. [quiet] keeps what
+  /// the tab shows while it reads, for a refresh of a page that is showing.
+  Future<void> _fetchQuoteBuilderData({bool quiet = false}) async {
     if (!mounted) return;
 
     setState(() {
-      _isLoadingQuoteBuilder = true;
+      _isLoadingQuoteBuilder = !quiet;
     });
 
     try {
@@ -2633,27 +2030,26 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         return;
       }
 
-      _selectedHeaderIds.clear();
-      _selectedFooterIds.clear();
-      _selectedProductDocs.clear();
-      _headerFieldControllers.clear();
-      _footerFieldControllers.clear();
-      _productFieldControllers.clear();
-
       final result = await client.callKw({
         'model': 'sale.order',
         'method': 'get_update_included_pdf_params',
         'args': [
-          [widget.quotation.id],
+          [_localQuotation.id],
         ],
         'kwargs': {
-          'context': {'active_id': widget.quotation.id},
+          'context': {'active_id': _localQuotation.id},
         },
       });
 
       if (result != null && result is Map) {
         if (mounted) {
           setState(() {
+            _selectedHeaderIds.clear();
+            _selectedFooterIds.clear();
+            _selectedProductDocs.clear();
+            _headerFieldControllers.clear();
+            _footerFieldControllers.clear();
+            _productFieldControllers.clear();
             _quoteBuilderData = Map<String, dynamic>.from(result);
 
             if (_quoteBuilderData['headers'] != null &&
@@ -2732,39 +2128,92 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
           .map((key) => int.parse(key.toString()))
           .toList();
 
-      await client.callKw({
-        'model': 'sale.order',
-        'method': 'write',
-        'args': [
-          [saleOrderId],
-          {'quotation_document_ids': null},
-        ],
-        'kwargs': {},
-      });
-
-      if (orderLineList.isNotEmpty) {
+      // Odoo 18 saves the selection through `save_included_pdf`. Odoo 19 and 20
+      // removed it (the web client writes the fields itself), and calling it
+      // there would fail after the clearing writes below had already emptied
+      // the selection.
+      Future<void> saveWithIncludedPdfMethod() async {
         await client.callKw({
-          'model': 'sale.order.line',
+          'model': 'sale.order',
           'method': 'write',
           'args': [
-            orderLineList,
-            {'product_document_ids': null},
+            [saleOrderId],
+            {'quotation_document_ids': null},
           ],
           'kwargs': {},
         });
+
+        if (orderLineList.isNotEmpty) {
+          await client.callKw({
+            'model': 'sale.order.line',
+            'method': 'write',
+            'args': [
+              orderLineList,
+              {'product_document_ids': null},
+            ],
+            'kwargs': {},
+          });
+        }
+
+        await client.callKw({
+          'model': 'sale.order',
+          'method': 'save_included_pdf',
+          'args': [
+            [saleOrderId],
+            selectedPdf,
+          ],
+          'kwargs': {
+            'context': {'active_id': saleOrderId},
+          },
+        });
       }
 
-      await client.callKw({
-        'model': 'sale.order',
-        'method': 'save_included_pdf',
-        'args': [
-          [saleOrderId],
-          selectedPdf,
-        ],
-        'kwargs': {
-          'context': {'active_id': saleOrderId},
-        },
-      });
+      Future<void> writeSelectionDirectly() async {
+        final writes = buildQuoteBuilderWrites(
+          headerIds: _selectedHeaderIds,
+          footerIds: _selectedFooterIds,
+          productDocsByLine: _selectedProductDocs,
+          lineIds: [
+            for (final line
+                in (_quoteBuilderData['lines'] as List?) ?? const [])
+              if (line is Map && line['id'] is int) line['id'] as int,
+          ],
+        );
+
+        await client.callKw({
+          'model': 'sale.order',
+          'method': 'write',
+          'args': [
+            [saleOrderId],
+            writes.orderValues,
+          ],
+          'kwargs': {},
+        });
+
+        for (final entry in writes.lineValues.entries) {
+          await client.callKw({
+            'model': 'sale.order.line',
+            'method': 'write',
+            'args': [
+              [entry.key],
+              entry.value,
+            ],
+            'kwargs': {},
+          });
+        }
+      }
+
+      final generation = await OdooSessionManager.serverGeneration();
+      if (quoteBuilderSavesViaMethod(generation)) {
+        try {
+          await saveWithIncludedPdfMethod();
+        } catch (e) {
+          if (!quoteBuilderMethodMissing(e)) rethrow;
+          await writeSelectionDirectly();
+        }
+      } else {
+        await writeSelectionDirectly();
+      }
 
       Map<String, dynamic> jsonData = {"header": {}, "line": {}, "footer": {}};
 
@@ -2867,7 +2316,11 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       if (mounted) {
         CustomSnackbar.showError(
           context,
-          'Failed to save Quote Builder selections: ${e.toString()}',
+          OdooErrorHandler.toSnackbarMessage(
+            e,
+            fallback:
+                'Could not save the quote builder selections. Please try again.',
+          ),
         );
       }
     } finally {
@@ -2884,7 +2337,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       return const SizedBox.shrink();
     }
 
-    final saleOrderName = widget.quotation.name;
+    final saleOrderName = _localQuotation.name;
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 0, vertical: 8),
@@ -2965,7 +2418,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       return const SizedBox.shrink();
     }
 
-    final saleOrderName = widget.quotation.name;
+    final saleOrderName = _localQuotation.name;
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 0, vertical: 8),
@@ -3048,12 +2501,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       icon: HugeIcons.strokeRoundedFileAttachment,
       children: [
         if (_isLoadingAttachments)
-          Center(
-            child: LoadingAnimationWidget.horizontalRotatingDots(
-              color: isDark ? Colors.white : Theme.of(context).primaryColor,
-              size: 35,
-            ),
-          )
+          const RowsSkeleton(count: 2)
         else if (_attachments.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 12),
@@ -3107,6 +2555,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
 
   @override
   void dispose() {
+    _changeSub?.cancel();
     _animationController.dispose();
     _tabController.dispose();
     _termsController.dispose();
@@ -3216,7 +2665,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
 
   Future<void> _fetchCustomerDetails() async {
     try {
-      final partnerId = widget.quotation.customerId;
+      final partnerId = _localQuotation.customerId;
       if (partnerId == null) {
         return;
       }
@@ -3228,11 +2677,15 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         return;
       }
 
+      // `mobile` was merged into `phone` and removed in Odoo 19; asking for it
+      // there fails the read once before the retry below drops it.
+      final generation = await OdooSessionManager.serverGeneration();
+
       List<String> fieldsToFetch = [
         'name',
         'email',
         'phone',
-        'mobile',
+        if (odooHasPartnerMobile(generation)) 'mobile',
         'street',
         'street2',
         'city',
@@ -3403,30 +2856,12 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     return false;
   }
 
+  /// Only a quotation can be edited: a draft or one that was sent. A confirmed
+  /// sale order (and a locked or a cancelled one) is read-only here, so the
+  /// edit button is not shown.
   bool _canEditQuotation(Quote quotation) {
     final state = quotation.status;
-
-    if (state == 'cancel' || state == 'done') {
-      return false;
-    }
-
-    if (state == 'draft' || state == 'sent') {
-      return true;
-    }
-
-    if (state == 'sale') {
-      final invoiceStatus = quotation.invoiceStatus ?? '';
-      final deliveryStatus =
-          quotation.extraData?['delivery_status']?.toString() ?? '';
-
-      if (invoiceStatus == 'invoiced' || deliveryStatus == 'done') {
-        return true;
-      }
-
-      return true;
-    }
-
-    return false;
+    return state == 'draft' || state == 'sent';
   }
 
   Widget _buildProfessionalCard({
@@ -4094,82 +3529,6 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     );
   }
 
-  void _showErrorDialog(String title, String message, {String? details}) {
-    if (!mounted) return;
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        backgroundColor: Theme.of(context).brightness == Brightness.dark
-            ? Colors.grey[900]
-            : Colors.white,
-        title: Row(
-          children: [
-            Expanded(
-              child: Text(
-                title,
-                style: TextStyle(
-                  color: Theme.of(context).brightness == Brightness.dark
-                      ? Colors.white
-                      : Colors.black87,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                message,
-                style: TextStyle(
-                  color: Theme.of(context).brightness == Brightness.dark
-                      ? Colors.grey[300]
-                      : Colors.grey[800],
-                  fontSize: 15,
-                ),
-              ),
-              if (details != null && details.trim().isNotEmpty) ...[
-                const SizedBox(height: 16),
-                Container(
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? Colors.grey[850]
-                        : Colors.grey[100],
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  padding: const EdgeInsets.all(12),
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.vertical,
-                    child: Text(
-                      details,
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: Theme.of(context).brightness == Brightness.dark
-                            ? Colors.red[200]
-                            : Colors.red[800],
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
-
   String _htmlToPlainText(String html) {
     return html
         .replaceAll(RegExp(r'<[^>]*>'), '')
@@ -4332,107 +3691,259 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     });
   }
 
+  DataChangeSubscription? _changeSub;
+
+  /// When this screen last began reading the quotation. A change announced
+  /// before that moment is already in what it read.
+  DateTime? _lastReloadStartedAt;
+  bool _reloadingQuietly = false;
+
+  /// A change was announced while the page was loading for the first time, or
+  /// while another refresh was running, and read before it: one more read
+  /// follows.
+  bool _changedWhileLoading = false;
+  bool _changedWhileReloading = false;
+
+  /// Reads the quotation again with everything the page shows around it: its
+  /// fields and totals, the lines, the customer, the other info, the quote
+  /// builder and the invoices and deliveries that belong to it. Throws if the
+  /// quotation itself cannot be read; the rest is best effort. What the page
+  /// already shows stays until the new data arrives.
+  Future<void> _reloadQuotation() async {
+    _lastReloadStartedAt = DateTime.now();
+    await _refreshQuotationData();
+    final id = _localQuotation.id;
+    if (id == null) return;
+
+    await _quotationProvider?.loadOrderLines(id);
+    await Future.wait([
+      _fetchCustomerDetails().catchError((_) {}),
+      _fetchRelatedInvoices(quiet: true).catchError((_) {}),
+      _fetchAdditionalInfo(quiet: true).catchError((_) {}),
+      // Only where the quote builder exists: a server without it would be
+      // asked, and refuse, on every refresh.
+      if (_quoteBuilderData.isNotEmpty &&
+          !_isQuoteBuilderEditMode &&
+          !_isSavingQuoteBuilder)
+        _fetchQuoteBuilderData(quiet: true).catchError((_) {}),
+      if (_localQuotation.status == 'sale')
+        _fetchRelatedDeliveries(quiet: true).catchError((_) {}),
+    ]);
+  }
+
+  /// [_reloadQuotation] for an action that has already succeeded: a failure to
+  /// read the result must not look like the action failing. Whether it read.
+  Future<bool> _reloadAfterAction() async {
+    try {
+      await _reloadQuotation();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// What follows a saved edit: the card while this screen reads what the edit
+  /// changed, then the message. The edit screen has already announced the
+  /// change, so the list, the dashboard and the rest are on their way.
+  Future<void> _afterEdit(QuoteSaved saved) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => const LoadingDialog(
+        message: 'Updating quotation...',
+        subtitle: 'Please wait while we refresh your quotation.',
+      ),
+    );
+
+    final refreshed = await _reloadAfterAction();
+    if (!mounted) return;
+    Navigator.of(context).pop();
+
+    final documentType = (_localQuotation.status ?? '') == 'sale'
+        ? 'Sale Order'
+        : 'Quotation';
+    if (!refreshed) {
+      CustomSnackbar.showWarning(
+        context,
+        '$documentType updated, but the details could not be refreshed. '
+        'Pull down to refresh.',
+      );
+    } else if (saved.note != null) {
+      saved.noteIsWarning
+          ? CustomSnackbar.showWarning(context, saved.note!)
+          : CustomSnackbar.showSuccess(context, saved.note!);
+    } else {
+      CustomSnackbar.showSuccess(context, '$documentType updated successfully');
+    }
+  }
+
+  /// A change made on another screen — an invoice created for this order, a
+  /// payment, an edit, a customer renamed — reaches this page while it is open
+  /// behind them.
+  Future<void> _onDataChanged(List<DataChange> burst) async {
+    final id = _localQuotation.id;
+    if (!mounted || id == null) return;
+    final unseen = burst
+        .where((c) => !c.isCoveredByRefreshStartedAt(_lastReloadStartedAt))
+        .toList();
+    if (unseen.isEmpty) return;
+    if (_isLoadingInitialData) {
+      _changedWhileLoading = true;
+      return;
+    }
+    if (_isRefreshing || _reloadingQuietly) {
+      _changedWhileReloading = true;
+      return;
+    }
+
+    _reloadingQuietly = true;
+    try {
+      final ownChange = unseen.any(
+        (c) => c.isQuotation && (c.id == null || c.id == id),
+      );
+      if (ownChange) {
+        await _reloadQuotation();
+      } else if (unseen.any((c) => c.entity == DataEntity.customer)) {
+        // A customer renamed or moved: the order's customer name and the
+        // customer card.
+        _lastReloadStartedAt = DateTime.now();
+        await _refreshQuotationData();
+        await _fetchCustomerDetails();
+      } else {
+        // An invoice or a payment: the order's invoice status and its related
+        // invoices move, nothing else.
+        _lastReloadStartedAt = DateTime.now();
+        await _refreshQuotationData();
+        await _fetchRelatedInvoices(quiet: true);
+      }
+    } catch (_) {
+      // The page keeps what it has; a pull-down reads it again.
+    } finally {
+      _reloadingQuietly = false;
+      _readAgainIfChanged();
+    }
+  }
+
+  /// Reads the quotation once more if a change was announced while a read was
+  /// running (see [_changedWhileReloading]).
+  void _readAgainIfChanged() {
+    if (!_changedWhileReloading || !mounted) return;
+    _changedWhileReloading = false;
+    unawaited(
+      _onDataChanged([
+        DataChange(
+          DataEntity.quotation,
+          DataChangeKind.updated,
+          id: _localQuotation.id,
+        ),
+      ]),
+    );
+  }
+
+  /// A pull-down: everything the page shows is read again.
   Future<void> _refreshAll() async {
     if (_isRefreshing) return;
     setState(() => _isRefreshing = true);
     try {
-      await _refreshQuotationData();
-
-      await _quotationProvider?.loadOrderLines(_localQuotation.id!);
-
-      await _fetchCustomerDetails();
+      await _reloadQuotation();
       await _fetchCompanyInfoAndLogo();
 
       if (_localQuotation.status == 'sale') {
         await _loadAttachments();
-
-        await _fetchRelatedInvoices();
       }
     } catch (e) {
       if (mounted) {
-        CustomSnackbar.showError(context, 'Refresh failed: $e');
+        CustomSnackbar.showError(
+          context,
+          OdooErrorHandler.toSnackbarMessage(
+            e,
+            fallback: 'Could not refresh the quotation. Please try again.',
+          ),
+        );
       }
     } finally {
       if (mounted) setState(() => _isRefreshing = false);
+      _readAgainIfChanged();
     }
   }
 
+  /// Reads the order itself again — state, totals, dates, customer, notes and
+  /// the figures the screen derives its actions from — and replaces the copy
+  /// this page shows. What the page had that this read does not ask for stays,
+  /// so nothing the list handed over is lost; everything it does ask for is
+  /// what the database holds now. Throws if the read fails; a record that
+  /// cannot be found leaves the page as it was.
   Future<void> _refreshQuotationData() async {
-    try {
-      final client = await OdooSessionManager.getClient();
-      if (client != null) {
-        List<String> coreFields = [
-          'id',
-          'name',
-          'partner_id',
-          'date_order',
-          'validity_date',
-          'amount_total',
-          'amount_untaxed',
-          'amount_tax',
-          'amount_invoiced',
-          'invoice_status',
-          'state',
-          'note',
-          'currency_id',
-          'pricelist_id',
-          'payment_term_id',
-          'order_line',
-        ];
+    final client = await OdooSessionManager.getClient();
+    if (client == null) return;
 
-        List<List<String>> fieldCombinations = [
-          [...coreFields, 'amount_discount', 'amount_delivery'],
+    // Fields a server may not have (`amount_discount`, `amount_delivery` and
+    // `delivery_status` come from optional modules) are dropped by the
+    // validation service and the read retried.
+    const fields = [
+      'id',
+      'name',
+      'partner_id',
+      'date_order',
+      'validity_date',
+      'amount_total',
+      'amount_untaxed',
+      'amount_tax',
+      'amount_invoiced',
+      'invoice_status',
+      'state',
+      'note',
+      'currency_id',
+      'pricelist_id',
+      'payment_term_id',
+      'order_line',
+      'user_id',
+      'create_date',
+      'write_date',
+      'amount_discount',
+      'amount_delivery',
+      'delivery_status',
+    ];
 
-          [...coreFields, 'amount_discount'],
-
-          [...coreFields, 'amount_delivery'],
-
-          coreFields,
-        ];
-
-        Map<String, dynamic>? updatedQuotationData;
-
-        for (int i = 0; i < fieldCombinations.length; i++) {
-          try {
+    final rows =
+        await FieldValidationService.executeWithFieldValidation<
+          List<Map<String, dynamic>>
+        >(
+          model: 'sale.order',
+          initialFields: fields,
+          apiCall: (currentFields) async {
             final result = await client.callKw({
               'model': 'sale.order',
               'method': 'read',
               'args': [
                 [_localQuotation.id!],
               ],
-              'kwargs': {'fields': fieldCombinations[i]},
+              'kwargs': {'fields': currentFields},
             });
+            return result is List
+                ? result
+                      .whereType<Map>()
+                      .map(Map<String, dynamic>.from)
+                      .toList()
+                : <Map<String, dynamic>>[];
+          },
+        );
 
-            if (result is List && result.isNotEmpty) {
-              updatedQuotationData = result[0];
-
-              break;
-            }
-          } catch (e) {
-            if (i == fieldCombinations.length - 1) {
-              throw Exception(
-                'Failed to refresh quotation with any field combination: $e',
-              );
-            }
-          }
-        }
-
-        if (updatedQuotationData != null) {
-          setState(() {
-            _localQuotation = Quote.fromJson(updatedQuotationData!);
-          });
-        }
-      }
-    } catch (e) {
-      rethrow;
-    }
+    if (rows.isEmpty || !mounted) return;
+    final fresh = rows.first;
+    setState(() {
+      _localQuotation = Quote.fromJson({
+        ...?_localQuotation.extraData,
+        ...fresh,
+      });
+    });
   }
 
   String _getCurrencySymbol() {
     final currencyId =
-        (widget.quotation.extraData != null &&
-            widget.quotation.extraData!['currency_id'] is List)
-        ? widget.quotation.extraData!['currency_id'] as List<dynamic>?
+        (_localQuotation.extraData != null &&
+            _localQuotation.extraData!['currency_id'] is List)
+        ? _localQuotation.extraData!['currency_id'] as List<dynamic>?
         : null;
     final String? currencyCode = (currencyId != null && currencyId.length > 1)
         ? currencyId[1].toString()
@@ -4443,6 +3954,27 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       listen: false,
     );
     return currencyProvider.getCurrencySymbol(currencyCode!) ?? '\$';
+  }
+
+  /// The order's state, as the list shows it: Quotation, Sent, Sale Order,
+  /// Locked or Cancelled, in the colour that goes with it.
+  Widget _buildStatusCapsule(Quote quotation, Color fallback) {
+    final status = QuotationStatus.of(quotation.status, fallback: fallback);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: status.color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        status.label,
+        style: TextStyle(
+          color: status.color,
+          fontSize: 13,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+    );
   }
 
   Widget _buildTopSection(
@@ -4484,21 +4016,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                   color: primaryColor,
                 ),
               ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF28A745).withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  isSaleOrder ? 'Sale Order' : 'Quotation',
-                  style: TextStyle(
-                    color: const Color(0xFF28A745),
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
+              _buildStatusCapsule(quotation, primaryColor),
             ],
           ),
           const SizedBox(height: 6),
@@ -4648,8 +4166,10 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                     _buildTabItem('Quote Builder', 1, isDark),
                     const SizedBox(width: 8),
                     _buildTabItem('Other Info', 2, isDark),
-                    const SizedBox(width: 8),
-                    _buildTabItem('Signature', 3, isDark),
+                    if (_showSignatureTab) ...[
+                      const SizedBox(width: 8),
+                      _buildTabItem('Signature', 3, isDark),
+                    ],
                   ],
                 ),
               ),
@@ -4687,19 +4207,21 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                   ),
                 ),
 
-                SignatureWidget(
-                  quotation: widget.quotation,
-                  onSignatureUpdated: (signatureData) {
-                    if (mounted) {
-                      setState(() {
-                        if (widget.quotation.extraData != null) {
-                          widget.quotation.extraData!.addAll(signatureData);
-                        }
-                        _additionalInfo.addAll(signatureData);
-                      });
-                    }
-                  },
-                ),
+                if (_showSignatureTab)
+                  SignatureWidget(
+                    // A new widget whenever the signature the server holds
+                    // changes, so it shows that and not what it was opened with.
+                    key: ValueKey(_signatureKey()),
+                    quotation: _quotationWithSignature(),
+                    onSignatureUpdated: (signatureData) {
+                      if (mounted) {
+                        setState(() {
+                          _additionalInfo.addAll(signatureData);
+                          _syncTabs();
+                        });
+                      }
+                    },
+                  ),
               ],
             ),
           ),
@@ -4708,10 +4230,57 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     );
   }
 
+  static const _signatureFields = ['signed_by', 'signed_on', 'signature'];
+
+  /// Whether the Signature tab exists for this order: the server has the
+  /// signature fields and the order asks for a signature or already has one
+  /// (see [saleOrderShowsSignature]). Not known until the "other info" read
+  /// has answered, so until then there is no tab.
+  bool get _showSignatureTab => saleOrderShowsSignature(_additionalInfo);
+
+  /// The tabs the page has: Order Lines, Quote Builder, Other Info, and the
+  /// Signature one when [_showSignatureTab]. Called whenever the answer may
+  /// have changed; the controller is replaced by one of the right length, on
+  /// the tab the user was looking at (or the last one, if theirs went away).
+  void _syncTabs() {
+    final length = _showSignatureTab ? 4 : 3;
+    if (_tabController.length == length) return;
+
+    final old = _tabController;
+    _tabController = TabController(
+      length: length,
+      vsync: this,
+      initialIndex: old.index.clamp(0, length - 1),
+    );
+    // This frame's widgets still listen to the old one.
+    WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+  }
+
+  /// The order with what the server holds about its signature: the list does
+  /// not read it, the "other info" read does.
+  Quote _quotationWithSignature() {
+    final extra = _localQuotation.extraData;
+    if (extra == null) return _localQuotation;
+    return Quote.fromJson({
+      ...extra,
+      for (final field in _signatureFields)
+        if (_additionalInfo.containsKey(field)) field: _additionalInfo[field],
+    });
+  }
+
+  /// Changes when the signature on the server does.
+  String _signatureKey() {
+    final signature = _additionalInfo['signature'];
+    return '${_additionalInfo['signed_by']}|${_additionalInfo['signed_on']}|'
+        '${signature is String ? signature.length : 0}';
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final quotation = widget.quotation;
+    // What the server holds now (the list's copy is only what it was when this
+    // page opened): the title, the actions offered and the header follow it.
+    final quotation = _localQuotation;
     final isSaleOrder = quotation.status == 'sale';
     final daysUntilExpiry = quotation.validityDate
         ?.difference(DateTime.now())
@@ -4875,108 +4444,12 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                           ),
                         );
 
-                        if (result == true && mounted) {
-                          showDialog(
-                            context: context,
-                            barrierDismissible: false,
-                            builder: (dialogContext) => WillPopScope(
-                              onWillPop: () async => false,
-
-                              child: Center(
-                                child: Card(
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(20),
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        CircularProgressIndicator(),
-                                        SizedBox(height: 16),
-                                        Text('Updating quotation...'),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
+                        if ((result == true || result is QuoteSaved) &&
+                            mounted) {
+                          await _afterEdit(
+                            result is QuoteSaved ? result : const QuoteSaved(),
                           );
-
-                          try {
-                            final client = await OdooSessionManager.getClient();
-                            if (client != null) {
-                              final updatedQuotation = await client.callKw({
-                                'model': 'sale.order',
-                                'method': 'read',
-                                'args': [
-                                  [_localQuotation.id!],
-                                ],
-                                'kwargs': {
-                                  'fields': [
-                                    'id',
-                                    'name',
-                                    'partner_id',
-                                    'date_order',
-                                    'validity_date',
-                                    'amount_total',
-                                    'amount_untaxed',
-                                    'amount_tax',
-                                    'state',
-                                    'note',
-                                    'currency_id',
-                                    'pricelist_id',
-                                    'payment_term_id',
-                                    'order_line',
-                                  ],
-                                },
-                              });
-
-                              if (updatedQuotation is List &&
-                                  updatedQuotation.isNotEmpty) {
-                                setState(() {
-                                  _localQuotation = Quote.fromJson(
-                                    updatedQuotation[0],
-                                  );
-                                });
-                              }
-                            }
-
-                            await _quotationProvider?.loadOrderLines(
-                              _localQuotation.id!,
-                            );
-
-                            await _fetchCustomerDetails();
-
-                            await _fetchRelatedInvoices();
-
-                            if (mounted && Navigator.of(context).canPop()) {
-                              Navigator.of(context).pop();
-
-                              await Future.delayed(Duration(milliseconds: 300));
-
-                              if (mounted) {
-                                final state = _localQuotation.status ?? '';
-                                final documentType = (state == 'sale')
-                                    ? 'Sale Order'
-                                    : 'Quotation';
-
-                                CustomSnackbar.showSuccess(
-                                  context,
-                                  '$documentType updated successfully',
-                                );
-                              }
-                            }
-                          } catch (e) {
-                            if (mounted && Navigator.of(context).canPop()) {
-                              Navigator.of(context).pop();
-                            }
-
-                            if (mounted) {
-                              CustomSnackbar.showError(
-                                context,
-                                'Failed to refresh quotation',
-                              );
-                            }
-                          }
-                        } else {}
+                        }
                       },
               ),
             ),
@@ -5044,8 +4517,10 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                       ],
                     ),
                   ),
+                // What Odoo and `QuotationProvider.cancelQuotation` allow: a
+                // draft or a sent quotation. A cancelled one is already.
                 if (_localQuotation.status == 'draft' ||
-                    _localQuotation.status == 'cancel')
+                    _localQuotation.status == 'sent')
                   PopupMenuItem<String>(
                     value: 'cancel',
                     child: Row(
@@ -5202,78 +4677,17 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                       ? Colors.black.withOpacity(0.6)
                       : Colors.black.withOpacity(0.3),
                   builder: (ctx) {
-                    return Dialog(
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-                      elevation: isDark ? 4 : 8,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 28,
-                          vertical: 32,
-                        ),
-                        decoration: BoxDecoration(
-                          color: isDark ? Colors.grey[900] : Colors.white,
-                          borderRadius: BorderRadius.circular(20),
-                          border: isDark
-                              ? Border.all(color: Colors.grey[800]!, width: 1)
-                              : null,
-                        ),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              width: 60,
-                              height: 60,
-                              decoration: BoxDecoration(
-                                color: isDark
-                                    ? Colors.white.withOpacity(0.1)
-                                    : Theme.of(
-                                        context,
-                                      ).primaryColor.withOpacity(0.1),
-                                shape: BoxShape.circle,
-                              ),
-                              child: LoadingAnimationWidget.fourRotatingDots(
-                                color: isDark
-                                    ? Colors.white
-                                    : Theme.of(context).primaryColor,
-                                size: 35,
-                              ),
-                            ),
-                            const SizedBox(height: 20),
-                            Text(
-                              value == 'send_quotation'
-                                  ? 'Sending Quotation'
-                                  : value == 'send_whatsapp'
-                                  ? 'Sharing via WhatsApp'
-                                  : 'Generating PDF',
-                              style: Theme.of(context).textTheme.titleMedium
-                                  ?.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                    color: isDark
-                                        ? Colors.white
-                                        : Colors.grey[800],
-                                  ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              value == 'send_quotation'
-                                  ? 'Please wait while we send your quotation'
-                                  : value == 'send_whatsapp'
-                                  ? 'Please wait while we prepare to share via WhatsApp'
-                                  : 'Please wait while we prepare your document',
-                              style: Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(
-                                    color: isDark
-                                        ? Colors.grey[300]
-                                        : Colors.grey[600],
-                                  ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ],
-                        ),
-                      ),
+                    return LoadingDialog(
+                      message: value == 'send_quotation'
+                          ? 'Sending Quotation...'
+                          : value == 'send_whatsapp'
+                          ? 'Sharing via WhatsApp...'
+                          : 'Generating PDF...',
+                      subtitle: value == 'send_quotation'
+                          ? 'Please wait while we send your quotation'
+                          : value == 'send_whatsapp'
+                          ? 'Please wait while we prepare to share via WhatsApp'
+                          : 'Please wait while we prepare your document',
                     );
                   },
                 );
@@ -5318,7 +4732,11 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                       );
                     } catch (e) {
                       _showSnackSafe(
-                        'WhatsApp sharing failed: ${e.toString()}',
+                        OdooErrorHandler.toSnackbarMessage(
+                          e,
+                          fallback:
+                              'Could not share via WhatsApp. Please try again.',
+                        ),
                         error: true,
                       );
                     } finally {
@@ -5327,7 +4745,10 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                   }
                 } catch (e) {
                   _showSnackSafe(
-                    'Operation failed: ${e.toString()}',
+                    OdooErrorHandler.toSnackbarMessage(
+                      e,
+                      fallback: 'Something went wrong. Please try again.',
+                    ),
                     error: true,
                   );
                 }
@@ -5600,30 +5021,14 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
 
   Widget _buildOtherInfoContent(bool isDark) {
     if (_isLoadingAdditionalInfo) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(40),
-          child: LoadingAnimationWidget.staggeredDotsWave(
-            color: const Color(0xFFC03355),
-            size: 50,
-          ),
-        ),
-      );
+      return const InfoSectionsSkeleton(rowsPerSection: [6, 2, 3, 5]);
     }
 
     if (_additionalInfo.isEmpty) {
       if (!_isLoadingAdditionalInfo) {
         Future.microtask(() => _fetchAdditionalInfo());
       }
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(40),
-          child: LoadingAnimationWidget.staggeredDotsWave(
-            color: const Color(0xFFC03355),
-            size: 50,
-          ),
-        ),
-      );
+      return const InfoSectionsSkeleton(rowsPerSection: [6, 2, 3, 5]);
     }
 
     final data = {..._localQuotation.toJson(), ..._additionalInfo};
@@ -5838,13 +5243,9 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
 
   Widget _buildQuoteBuilderContent(bool isDark) {
     if (_isLoadingQuoteBuilder) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(40),
-          child: CircularProgressIndicator(
-            color: Theme.of(context).primaryColor,
-          ),
-        ),
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: InfoSectionsSkeleton(rowsPerSection: [3, 3]),
       );
     }
 

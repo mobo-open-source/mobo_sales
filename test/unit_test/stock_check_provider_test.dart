@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:mobo_sales/providers/stock_check_provider.dart';
+import 'package:mobo_sales/services/data_change_bus.dart';
 import '../mocks/mock_services.dart';
 
 void main() {
@@ -178,6 +179,107 @@ void main() {
       expect(details['totalInStock'], 10.0);
       expect(details['totalAvailable'], 8.0);
       expect(details['totalReserved'], 2.0);
+    });
+
+    group('a product changed somewhere', () {
+      late DataChangeBus bus;
+      late StockCheckProvider listening;
+      late List<Map<String, dynamic>> server;
+
+      setUp(() {
+        bus = DataChangeBus.forTesting();
+        listening = StockCheckProvider(
+          stockService: mockStockService,
+          connectivityService: mockConnectivityService,
+          sessionService: mockSessionService,
+          bus: bus,
+        );
+        server = [
+          {'id': 1, 'name': 'Product A'},
+          {'id': 2, 'name': 'Product B'},
+        ];
+        when(() => mockStockService.getCompanyId()).thenAnswer((_) async => 1);
+        when(
+          () => mockStockService.fetchStockTemplates(
+            domain: any(named: 'domain'),
+            limit: any(named: 'limit'),
+            offset: any(named: 'offset'),
+            companyId: any(named: 'companyId'),
+          ),
+        ).thenAnswer((_) async => List<Map<String, dynamic>>.of(server));
+        when(
+          () => mockStockService.getStockCount(
+            domain: any(named: 'domain'),
+            companyId: any(named: 'companyId'),
+          ),
+        ).thenAnswer((_) async => server.length);
+      });
+
+      tearDown(() => listening.dispose());
+
+      Future<void> settle() =>
+          Future<void>.delayed(const Duration(milliseconds: 600));
+
+      test('shows its new name in the stock list, with no loading state in '
+          'between', () async {
+        await listening.fetchInitialStock();
+        expect(listening.stockList.first['name'], 'Product A');
+
+        var everLoading = false;
+        var everEmpty = false;
+        listening.addListener(() {
+          if (listening.isLoading) everLoading = true;
+          if (listening.stockList.isEmpty) everEmpty = true;
+        });
+
+        server[0] = {'id': 1, 'name': 'Product A renamed'};
+        bus.productChanged(1);
+        await settle();
+
+        expect(listening.stockList.first['name'], 'Product A renamed');
+        expect(everLoading, isFalse);
+        expect(
+          everEmpty,
+          isFalse,
+          reason: 'the rows stayed until the new came',
+        );
+      });
+
+      test('drops an archived product, and the count follows', () async {
+        await listening.fetchInitialStock();
+        server.removeAt(1);
+        bus.productChanged(2, kind: DataChangeKind.deleted);
+        await settle();
+
+        expect(listening.stockList.map((p) => p['id']), [1]);
+        expect(listening.totalProducts, 1);
+      });
+
+      test('forgets the copy kept for reopening the screen', () async {
+        await listening.fetchInitialStock();
+        server[0] = {'id': 1, 'name': 'Renamed'};
+        bus.productChanged(1);
+        await settle();
+
+        // Reopening the screen within 30 seconds reads the server, not the old
+        // copy.
+        await listening.fetchInitialStock();
+        expect(listening.stockList.first['name'], 'Renamed');
+      });
+
+      test('before anything was loaded there is nothing to reload', () async {
+        clearInteractions(mockStockService);
+        bus.productChanged(1);
+        await settle();
+        verifyNever(
+          () => mockStockService.fetchStockTemplates(
+            domain: any(named: 'domain'),
+            limit: any(named: 'limit'),
+            offset: any(named: 'offset'),
+            companyId: any(named: 'companyId'),
+          ),
+        );
+      });
     });
   });
 }

@@ -88,20 +88,23 @@ void main() {
       );
     });
 
-    test('isDomainFieldError should separate domain errors from field lists', () {
-      expect(
-        FieldValidationService.isDomainFieldError(
-          'Invalid field res.partner.customer_rank in leaf',
-        ),
-        true,
-      );
-      expect(
-        FieldValidationService.isDomainFieldError(
-          "Invalid field 'credit' on model 'res.partner'",
-        ),
-        false,
-      );
-    });
+    test(
+      'isDomainFieldError should separate domain errors from field lists',
+      () {
+        expect(
+          FieldValidationService.isDomainFieldError(
+            'Invalid field res.partner.customer_rank in leaf',
+          ),
+          true,
+        );
+        expect(
+          FieldValidationService.isDomainFieldError(
+            "Invalid field 'credit' on model 'res.partner'",
+          ),
+          false,
+        );
+      },
+    );
 
     test('isFieldValidationError should ignore a bare Odoo Server Error', () {
       expect(
@@ -112,25 +115,30 @@ void main() {
       );
     });
 
-    test('extractInaccessibleFields should parse Odoo 17/18 and 19 wording', () {
-      expect(
-        FieldValidationService.extractInaccessibleFields(
-          'You do not have enough rights to access the fields '
-          '"credit,credit_limit" on Contact (res.partner).',
-        ),
-        ['credit', 'credit_limit'],
-      );
-      expect(
-        FieldValidationService.extractInaccessibleFields(
-          'You do not have enough rights to access the field "credit_limit"',
-        ),
-        ['credit_limit'],
-      );
-      expect(
-        FieldValidationService.extractInaccessibleFields('Connection timeout'),
-        isEmpty,
-      );
-    });
+    test(
+      'extractInaccessibleFields should parse Odoo 17/18 and 19 wording',
+      () {
+        expect(
+          FieldValidationService.extractInaccessibleFields(
+            'You do not have enough rights to access the fields '
+            '"credit,credit_limit" on Contact (res.partner).',
+          ),
+          ['credit', 'credit_limit'],
+        );
+        expect(
+          FieldValidationService.extractInaccessibleFields(
+            'You do not have enough rights to access the field "credit_limit"',
+          ),
+          ['credit_limit'],
+        );
+        expect(
+          FieldValidationService.extractInaccessibleFields(
+            'Connection timeout',
+          ),
+          isEmpty,
+        );
+      },
+    );
 
     test('a domain field error is not retried with pruned fields', () async {
       var attempts = 0;
@@ -153,19 +161,25 @@ void main() {
       final seen = <List<String>>[];
       final result =
           await FieldValidationService.executeWithFieldValidation<String>(
-        model: 'res.partner',
-        initialFields: const ['id', 'name', 'email', 'credit', 'credit_limit'],
-        apiCall: (fields) async {
-          seen.add(List<String>.from(fields));
-          if (fields.contains('credit')) {
-            throw Exception(
-              'You do not have enough rights to access the fields '
-              '"credit,credit_limit" on Contact (res.partner).',
-            );
-          }
-          return 'ok';
-        },
-      );
+            model: 'res.partner',
+            initialFields: const [
+              'id',
+              'name',
+              'email',
+              'credit',
+              'credit_limit',
+            ],
+            apiCall: (fields) async {
+              seen.add(List<String>.from(fields));
+              if (fields.contains('credit')) {
+                throw Exception(
+                  'You do not have enough rights to access the fields '
+                  '"credit,credit_limit" on Contact (res.partner).',
+                );
+              }
+              return 'ok';
+            },
+          );
       expect(result, 'ok');
       expect(seen.last, ['id', 'name', 'email']);
       FieldValidationService.clearInvalidFieldsCache('res.partner');

@@ -9,6 +9,9 @@ import '../../services/auth_service.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../services/session_service.dart';
 import '../../home_scaffold.dart';
+import '../../services/sales_access.dart';
+import '../../utils/database_expiry.dart';
+import '../../widgets/access_denied_dialog.dart';
 
 class TotpPage extends StatefulWidget {
   final String serverUrl;
@@ -44,6 +47,14 @@ class _TotpPageState extends State<TotpPage> {
   bool _isSessionExtracted = false;
   bool _loginSuccess = false;
   bool _cookiesCleared = false;
+
+  /// Set once the server has refused the account Sales access, so neither of
+  /// the two places that save the session goes on or says "invalid code".
+  bool _accessBlocked = false;
+
+  /// Set once the database turned out to have expired, so the page keeps that
+  /// message and neither place that saves the session says "invalid code".
+  bool _expiredBlocked = false;
 
   @override
   void initState() {
@@ -388,7 +399,9 @@ class _TotpPageState extends State<TotpPage> {
 
           AnimatedContainer(
             duration: const Duration(milliseconds: 300),
-            height: _error != null ? 48 : 0,
+            // Tall enough for the longer messages, such as the expired
+            // database's, on a narrow phone.
+            height: _error == null ? 0 : (_error!.length > 80 ? 76 : 48),
             child: _error != null
                 ? Padding(
                     padding: const EdgeInsets.only(bottom: 8.0),
@@ -642,6 +655,7 @@ class _TotpPageState extends State<TotpPage> {
       if (domSuccess == true || _isSignedInUrl(urlStr)) {
         success = await _saveSessionData(sessionInfo: sessionInfo);
       }
+      if (_accessBlocked || _expiredBlocked) return;
 
       if (success) {
         await _onLoginSuccess();
@@ -737,8 +751,60 @@ class _TotpPageState extends State<TotpPage> {
     }
   }
 
+  /// The code was right but the account may not use the app: nothing was saved.
+  /// Says why in a popup and leaves the page with `false`. The screen under it
+  /// sees the `false` and closes too: Sign In back to the server (URL) screen,
+  /// Add Account back to Configuration.
+  Future<void> _blockAccess(SalesAccessException error) async {
+    if (_accessBlocked) return;
+    _accessBlocked = true;
+    if (!widget.isAddingAccount) {
+      // A fresh sign-in leaves the web view holding the refused account's web
+      // session; an added account must not touch the one the user is using.
+      try {
+        await CookieManager.instance().deleteAllCookies();
+      } catch (_) {}
+    }
+    if (mounted) {
+      setState(() {
+        _verifying = false;
+        _error = null;
+      });
+      await AccessDeniedDialog.showFor(
+        context,
+        error,
+        buttonLabel: widget.isAddingAccount
+            ? 'OK'
+            : AccessDeniedDialog.defaultButtonLabel,
+      );
+    }
+    if (mounted) Navigator.pop(context, false);
+  }
+
+  /// The code was right but the database has expired: nothing was saved. Says
+  /// so in the page's own error row and stays, so the user is not sent anywhere
+  /// with a session that cannot be used.
+  Future<void> _blockExpired() async {
+    if (_expiredBlocked) return;
+    _expiredBlocked = true;
+    if (!widget.isAddingAccount) {
+      // A fresh sign-in leaves the web view holding the refused web session; an
+      // added account must not touch the one the user is using.
+      try {
+        await CookieManager.instance().deleteAllCookies();
+      } catch (_) {}
+    }
+    if (mounted) {
+      setState(() {
+        _verifying = false;
+        _error = DatabaseExpiredException.message;
+      });
+    }
+  }
+
   Future<bool> _saveSessionData({Map<String, dynamic>? sessionInfo}) async {
     if (_isSessionExtracted) return true;
+    if (_accessBlocked || _expiredBlocked) return false;
 
     try {
       final currentUrl = await _webController?.getUrl();
@@ -783,6 +849,14 @@ class _TotpPageState extends State<TotpPage> {
         return false;
       }
     } catch (e) {
+      if (e is DatabaseExpiredException) {
+        await _blockExpired();
+        return false;
+      }
+      if (e is SalesAccessException) {
+        await _blockAccess(e);
+        return false;
+      }
       if (mounted && !_verifying) {
         setState(() {
           _error = 'Invalid code or login failed. Please try again.';

@@ -17,9 +17,10 @@ import 'package:mobo_sales/utils/navigation_helper.dart';
 import 'package:mobo_sales/widgets/pdf_widget.dart';
 import 'package:mobo_sales/models/quote.dart';
 import 'package:shimmer/shimmer.dart';
+import '../../services/data_change_bus.dart';
+import '../../services/odoo_error_handler.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../widgets/list_shimmer.dart';
-import 'package:loading_animation_widget/loading_animation_widget.dart';
 import '../../providers/currency_provider.dart';
 import '../../providers/invoice_details_provider_enterprise.dart';
 import '../../providers/last_opened_provider.dart';
@@ -29,9 +30,13 @@ import '../../services/payment_status_synchronizer.dart';
 import '../../services/session_service.dart';
 import '../../services/payment_service.dart';
 import '../../services/permission_service.dart';
+import '../../utils/odoo_version.dart';
 import '../invoices/create_invoice_screen.dart';
 import '../quotations/quotation_details_screen.dart';
 import '../quotations/quotation_list_screen.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import 'package:mobo_sales/widgets/loading_skeletons.dart';
+import 'package:mobo_sales/widgets/loading_dialog.dart';
 
 class InvoiceDetailsPage extends StatefulWidget {
   final String invoiceId;
@@ -90,11 +95,33 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
   bool _canUnlinkAccountMove = true;
   bool _canCreatePaymentRegister = true;
 
+  /// Hears about changes to this invoice made anywhere else in the app (a
+  /// payment registered, the invoice edited, a sale order it came from
+  /// changed) and reloads what is on screen.
+  DataChangeSubscription? _changeSubscription;
+
+  /// The provider this page's own actions go through. It announces them with
+  /// itself as the origin, and they have reloaded the page already.
+  InvoiceDetailsProvider? _ownProvider;
+
+  /// How many changes this page has heard, and how many it had heard when the
+  /// latest load of the invoice began. A load that began after the last change
+  /// already includes it (the server had it before it was announced). Counted,
+  /// not timed, so it does not depend on a clock.
+  int _changesHeard = 0;
+  int _changesHeardAtLoadStart = 0;
+
+  /// A change arrived while a load was running, which may have missed it.
+  bool _reloadAfterLoad = false;
+
+  static const Duration _changeDebounce = Duration(milliseconds: 350);
+
   @override
   void initState() {
     super.initState();
 
     _fetchPermissions();
+    _listenForChanges();
 
     _animationController = AnimationController(
       duration: const Duration(milliseconds: 300),
@@ -112,10 +139,88 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
     _tabController = TabController(length: 2, vsync: this);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       _animationController.forward();
       _loadInvoiceData();
       _startPaymentStatusMonitoring();
     });
+  }
+
+  void _listenForChanges() {
+    try {
+      _ownProvider = Provider.of<InvoiceDetailsProvider>(
+        context,
+        listen: false,
+      );
+    } catch (_) {}
+    _changeSubscription = DataChangeBus.instance.listen(
+      where: (change) {
+        final concerns = _concernsThisInvoice(change);
+        if (concerns) _changesHeard++;
+        return concerns;
+      },
+      debounce: _changeDebounce,
+      onChange: (_) => _onChangedElsewhere(),
+    );
+  }
+
+  /// Whether [change] can alter what this page shows: its own invoice, any
+  /// payment (an event names the payment, not the invoice it was for), or a
+  /// sale order when the invoice came from one. What this page's own provider
+  /// announced has reloaded the page already.
+  bool _concernsThisInvoice(DataChange change) {
+    if (identical(change.origin, _ownProvider) && _ownProvider != null) {
+      return false;
+    }
+    switch (change.entity) {
+      case DataEntity.invoice:
+        return change.id == null || change.id.toString() == widget.invoiceId;
+      case DataEntity.payment:
+        return true;
+      case DataEntity.quotation:
+        final origin = _ownProvider?.invoiceOrigin.trim() ?? '';
+        return origin.isNotEmpty && origin.toLowerCase() != 'false';
+      case DataEntity.customer:
+      case DataEntity.product:
+      case DataEntity.profile:
+        return false;
+    }
+  }
+
+  /// The page's own provider has confirmed, cancelled or reset the invoice
+  /// and read it again. What hangs off it — its payments, its other info, the
+  /// sale orders it came from, the customer card and the dashboard's
+  /// last-opened card — is read again here, in place.
+  void _refreshAroundInvoice() {
+    if (!mounted) return;
+    final provider = _ownProvider;
+    final invoice = provider?.invoice;
+    if (provider == null || invoice == null) return;
+
+    _fetchCustomerDetails(invoice).catchError((_) {});
+    _fetchRelatedSaleOrders(silent: true);
+    _loadInvoicePayments();
+    _fetchAdditionalInfo(silent: true);
+    _trackInvoiceAccessFromProvider(provider);
+  }
+
+  /// Reloads the invoice in place — no skeleton, same tab, same scroll — unless
+  /// a load that began after the change is already doing it.
+  void _onChangedElsewhere() {
+    if (!mounted) return;
+
+    // A load that began after the last change already carries it.
+    if (_changesHeardAtLoadStart >= _changesHeard) return;
+
+    // Another invoice's page owns the shared provider right now.
+    final shown = _ownProvider?.invoice?.id;
+    if (shown != null && shown.toString() != widget.invoiceId) return;
+
+    if (_isLoadingInvoiceData) {
+      _reloadAfterLoad = true;
+      return;
+    }
+    _loadInvoiceData(forceRefresh: true, silent: true);
   }
 
   Future<void> _fetchPermissions() async {
@@ -132,88 +237,6 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
         });
       }
     } catch (e) {}
-  }
-
-  void _showErrorDialog(String title, String message) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: isDark ? const Color(0xFF212121) : Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        elevation: isDark ? 0 : 8,
-        title: Text(
-          title,
-          style: Theme.of(dialogContext).textTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.w700,
-            color: isDark
-                ? Colors.white
-                : Theme.of(dialogContext).colorScheme.onSurface,
-          ),
-        ),
-        content: Text(
-          message,
-          style: Theme.of(dialogContext).textTheme.bodyMedium?.copyWith(
-            color: isDark
-                ? Colors.grey[300]
-                : Theme.of(dialogContext).colorScheme.onSurfaceVariant,
-          ),
-        ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
-        actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(dialogContext).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    '',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red[600],
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Close',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
   }
 
   void _showSafeSnackBar(String message, {Color? backgroundColor}) {
@@ -254,8 +277,17 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
     });
   }
 
-  Future<void> _loadInvoiceData({bool forceRefresh = false}) async {
+  /// Loads the invoice and what hangs off it. [silent] reloads in place for a
+  /// page that is already showing the invoice: nothing is cleared first, so
+  /// there is no skeleton, and a failed reload leaves the page as it was.
+  Future<void> _loadInvoiceData({
+    bool forceRefresh = false,
+    bool silent = false,
+  }) async {
     if (_isLoadingInvoiceData) {
+      // A load that began before what asked for this one may have read the
+      // old state: one more follows it.
+      if (forceRefresh) _reloadAfterLoad = true;
       return;
     }
 
@@ -266,7 +298,10 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
       return;
     }
 
-    if (mounted) {
+    _changesHeardAtLoadStart = _changesHeard;
+    if (silent) {
+      _isLoadingInvoiceData = true;
+    } else if (mounted) {
       setState(() {
         _isLoadingInvoiceData = true;
       });
@@ -277,13 +312,26 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
         context,
         listen: false,
       );
-      provider.resetState();
+      if (!silent) {
+        provider.resetState();
+        // The card is a file-level one: do not show the last invoice's
+        // customer on this invoice while it is read.
+        _customerDetails = null;
+      }
 
       if (widget.invoiceId.isNotEmpty) {
-        await provider.fetchInvoiceDetails(context, widget.invoiceId);
+        await provider.fetchInvoiceDetails(
+          context,
+          widget.invoiceId,
+          silent: silent,
+        );
 
         if (provider.invoice != null) {
-          await _fetchCustomerDetails(provider.invoice!);
+          // The customer card is a bonus: failing to read it must not stop the
+          // rest of the page from loading.
+          try {
+            await _fetchCustomerDetails(provider.invoice!);
+          } catch (_) {}
         }
 
         if (mounted) {
@@ -294,17 +342,20 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
           });
           _trackInvoiceAccessFromProvider(provider);
           _fetchProductImagesForInvoiceLines();
-          _fetchRelatedSaleOrders();
+          _fetchRelatedSaleOrders(silent: silent);
           _loadInvoicePayments();
 
-          _fetchAdditionalInfo();
+          _fetchAdditionalInfo(silent: silent);
         }
       }
     } finally {
+      _isLoadingInvoiceData = false;
       if (mounted) {
-        setState(() {
-          _isLoadingInvoiceData = false;
-        });
+        setState(() {});
+        if (_reloadAfterLoad) {
+          _reloadAfterLoad = false;
+          _loadInvoiceData(forceRefresh: true, silent: true);
+        }
       }
     }
   }
@@ -387,7 +438,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
     }
   }
 
-  Future<void> _fetchRelatedSaleOrders() async {
+  Future<void> _fetchRelatedSaleOrders({bool silent = false}) async {
     if (!mounted) return;
     final provider = Provider.of<InvoiceDetailsProvider>(
       context,
@@ -403,7 +454,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
       }
       return;
     }
-    if (mounted) {
+    if (mounted && !silent) {
       setState(() {
         _isLoadingRelatedSaleOrders = true;
         _relatedSaleOrders = [];
@@ -541,11 +592,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
             'args': [
               [
                 ['partner_id', '=', partnerId],
-                [
-                  'state',
-                  'in',
-                  ['posted', 'sent', 'reconciled'],
-                ],
+                ['state', 'in', Payment.confirmedStates],
               ],
               [
                 'id',
@@ -699,6 +746,11 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
 
   @override
   void dispose() {
+    _changeSubscription?.cancel();
+    _changeSubscription = null;
+    // The status watcher polls the server every 15 s and its 30 s refresh timer
+    // was never cancelled, so both kept running after the page was left.
+    _stopPaymentStatusMonitoring();
     _animationController.dispose();
     _fadeController.dispose();
     _tabController.dispose();
@@ -828,7 +880,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
       for (final payment in update.payments) {
         if (payment.isFullyReconciled) {
           totalPaid += payment.amount;
-        } else if (payment.isInPayment || payment.state == 'posted') {
+        } else if (payment.isInPayment || payment.isPosted) {
           totalPending += payment.amount;
         }
       }
@@ -881,7 +933,10 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
     }
   }
 
-  Future<void> _refreshPaymentStatus() async {
+  /// Syncs the payment state with the server and reloads the invoice and its
+  /// payments. [message] is shown last, once the reload is done (for a payment
+  /// that was recorded); a refresh on its own says nothing.
+  Future<void> _refreshPaymentStatus({String? message}) async {
     if (!mounted) return;
 
     final invoiceId = int.tryParse(widget.invoiceId);
@@ -910,11 +965,8 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
         await _loadInvoicePayments();
       }
 
-      if (mounted) {
-        _showSafeSnackBar(
-          'Payment status refreshed',
-          backgroundColor: Colors.green,
-        );
+      if (mounted && message != null) {
+        _showSafeSnackBar(message, backgroundColor: Colors.green);
       }
     } catch (e) {
       if (mounted) {
@@ -1694,86 +1746,15 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                 isPrimary: true,
 
                 onPressed: () async {
-                  final isDark =
-                      Theme.of(context).brightness == Brightness.dark;
-
                   bool dialogDismissed = false;
 
                   showDialog(
                     context: context,
-                    barrierDismissible: true,
+                    barrierDismissible: false,
                     builder: (dialogContext) {
-                      return Dialog(
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        backgroundColor: isDark
-                            ? const Color(0xFF212121)
-                            : Colors.white,
-                        elevation: 8,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 24,
-                            vertical: 28,
-                          ),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Align(
-                                alignment: Alignment.topRight,
-                                child: IconButton(
-                                  icon: const Icon(Icons.close),
-                                  onPressed: () =>
-                                      Navigator.of(dialogContext).pop(),
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(),
-                                  iconSize: 20,
-                                  color: isDark
-                                      ? Colors.grey[400]
-                                      : Colors.grey[600],
-                                ),
-                              ),
-                              Container(
-                                width: 56,
-                                height: 56,
-                                decoration: BoxDecoration(
-                                  color: isDark
-                                      ? Colors.white.withOpacity(0.12)
-                                      : AppTheme.primaryColor.withOpacity(0.1),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: LoadingAnimationWidget.fourRotatingDots(
-                                  color: isDark
-                                      ? Colors.white
-                                      : AppTheme.primaryColor,
-                                  size: 32,
-                                ),
-                              ),
-                              const SizedBox(height: 16),
-                              Text(
-                                'Generating PDF',
-                                style: Theme.of(context).textTheme.titleMedium
-                                    ?.copyWith(
-                                      fontWeight: FontWeight.w600,
-                                      color: isDark
-                                          ? Colors.white
-                                          : Colors.grey[900],
-                                    ),
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                'Please wait while we prepare your document',
-                                style: Theme.of(context).textTheme.bodySmall
-                                    ?.copyWith(
-                                      color: isDark
-                                          ? Colors.grey[400]
-                                          : Colors.grey[600],
-                                    ),
-                                textAlign: TextAlign.center,
-                              ),
-                            ],
-                          ),
-                        ),
+                      return const LoadingDialog(
+                        message: 'Generating PDF...',
+                        subtitle: 'Please wait while we prepare your document',
                       );
                     },
                   );
@@ -1826,76 +1807,14 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                           );
                         }
                       : () async {
-                          final isDark =
-                              Theme.of(context).brightness == Brightness.dark;
-
                           showDialog(
                             context: context,
                             barrierDismissible: false,
                             builder: (ctx) {
-                              return Dialog(
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(16),
-                                ),
-                                backgroundColor: isDark
-                                    ? const Color(0xFF212121)
-                                    : Colors.white,
-                                elevation: 8,
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 24,
-                                    vertical: 28,
-                                  ),
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Container(
-                                        width: 56,
-                                        height: 56,
-                                        decoration: BoxDecoration(
-                                          color: isDark
-                                              ? Colors.white.withOpacity(0.12)
-                                              : AppTheme.primaryColor
-                                                    .withOpacity(0.1),
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child:
-                                            LoadingAnimationWidget.fourRotatingDots(
-                                              color: isDark
-                                                  ? Colors.white
-                                                  : AppTheme.primaryColor,
-                                              size: 32,
-                                            ),
-                                      ),
-                                      const SizedBox(height: 16),
-                                      Text(
-                                        'Confirming Invoice',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .titleMedium
-                                            ?.copyWith(
-                                              fontWeight: FontWeight.w600,
-                                              color: isDark
-                                                  ? Colors.white
-                                                  : Colors.grey[900],
-                                            ),
-                                      ),
-                                      const SizedBox(height: 8),
-                                      Text(
-                                        'Please wait while we validate your invoice',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall
-                                            ?.copyWith(
-                                              color: isDark
-                                                  ? Colors.grey[400]
-                                                  : Colors.grey[600],
-                                            ),
-                                        textAlign: TextAlign.center,
-                                      ),
-                                    ],
-                                  ),
-                                ),
+                              return const LoadingDialog(
+                                message: 'Confirming Invoice...',
+                                subtitle:
+                                    'Please wait while we validate your invoice',
                               );
                             },
                           );
@@ -1910,6 +1829,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                               setState(() {
                                 _hasChanges = true;
                               });
+                              _refreshAroundInvoice();
                               CustomSnackbar.showSuccess(
                                 context,
                                 'Invoice validated successfully',
@@ -2109,69 +2029,14 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
             label: 'Reset to Draft',
             color: AppTheme.primaryColor,
             onPressed: () async {
-              final isDark = Theme.of(context).brightness == Brightness.dark;
-
               showDialog(
                 context: context,
                 barrierDismissible: false,
                 builder: (ctx) {
-                  return Dialog(
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    backgroundColor: isDark
-                        ? const Color(0xFF212121)
-                        : Colors.white,
-                    elevation: 8,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 28,
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 56,
-                            height: 56,
-                            decoration: BoxDecoration(
-                              color: isDark
-                                  ? Colors.white.withOpacity(0.12)
-                                  : AppTheme.primaryColor.withOpacity(0.1),
-                              shape: BoxShape.circle,
-                            ),
-                            child: LoadingAnimationWidget.fourRotatingDots(
-                              color: isDark
-                                  ? Colors.white
-                                  : AppTheme.primaryColor,
-                              size: 32,
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'Resetting Invoice',
-                            style: Theme.of(context).textTheme.titleMedium
-                                ?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                  color: isDark
-                                      ? Colors.white
-                                      : Colors.grey[900],
-                                ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Please wait while we reset your invoice to draft',
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(
-                                  color: isDark
-                                      ? Colors.grey[400]
-                                      : Colors.grey[600],
-                                ),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
-                    ),
+                  return const LoadingDialog(
+                    message: 'Resetting Invoice...',
+                    subtitle:
+                        'Please wait while we reset your invoice to draft',
                   );
                 },
               );
@@ -2186,6 +2051,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                   setState(() {
                     _hasChanges = true;
                   });
+                  _refreshAroundInvoice();
                   CustomSnackbar.showSuccess(
                     context,
                     'Invoice reset to draft successfully',
@@ -2203,69 +2069,13 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
             color: Colors.red[700]!,
             isPrimary: true,
             onPressed: () async {
-              final isDark = Theme.of(context).brightness == Brightness.dark;
-
               showDialog(
                 context: context,
                 barrierDismissible: false,
                 builder: (ctx) {
-                  return Dialog(
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    backgroundColor: isDark
-                        ? const Color(0xFF212121)
-                        : Colors.white,
-                    elevation: 8,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 28,
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 56,
-                            height: 56,
-                            decoration: BoxDecoration(
-                              color: isDark
-                                  ? Colors.white.withOpacity(0.12)
-                                  : AppTheme.primaryColor.withOpacity(0.1),
-                              shape: BoxShape.circle,
-                            ),
-                            child: LoadingAnimationWidget.fourRotatingDots(
-                              color: isDark
-                                  ? Colors.white
-                                  : AppTheme.primaryColor,
-                              size: 32,
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'Cancelling Invoice',
-                            style: Theme.of(context).textTheme.titleMedium
-                                ?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                  color: isDark
-                                      ? Colors.white
-                                      : Colors.grey[900],
-                                ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Please wait while we cancel your invoice',
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(
-                                  color: isDark
-                                      ? Colors.grey[400]
-                                      : Colors.grey[600],
-                                ),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
-                    ),
+                  return const LoadingDialog(
+                    message: 'Cancelling Invoice...',
+                    subtitle: 'Please wait while we cancel your invoice',
                   );
                 },
               );
@@ -2280,6 +2090,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                   setState(() {
                     _hasChanges = true;
                   });
+                  _refreshAroundInvoice();
                   CustomSnackbar.showSuccess(
                     context,
                     'Invoice cancelled successfully',
@@ -2305,83 +2116,25 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                   content: const Text(
                     'Are you sure you want to delete this invoice? This action cannot be undone.',
                   ),
+                  actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
                   actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(false),
-                      child: const Text('Cancel'),
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(true),
-                      child: const Text(
-                        'Delete',
-                        style: TextStyle(color: Colors.red),
-                      ),
+                    MoboDialogButtons(
+                      secondaryLabel: 'Cancel',
+                      onSecondary: () => Navigator.of(context).pop(false),
+                      primaryLabel: 'Delete',
+                      onPrimary: () => Navigator.of(context).pop(true),
                     ),
                   ],
                 ),
               );
               if (confirm == true) {
-                final isDark = Theme.of(context).brightness == Brightness.dark;
-
                 showDialog(
                   context: context,
                   barrierDismissible: false,
                   builder: (ctx) {
-                    return Dialog(
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      backgroundColor: isDark
-                          ? const Color(0xFF212121)
-                          : Colors.white,
-                      elevation: 8,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 24,
-                          vertical: 28,
-                        ),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              width: 56,
-                              height: 56,
-                              decoration: BoxDecoration(
-                                color: isDark
-                                    ? Colors.white.withOpacity(0.12)
-                                    : Colors.red[900]!.withOpacity(0.1),
-                                shape: BoxShape.circle,
-                              ),
-                              child: LoadingAnimationWidget.fourRotatingDots(
-                                color: isDark ? Colors.white : Colors.red[900]!,
-                                size: 32,
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              'Deleting Invoice',
-                              style: Theme.of(context).textTheme.titleMedium
-                                  ?.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                    color: isDark
-                                        ? Colors.white
-                                        : Colors.grey[900],
-                                  ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Please wait while we delete your invoice',
-                              style: Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(
-                                    color: isDark
-                                        ? Colors.grey[400]
-                                        : Colors.grey[600],
-                                  ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ],
-                        ),
-                      ),
+                    return const LoadingDialog(
+                      message: 'Deleting Invoice...',
+                      subtitle: 'Please wait while we delete your invoice',
                     );
                   },
                 );
@@ -3253,6 +3006,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                           'partner_id',
                                           'invoice_date',
                                           'invoice_date_due',
+                                          'invoice_payment_term_id',
                                           'amount_total',
                                           'amount_untaxed',
                                           'amount_tax',
@@ -3288,6 +3042,19 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                 );
 
                                 if (result == true && mounted) {
+                                  // One loading dialog, closed exactly once
+                                  // whichever way the reload ends, and before
+                                  // anything is said about the result.
+                                  var dialogOpen = true;
+                                  void closeDialog() {
+                                    if (!dialogOpen) return;
+                                    dialogOpen = false;
+                                    if (mounted &&
+                                        Navigator.of(context).canPop()) {
+                                      Navigator.of(context).pop();
+                                    }
+                                  }
+
                                   showDialog(
                                     context: context,
                                     barrierDismissible: false,
@@ -3313,33 +3080,31 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                   );
 
                                   try {
-                                    await provider.fetchInvoiceDetails(
-                                      context,
-                                      widget.invoiceId,
-                                    );
+                                    // The edit screen announced the change, but
+                                    // this page reloads itself here, with the
+                                    // lines, payments and details, so that the
+                                    // new figures are on screen before the
+                                    // message.
+                                    await _loadInvoiceData(forceRefresh: true);
+                                    closeDialog();
 
-                                    if (mounted &&
-                                        Navigator.of(context).canPop()) {
-                                      Navigator.of(context).pop();
-
-                                      await Future.delayed(
-                                        Duration(milliseconds: 300),
-                                      );
-
-                                      if (mounted) {
+                                    if (mounted) {
+                                      if (provider.errorMessage.isNotEmpty) {
+                                        CustomSnackbar.showError(
+                                          context,
+                                          'Failed to refresh invoice',
+                                        );
+                                      } else {
+                                        setState(() => _hasChanges = true);
                                         CustomSnackbar.showSuccess(
                                           context,
                                           'Invoice updated successfully',
                                         );
-
                                         widget.onInvoiceUpdated?.call();
                                       }
                                     }
                                   } catch (e) {
-                                    if (mounted &&
-                                        Navigator.of(context).canPop()) {
-                                      Navigator.of(context).pop();
-                                    }
+                                    closeDialog();
 
                                     if (mounted) {
                                       CustomSnackbar.showError(
@@ -3630,8 +3395,6 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                           return;
                         }
 
-                        final isDark =
-                            Theme.of(context).brightness == Brightness.dark;
                         final dialogContext = context;
 
                         if (value == 'confirm_invoice' ||
@@ -3647,10 +3410,15 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                               );
                               if (mounted) {
                                 if (ok) {
+                                  // The provider has reloaded the invoice, so
+                                  // the new status is on screen before this.
+                                  setState(() => _hasChanges = true);
+                                  _refreshAroundInvoice();
                                   _showSafeSnackBar(
                                     'Invoice confirmed',
                                     backgroundColor: Colors.green,
                                   );
+                                  widget.onInvoiceUpdated?.call();
                                 } else {
                                   _showSafeSnackBar(
                                     provider.errorMessage.isNotEmpty
@@ -3679,10 +3447,13 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                               );
                               if (mounted) {
                                 if (ok) {
+                                  setState(() => _hasChanges = true);
+                                  _refreshAroundInvoice();
                                   _showSafeSnackBar(
                                     'Invoice cancelled',
                                     backgroundColor: Colors.green,
                                   );
+                                  widget.onInvoiceUpdated?.call();
                                 } else {
                                   _showSafeSnackBar(
                                     provider.errorMessage.isNotEmpty
@@ -3711,10 +3482,13 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                               );
                               if (mounted) {
                                 if (ok) {
+                                  setState(() => _hasChanges = true);
+                                  _refreshAroundInvoice();
                                   _showSafeSnackBar(
                                     'Invoice reset to draft',
                                     backgroundColor: Colors.green,
                                   );
+                                  widget.onInvoiceUpdated?.call();
                                 } else {
                                   _showSafeSnackBar(
                                     provider.errorMessage.isNotEmpty
@@ -3774,70 +3548,20 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                                       .onSurfaceVariant,
                                           ),
                                     ),
-                                    actionsPadding: const EdgeInsets.symmetric(
-                                      horizontal: 16,
-                                      vertical: 12,
+                                    actionsPadding: const EdgeInsets.fromLTRB(
+                                      24,
+                                      8,
+                                      24,
+                                      20,
                                     ),
                                     actions: [
-                                      Row(
-                                        children: [
-                                          Expanded(
-                                            child: TextButton(
-                                              onPressed: () =>
-                                                  Navigator.of(ctx).pop(false),
-                                              style: TextButton.styleFrom(
-                                                foregroundColor: isDarkDlg
-                                                    ? Colors.grey[400]
-                                                    : Theme.of(ctx)
-                                                          .colorScheme
-                                                          .onSurfaceVariant,
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                      horizontal: 16,
-                                                      vertical: 12,
-                                                    ),
-                                                shape: RoundedRectangleBorder(
-                                                  borderRadius:
-                                                      BorderRadius.circular(10),
-                                                ),
-                                              ),
-                                              child: const Text(
-                                                'Cancel',
-                                                style: TextStyle(
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Expanded(
-                                            child: ElevatedButton(
-                                              onPressed: () =>
-                                                  Navigator.of(ctx).pop(true),
-                                              style: ElevatedButton.styleFrom(
-                                                backgroundColor:
-                                                    Colors.red[600],
-                                                foregroundColor: Colors.white,
-                                                shape: RoundedRectangleBorder(
-                                                  borderRadius:
-                                                      BorderRadius.circular(10),
-                                                ),
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                      horizontal: 20,
-                                                      vertical: 12,
-                                                    ),
-                                                elevation: isDarkDlg ? 0 : 3,
-                                              ),
-                                              child: const Text(
-                                                'Delete',
-                                                style: TextStyle(
-                                                  fontWeight: FontWeight.w600,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ],
+                                      MoboDialogButtons(
+                                        secondaryLabel: 'Cancel',
+                                        onSecondary: () =>
+                                            Navigator.of(ctx).pop(false),
+                                        primaryLabel: 'Delete',
+                                        onPrimary: () =>
+                                            Navigator.of(ctx).pop(true),
                                       ),
                                     ],
                                   );
@@ -3851,9 +3575,12 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                 );
                                 if (mounted) {
                                   if (ok) {
-                                    _showSafeSnackBar(
+                                    // The message is not a route, so popping
+                                    // right after it pops this page, and it
+                                    // stays up over the list behind.
+                                    CustomSnackbar.showSuccess(
+                                      context,
                                       'Invoice deleted',
-                                      backgroundColor: Colors.green,
                                     );
                                     Navigator.of(context).pop(true);
                                   } else {
@@ -3906,7 +3633,15 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                   (result['success'] == true ||
                                       result['forceRefresh'] == true)) {
                                 _lastManualRefreshTime = DateTime.now();
-                                await _refreshPaymentStatus();
+                                final recorded = result['success'] == true;
+                                if (recorded) _hasChanges = true;
+                                // Reloads the invoice and its payments first;
+                                // the message comes after the new figures.
+                                await _refreshPaymentStatus(
+                                  message: recorded
+                                      ? 'Payment recorded successfully!'
+                                      : null,
+                                );
                               }
                               return;
                             }
@@ -3921,96 +3656,37 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                           return;
                         }
 
+                        // The loading dialog is closed once, by whichever of
+                        // the paths below gets there first, and always before
+                        // an error is shown. A second pop would take this page
+                        // off the stack instead of a dialog.
+                        var loadingOpen = true;
+                        void closeLoading() {
+                          if (!loadingOpen) return;
+                          loadingOpen = false;
+                          if (!mounted) return;
+                          final navigator = Navigator.of(
+                            context,
+                            rootNavigator: true,
+                          );
+                          if (navigator.canPop()) navigator.pop();
+                        }
+
                         showDialog(
                           context: context,
-                          barrierDismissible: true,
+                          barrierDismissible: false,
                           builder: (dialogContext) {
-                            return Dialog(
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              backgroundColor: isDark
-                                  ? Colors.grey[900]
-                                  : Colors.white,
-                              elevation: 8,
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 24,
-                                  vertical: 28,
-                                ),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Align(
-                                      alignment: Alignment.topRight,
-                                      child: IconButton(
-                                        icon: const Icon(Icons.close),
-                                        onPressed: () =>
-                                            Navigator.of(dialogContext).pop(),
-                                        padding: EdgeInsets.zero,
-                                        constraints: const BoxConstraints(),
-                                        iconSize: 20,
-                                        color: isDark
-                                            ? Colors.grey[400]
-                                            : Colors.grey[600],
-                                      ),
-                                    ),
-                                    Container(
-                                      width: 64,
-                                      height: 64,
-                                      decoration: BoxDecoration(
-                                        color: isDark
-                                            ? Colors.white.withOpacity(0.12)
-                                            : const Color(
-                                                0xFF1E88E5,
-                                              ).withOpacity(0.1),
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child:
-                                          LoadingAnimationWidget.fourRotatingDots(
-                                            color: isDark
-                                                ? Colors.white
-                                                : const Color(0xFF1E88E5),
-                                            size: 32,
-                                          ),
-                                    ),
-                                    const SizedBox(height: 16),
-                                    Text(
-                                      value == 'send_invoice'
-                                          ? 'Sending Invoice'
-                                          : value == 'send_whatsapp'
-                                          ? 'Sending via WhatsApp'
-                                          : 'Generating PDF',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .titleMedium
-                                          ?.copyWith(
-                                            fontWeight: FontWeight.w600,
-                                            color: isDark
-                                                ? Colors.white
-                                                : Colors.grey[900],
-                                          ),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Text(
-                                      value == 'send_invoice'
-                                          ? 'Please wait while we send your invoice'
-                                          : value == 'send_whatsapp'
-                                          ? 'Please wait while we send your invoice via WhatsApp'
-                                          : 'Please wait while we prepare your document',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall
-                                          ?.copyWith(
-                                            color: isDark
-                                                ? Colors.grey[400]
-                                                : Colors.grey[600],
-                                          ),
-                                      textAlign: TextAlign.center,
-                                    ),
-                                  ],
-                                ),
-                              ),
+                            return LoadingDialog(
+                              message: value == 'send_invoice'
+                                  ? 'Sending Invoice...'
+                                  : value == 'send_whatsapp'
+                                  ? 'Sending via WhatsApp...'
+                                  : 'Generating PDF...',
+                              subtitle: value == 'send_invoice'
+                                  ? 'Please wait while we send your invoice'
+                                  : value == 'send_whatsapp'
+                                  ? 'Please wait while we send your invoice via WhatsApp'
+                                  : 'Please wait while we prepare your document',
                             );
                           },
                         );
@@ -4036,17 +3712,18 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                               await InvoiceService.instance.sendInvoice(
                                 dialogContext,
                                 invoiceId,
-                                closeLoadingDialog: () {
-                                  if (dialogContext.mounted) {
-                                    Navigator.of(dialogContext).pop();
-                                  }
-                                },
+                                closeLoadingDialog: closeLoading,
                               );
                             } catch (e) {
+                              closeLoading();
                               if (mounted) {
-                                _showErrorDialog(
-                                  'Send Email Failed',
-                                  e.toString(),
+                                CustomSnackbar.showError(
+                                  context,
+                                  OdooErrorHandler.toSnackbarMessage(
+                                    e,
+                                    fallback:
+                                        'Could not send the invoice. Please try again.',
+                                  ),
                                 );
                               }
                             }
@@ -4057,10 +3734,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                 provider.invoice!,
                               );
                             } finally {
-                              if (dialogContext.mounted) {
-                                final navigator = Navigator.of(dialogContext);
-                                if (navigator.canPop()) navigator.pop();
-                              }
+                              closeLoading();
                             }
                           } else {
                             try {
@@ -4069,6 +3743,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                 provider.invoice!,
                               );
                             } catch (e) {
+                              closeLoading();
                               if (mounted) {
                                 CustomSnackbar.showError(
                                   context,
@@ -4076,21 +3751,11 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                 );
                               }
                             } finally {
-                              try {
-                                if (mounted &&
-                                    Navigator.of(
-                                      context,
-                                      rootNavigator: true,
-                                    ).canPop()) {
-                                  Navigator.of(
-                                    context,
-                                    rootNavigator: true,
-                                  ).pop();
-                                }
-                              } catch (e) {}
+                              closeLoading();
                             }
                           }
                         } catch (e) {
+                          closeLoading();
                           if (mounted) {
                             CustomSnackbar.showError(
                               context,
@@ -4157,31 +3822,9 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
             if (provider.isProcessing)
               Container(
                 color: Colors.black54,
-                child: Center(
-                  child: Container(
-                    padding: const EdgeInsets.all(24),
-                    decoration: BoxDecoration(
-                      color: isDark ? const Color(0xFF212121) : Colors.white,
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        LoadingAnimationWidget.fourRotatingDots(
-                          color: primaryColor,
-                          size: 40,
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'Processing...',
-                          style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(
-                                fontWeight: FontWeight.w600,
-                                color: isDark ? Colors.white : Colors.grey[900],
-                              ),
-                        ),
-                      ],
-                    ),
+                child: const Center(
+                  child: LoadingCard(
+                    subtitle: 'Please wait while we process your request',
                   ),
                 ),
               ),
@@ -5066,6 +4709,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
   Future<void> _fetchAdditionalInfo({
     List<String>? invalidFields,
     int retryCount = 0,
+    bool silent = false,
   }) async {
     if (!mounted) return;
 
@@ -5078,9 +4722,12 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
       return;
     }
 
-    setState(() {
-      _isLoadingAdditionalInfo = true;
-    });
+    // A silent refresh keeps the values on screen instead of a skeleton.
+    if (!silent) {
+      setState(() {
+        _isLoadingAdditionalInfo = true;
+      });
+    }
 
     try {
       final client = await OdooSessionManager.getClient();
@@ -5092,6 +4739,8 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
         }
         return;
       }
+
+      final generation = await OdooSessionManager.serverGeneration();
 
       final List<String> fieldsToFetch = [
         'ref',
@@ -5106,7 +4755,8 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
         'secured',
         'preferred_payment_method_line_id',
         'auto_post',
-        'checked',
+        // Removed in Odoo 20.
+        if (odooAccountMoveHasChecked(generation)) 'checked',
         'campaign_id',
         'medium_id',
         'source_id',
@@ -5151,6 +4801,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
           return _fetchAdditionalInfo(
             invalidFields: allInvalidFields,
             retryCount: retryCount + 1,
+            silent: silent,
           );
         }
       }
@@ -5204,30 +4855,14 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
 
   Widget _buildOtherInfoContent(bool isDark) {
     if (_isLoadingAdditionalInfo) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(40),
-          child: LoadingAnimationWidget.staggeredDotsWave(
-            color: const Color(0xFFC03355),
-            size: 50,
-          ),
-        ),
-      );
+      return const InfoSectionsSkeleton(rowsPerSection: [6, 6, 3]);
     }
 
     if (_additionalInfo.isEmpty) {
       if (!_isLoadingAdditionalInfo) {
         Future.microtask(() => _fetchAdditionalInfo());
       }
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(40),
-          child: LoadingAnimationWidget.staggeredDotsWave(
-            color: const Color(0xFFC03355),
-            size: 50,
-          ),
-        ),
-      );
+      return const InfoSectionsSkeleton(rowsPerSection: [6, 6, 3]);
     }
 
     final data = _additionalInfo;
@@ -5263,7 +4898,11 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
               _safeStringInvoice(data['preferred_payment_method_line_id']),
             ),
             ('Auto-post', _formatBooleanInvoice(data['auto_post'])),
-            ('Checked', _formatBooleanInvoice(data['checked'])),
+            // The field is gone in Odoo 20; a row would show a made-up "No".
+            if (odooAccountMoveHasChecked(
+              OdooSessionManager.cachedServerGeneration,
+            ))
+              ('Checked', _formatBooleanInvoice(data['checked'])),
           ]),
           const SizedBox(height: 20),
 
@@ -5663,12 +5302,15 @@ Future<void> _fetchCustomerDetails(Invoice invoice) async {
 
     if (client == null) return;
 
+    final generation = await OdooSessionManager.serverGeneration();
+
     List<String> fieldsToFetch = [
       'id',
       'name',
       'email',
       'phone',
-      'mobile',
+      // Removed in Odoo 19, where asking for it fails the whole read.
+      if (odooHasPartnerMobile(generation)) 'mobile',
       'street',
       'street2',
       'city',

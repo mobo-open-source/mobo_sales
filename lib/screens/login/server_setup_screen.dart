@@ -58,8 +58,12 @@ class _ServerSetupScreenState extends State<ServerSetupScreen>
     }
   }
 
-  void _goToCredentials(LoginProvider provider) {
-    Navigator.push(
+  Future<void> _goToCredentials(LoginProvider provider) async {
+    // The address field still holds the focus when Next is tapped, and a field
+    // that holds it when the next screen opens is given it again when that
+    // screen closes: the keyboard would open over the message.
+    FocusManager.instance.primaryFocus?.unfocus();
+    final refusal = await Navigator.push<String>(
       context,
       MaterialPageRoute(
         builder: (context) => CredentialsScreen(
@@ -69,6 +73,16 @@ class _ServerSetupScreenState extends State<ServerSetupScreen>
         ),
       ),
     );
+    // Back here with the keyboard shut, whichever way the user came back.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      FocusManager.instance.primaryFocus?.unfocus();
+    });
+    // The sign-in was refused for a reason that belongs to the server and the
+    // database (an expired subscription): it is said here, under them.
+    if (refusal != null && mounted) {
+      provider.errorMessage = refusal;
+      setState(() => inlineError = refusal);
+    }
   }
 
   bool _canProceedToCredentials(LoginProvider provider) {
@@ -157,6 +171,7 @@ class _ServerSetupScreenState extends State<ServerSetupScreen>
                             dbHasError ||
                             inlineError != null ||
                             _shouldValidate) {
+                          provider.errorMessage = null;
                           setState(() {
                             urlHasError = newUrlHasError;
                             dbHasError = false;
@@ -242,6 +257,7 @@ class _ServerSetupScreenState extends State<ServerSetupScreen>
                                       ? null
                                       : (val) {
                                           provider.setDatabase(val);
+                                          provider.errorMessage = null;
                                           setState(() {
                                             dbHasError =
                                                 (val == null || val.isEmpty);

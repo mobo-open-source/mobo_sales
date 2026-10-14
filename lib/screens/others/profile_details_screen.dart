@@ -5,13 +5,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hugeicons/hugeicons.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'package:provider/provider.dart';
 import 'package:mobo_sales/utils/app_theme.dart';
-import 'package:mobo_sales/services/odoo_schema_service.dart';
+import 'package:mobo_sales/services/data_change_bus.dart';
+import 'package:mobo_sales/services/odoo_session_manager.dart';
+import 'package:mobo_sales/services/profile_version_stamp.dart';
 import 'package:mobo_sales/services/session_service.dart';
+import 'package:mobo_sales/utils/form_change_tracker.dart';
+import 'package:mobo_sales/utils/odoo_partner_domains.dart';
+import 'package:mobo_sales/utils/odoo_version.dart';
 import 'package:mobo_sales/widgets/custom_text_field.dart';
-import 'package:mobo_sales/widgets/custom_dropdown.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../../shared/widgets/mobo/mobo_select_form_field.dart';
 import 'package:mobo_sales/widgets/data_loss_warning_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mobo_sales/providers/settings_provider.dart';
@@ -19,8 +24,10 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:mobo_sales/widgets/custom_snackbar.dart';
 import 'package:mobo_sales/widgets/full_image_screen.dart';
-import 'package:mobo_sales/widgets/list_shimmer.dart';
+import 'package:mobo_sales/widgets/profile_details_shimmer.dart';
 import 'package:mobo_sales/widgets/circular_image_widget.dart';
+import 'package:mobo_sales/widgets/loading_dialog.dart';
+import '../../widgets/dispose_when_unmounted.dart';
 
 class ProfileDetailsScreen extends StatefulWidget {
   const ProfileDetailsScreen({super.key});
@@ -40,8 +47,6 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   File? _pickedImageFile;
   String? _pickedImageBase64;
   final ImagePicker _picker = ImagePicker();
-  static const String _cacheKeyUser = 'user_profile';
-  static const String _cacheKeyUserWriteDate = 'user_profile_write_date';
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
   bool _hasInternet = true;
   bool _isEditMode = false;
@@ -58,14 +63,41 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   final TextEditingController _websiteController = TextEditingController();
   final TextEditingController _functionController = TextEditingController();
 
+  /// Save is offered only once the form differs from the record it opened with.
+  ///
+  /// It reads what Save sends, the six text fields. The photo, the address and
+  /// the related company are each written the moment they are picked, so
+  /// nothing is left pending on them for Save to send.
+  late final _changes = FormChangeTracker(
+    () => {
+      'name': _nameController.text.trim(),
+      'email': _emailController.text.trim(),
+      'phone': _phoneController.text.trim(),
+      'mobile': _mobileController.text.trim(),
+      'website': _websiteController.text.trim(),
+      'function': _functionController.text.trim(),
+    },
+  );
+
+  void _onFormChanged() {
+    if (mounted) setState(() {});
+  }
+
   int? _partnerId;
   int? _relatedCompanyId;
   String? _relatedCompanyName;
 
   Future<void> _loadCachedUser() async {
     try {
+      // This account's own copy only; with no account there is nothing safe
+      // to show before the fetch (the shared key holds some other account's).
+      final session = await OdooSessionManager.getCurrentSession();
+      final uid = session?.userId;
+      if (session == null || uid == null) return;
       final prefs = await SharedPreferences.getInstance();
-      final cached = prefs.getString(_cacheKeyUser);
+      final cached = prefs.getString(
+        profileCacheKey(database: session.database, userId: uid),
+      );
       if (cached != null && cached.isNotEmpty && mounted) {
         final data = jsonDecode(cached) as Map<String, dynamic>;
         setState(() {
@@ -122,6 +154,9 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
       _mobileController.text = _normalizeForEdit(_userData!['mobile']);
       _websiteController.text = _normalizeForEdit(_userData!['website']);
       _functionController.text = _normalizeForEdit(_userData!['function']);
+      // The form now holds the record: this is what "unchanged" means. Every
+      // (re)load of the profile and Cancel come through here.
+      _changes.markClean();
     }
   }
 
@@ -133,6 +168,12 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   @override
   void initState() {
     super.initState();
+    _nameController.addListener(_onFormChanged);
+    _emailController.addListener(_onFormChanged);
+    _phoneController.addListener(_onFormChanged);
+    _mobileController.addListener(_onFormChanged);
+    _websiteController.addListener(_onFormChanged);
+    _functionController.addListener(_onFormChanged);
     _loadCachedUser();
     _fetchUserProfile();
     _loadCountries();
@@ -142,6 +183,12 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   @override
   void dispose() {
     _connectivitySub?.cancel();
+    _nameController.removeListener(_onFormChanged);
+    _emailController.removeListener(_onFormChanged);
+    _phoneController.removeListener(_onFormChanged);
+    _mobileController.removeListener(_onFormChanged);
+    _websiteController.removeListener(_onFormChanged);
+    _functionController.removeListener(_onFormChanged);
     _nameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
@@ -201,17 +248,20 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   /// dialog and nothing else.
   BuildContext? _loadingDialogContext;
 
-  void _showLoadingDialog(BuildContext context, String message) {
+  void _showLoadingDialog(
+    BuildContext context,
+    String message, {
+    String subtitle = 'Please wait while we process your request',
+  }) {
     if (_isShowingLoadingDialog || !mounted) return;
     _isShowingLoadingDialog = true;
 
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
         _loadingDialogContext = ctx;
-        return _buildLoadingDialogBody(ctx, message, isDark);
+        return LoadingDialog(message: message, subtitle: subtitle);
       },
     ).whenComplete(() {
       _isShowingLoadingDialog = false;
@@ -227,56 +277,6 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     if (ctx == null) return;
     final navigator = Navigator.of(ctx);
     if (navigator.canPop()) navigator.pop();
-  }
-
-  Widget _buildLoadingDialogBody(
-    BuildContext ctx,
-    String message,
-    bool isDark,
-  ) {
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      backgroundColor: isDark ? const Color(0xFF212121) : Colors.white,
-      elevation: 8,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(
-                color: isDark
-                    ? Colors.white.withOpacity(0.12)
-                    : const Color(0xFF1E88E5).withOpacity(0.1),
-                shape: BoxShape.circle,
-              ),
-              child: LoadingAnimationWidget.fourRotatingDots(
-                color: isDark ? Colors.white : const Color(0xFF1E88E5),
-                size: 32,
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              message,
-              style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-                color: isDark ? Colors.white : Colors.grey[900],
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Please wait while we process your request',
-              style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
-                color: isDark ? Colors.grey[400] : Colors.grey[600],
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   void _showErrorSnackBar(String message) {
@@ -473,11 +473,6 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   /// Whether this server still has `res.partner.mobile` (removed in Odoo 19).
   bool _supportsMobile = true;
 
-  /// Loads the signed-in user's profile.
-  ///
-  /// The field list is narrowed to what this server actually defines. A read
-  /// is all-or-nothing: asking for one field a release dropped fails the
-  /// whole request and takes every other value down with it.
   Future<void> _fetchUserProfile({bool forceRefresh = false}) async {
     if (!mounted) return;
     setState(() => _isLoading = _userData == null);
@@ -493,9 +488,8 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
       return;
     }
 
-    _supportsMobile = await OdooSchemaService.instance.isWritable(
-      'res.users',
-      'mobile',
+    _supportsMobile = odooHasPartnerMobile(
+      odooGeneration(session.serverVersion),
     );
 
     final client = await sessionService.client;
@@ -519,14 +513,18 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     }
 
     try {
-      final profileFields = await OdooSchemaService.instance
-          .readableFields('res.users', const [
+      final result = await client.callKw({
+        'model': 'res.users',
+        'method': 'read',
+        'args': [uid],
+        'kwargs': {
+          'fields': [
             'name',
             'login',
             'email',
             'image_1920',
             'phone',
-            'mobile',
+            if (_supportsMobile) 'mobile',
             'website',
             'function',
             'company_id',
@@ -539,13 +537,8 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
             'country_id',
             'active',
             'write_date',
-          ]);
-
-      final result = await client.callKw({
-        'model': 'res.users',
-        'method': 'read',
-        'args': [uid],
-        'kwargs': {'fields': profileFields},
+          ],
+        },
       });
 
       if (result is List && result.isNotEmpty && mounted) {
@@ -567,6 +560,28 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
           _isLoading = false;
         });
         _updateControllers();
+
+        // The related company is the partner's parent: a separate read. Without
+        // it the field below opens empty whatever the record holds.
+        await _loadRelatedCompany();
+
+        // The account list shows the name and photo kept on each stored
+        // account; keep this one's current.
+        unawaited(
+          sessionService.updateStoredAccountProfile(
+            session,
+            name: data['name'] is String ? data['name'] as String : null,
+            imageBase64: avatar,
+          ),
+        );
+        if (forceRefresh && mounted) {
+          unawaited(
+            Provider.of<SettingsProvider>(
+              context,
+              listen: false,
+            ).fetchUserProfile(),
+          );
+        }
       } else {
         if (mounted) {
           setState(() {
@@ -675,30 +690,21 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         throw Exception('Session expired. Please log in again.');
       }
 
-      final accepted = await OdooSchemaService.instance.writableValues(
-        'res.users',
-        updates,
-      );
-      if (accepted.isNotEmpty) {
-        await client.callKw({
-          'model': 'res.users',
-          'method': 'write',
-          'args': [
-            [uid],
-            accepted,
-          ],
-          'kwargs': {},
-        });
-      }
+      await client.callKw({
+        'model': 'res.users',
+        'method': 'write',
+        'args': [
+          [uid],
+          updates,
+        ],
+        'kwargs': {},
+      });
+      // The server has it: the profile screen, the app bar avatar and the
+      // dashboard header read it again on this event.
+      DataChangeBus.instance.profileChanged(origin: this);
     }
 
     await _fetchUserProfile();
-
-    if (!mounted) return;
-    await Provider.of<SettingsProvider>(
-      context,
-      listen: false,
-    ).fetchUserProfile();
   }
 
   Future<void> _handleBack() async {
@@ -749,36 +755,17 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         });
       }
 
-      await _fetchUserProfile();
+      DataChangeBus.instance.profileChanged(origin: this);
 
-      if (field == 'image_1920' && mounted) {
-        final settingsProvider = Provider.of<SettingsProvider>(
-          context,
-          listen: false,
-        );
-        await settingsProvider.fetchUserProfile();
-      }
+      await _fetchUserProfile();
     } catch (e) {
       rethrow;
     }
   }
 
-  bool _hasUnsavedChanges() {
-    if (_userData == null) return false;
-
-    return _nameController.text.trim() !=
-            _normalizeForEdit(_userData!['name']) ||
-        _emailController.text.trim() !=
-            _normalizeForEdit(_userData!['email']) ||
-        _phoneController.text.trim() !=
-            _normalizeForEdit(_userData!['phone']) ||
-        _mobileController.text.trim() !=
-            _normalizeForEdit(_userData!['mobile']) ||
-        _websiteController.text.trim() !=
-            _normalizeForEdit(_userData!['website']) ||
-        _functionController.text.trim() !=
-            _normalizeForEdit(_userData!['function']);
-  }
+  /// The same question Save is gated on, so the discard prompt and the button
+  /// never disagree about whether the form was edited.
+  bool _hasUnsavedChanges() => _changes.isDirty;
 
   Future<bool> _showUnsavedChangesDialog() async {
     final result = await DataLossWarningDialog.show(
@@ -1121,209 +1108,219 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         ? _userData!['state_id'][0] as int
         : null;
 
+    // What the dialog opened with. The state list loads after it opens, but
+    // that only fills the options: `selectedStateId` is already the saved one,
+    // so the load cannot make the dialog look edited.
+    final addressChanges = FormChangeTracker(
+      () => {
+        'street': streetController.text.trim(),
+        'street2': street2Controller.text.trim(),
+        'city': cityController.text.trim(),
+        'zip': zipController.text.trim(),
+        'country': selectedCountryId,
+        'state': selectedStateId,
+      },
+    );
+    addressChanges.markClean();
+
+    // Typing reaches the Save button through the dialog's own setter, which
+    // the builder below hands over on every build. The controllers are
+    // disposed with the dialog, which drops this listener.
+    StateSetter? refreshDialog;
+    void onAddressTextChanged() => refreshDialog?.call(() {});
+    streetController.addListener(onAddressTextChanged);
+    street2Controller.addListener(onAddressTextChanged);
+    cityController.addListener(onAddressTextChanged);
+    zipController.addListener(onAddressTextChanged);
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) {
-          if (selectedCountryId != null &&
-              _states.isEmpty &&
-              !_isLoadingStates) {
-            _isLoadingStates = true;
-            _fetchStates(selectedCountryId!).then((states) {
-              if (context.mounted) {
-                setDialogState(() {
-                  _states = states;
-                  _isLoadingStates = false;
-                });
-              }
-            });
-          }
+      builder: (context) => DisposeWhenUnmounted(
+        controllers: [
+          streetController,
+          street2Controller,
+          cityController,
+          zipController,
+        ],
+        child: StatefulBuilder(
+          builder: (context, setDialogState) {
+            refreshDialog = setDialogState;
+            if (selectedCountryId != null &&
+                _states.isEmpty &&
+                !_isLoadingStates) {
+              _isLoadingStates = true;
+              _fetchStates(selectedCountryId!).then((states) {
+                if (context.mounted) {
+                  setDialogState(() {
+                    _states = states;
+                    _isLoadingStates = false;
+                  });
+                }
+              });
+            }
 
-          return AlertDialog(
-            backgroundColor: isDark ? Colors.grey[850] : Colors.white,
-            surfaceTintColor: Colors.transparent,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            title: Text(
-              'Edit Address',
-              style: TextStyle(
-                color: isDark ? Colors.white : Colors.black87,
-                fontWeight: FontWeight.w600,
+            // Save once the address differs from what the dialog opened with and
+            // the one required field, Street Address, is filled.
+            final canSave =
+                addressChanges.isDirty &&
+                streetController.text.trim().isNotEmpty;
+
+            return AlertDialog(
+              backgroundColor: isDark ? Colors.grey[850] : Colors.white,
+              surfaceTintColor: Colors.transparent,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
               ),
-            ),
-            content: SingleChildScrollView(
-              child: SizedBox(
-                width: 400,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _buildAddressTextField(
-                      controller: streetController,
-                      label: 'Street Address',
-                      hint: 'Enter street address',
-                      isDark: isDark,
-                      theme: theme,
-                    ),
-                    const SizedBox(height: 16),
-                    _buildAddressTextField(
-                      controller: street2Controller,
-                      label: 'Street Address 2',
-                      hint: 'Apartment, suite, etc. (optional)',
-                      isDark: isDark,
-                      theme: theme,
-                    ),
-                    const SizedBox(height: 16),
-                    _buildAddressTextField(
-                      controller: cityController,
-                      label: 'City',
-                      hint: 'Enter city',
-                      isDark: isDark,
-                      theme: theme,
-                    ),
-                    const SizedBox(height: 16),
-                    _buildAddressTextField(
-                      controller: zipController,
-                      label: 'ZIP Code',
-                      hint: 'Enter ZIP code',
-                      isDark: isDark,
-                      theme: theme,
-                      keyboardType: TextInputType.number,
-                    ),
-                    const SizedBox(height: 16),
-                    _buildCountryDropdown(
-                      selectedCountryId: selectedCountryId,
-                      countries: _countries,
-                      isLoading: _isLoadingCountries,
-                      isDark: isDark,
-                      theme: theme,
-                      onChanged: (countryId) {
-                        setDialogState(() {
-                          selectedCountryId = countryId;
-                          selectedStateId = null;
-                          _states = [];
-                        });
-                        if (countryId != null) {
-                          _isLoadingStates = true;
-                          _fetchStates(countryId).then((states) {
-                            if (context.mounted) {
-                              setDialogState(() {
-                                _states = states;
-                                _isLoadingStates = false;
-                              });
-                            }
+              title: Text(
+                'Edit Address',
+                style: TextStyle(
+                  color: isDark ? Colors.white : Colors.black87,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              content: SingleChildScrollView(
+                child: SizedBox(
+                  width: 400,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _buildAddressTextField(
+                        controller: streetController,
+                        label: 'Street Address',
+                        hint: 'Enter street address',
+                        isDark: isDark,
+                        theme: theme,
+                        isRequired: true,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildAddressTextField(
+                        controller: street2Controller,
+                        label: 'Street Address 2',
+                        hint: 'Apartment, suite, etc. (optional)',
+                        isDark: isDark,
+                        theme: theme,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildAddressTextField(
+                        controller: cityController,
+                        label: 'City',
+                        hint: 'Enter city',
+                        isDark: isDark,
+                        theme: theme,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildAddressTextField(
+                        controller: zipController,
+                        label: 'ZIP Code',
+                        hint: 'Enter ZIP code',
+                        isDark: isDark,
+                        theme: theme,
+                        keyboardType: TextInputType.number,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildCountryDropdown(
+                        selectedCountryId: selectedCountryId,
+                        countries: _countries,
+                        isLoading: _isLoadingCountries,
+                        isDark: isDark,
+                        theme: theme,
+                        onChanged: (countryId) {
+                          setDialogState(() {
+                            selectedCountryId = countryId;
+                            selectedStateId = null;
+                            _states = [];
                           });
-                        }
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    _buildStateDropdown(
-                      selectedStateId: selectedStateId,
-                      states: _states,
-                      isLoading: _isLoadingStates,
-                      isDark: isDark,
-                      theme: theme,
-                      enabled: selectedCountryId != null,
-                      onChanged: (stateId) {
-                        setDialogState(() => selectedStateId = stateId);
-                      },
-                    ),
-                  ],
+                          if (countryId != null) {
+                            _isLoadingStates = true;
+                            _fetchStates(countryId).then((states) {
+                              if (context.mounted) {
+                                setDialogState(() {
+                                  _states = states;
+                                  _isLoadingStates = false;
+                                });
+                              }
+                            });
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      _buildStateDropdown(
+                        selectedStateId: selectedStateId,
+                        states: _states,
+                        isLoading: _isLoadingStates,
+                        isDark: isDark,
+                        theme: theme,
+                        enabled: selectedCountryId != null,
+                        onChanged: (stateId) {
+                          setDialogState(() => selectedStateId = stateId);
+                        },
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                  streetController.dispose();
-                  street2Controller.dispose();
-                  cityController.dispose();
-                  zipController.dispose();
-                },
-                style: TextButton.styleFrom(
-                  foregroundColor: isDark ? Colors.grey[400] : Colors.grey[700],
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-                child: const Text(
-                  'Cancel',
-                  style: TextStyle(fontWeight: FontWeight.w500),
-                ),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  if (streetController.text.trim().isEmpty) {
-                    _showErrorSnackBar('Street address is required');
-                    return;
-                  }
-                  final addressData = {
-                    'street': streetController.text.trim(),
-                    'street2': street2Controller.text.trim().isEmpty
-                        ? false
-                        : street2Controller.text.trim(),
-                    'city': cityController.text.trim().isEmpty
-                        ? false
-                        : cityController.text.trim(),
-                    'zip': zipController.text.trim().isEmpty
-                        ? false
-                        : zipController.text.trim(),
-                    'country_id': selectedCountryId ?? false,
-                    'state_id': selectedStateId ?? false,
-                  };
+              actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
+              actions: [
+                MoboDialogButtons(
+                  secondaryLabel: 'Cancel',
+                  onSecondary: () {
+                    Navigator.pop(context);
+                  },
+                  primaryLabel: 'Save',
+                  onPrimary: !canSave
+                      ? null
+                      : () async {
+                          if (streetController.text.trim().isEmpty) {
+                            _showErrorSnackBar('Street address is required');
+                            return;
+                          }
+                          final addressData = {
+                            'street': streetController.text.trim(),
+                            'street2': street2Controller.text.trim().isEmpty
+                                ? false
+                                : street2Controller.text.trim(),
+                            'city': cityController.text.trim().isEmpty
+                                ? false
+                                : cityController.text.trim(),
+                            'zip': zipController.text.trim().isEmpty
+                                ? false
+                                : zipController.text.trim(),
+                            'country_id': selectedCountryId ?? false,
+                            'state_id': selectedStateId ?? false,
+                          };
 
-                  final navigator = Navigator.of(context);
-                  navigator.pop();
+                          final navigator = Navigator.of(context);
+                          navigator.pop();
 
-                  streetController.dispose();
-                  street2Controller.dispose();
-                  cityController.dispose();
-                  zipController.dispose();
-
-                  _showLoadingDialog(context, 'Updating Address');
-                  try {
-                    await _updateAddressFields(
-                      addressData,
-                    ).timeout(_networkTimeout);
-                    _dismissLoadingDialog();
-                    if (mounted) {
-                      _showSuccessSnackBar('Address updated successfully');
-                    }
-                  } catch (e) {
-                    _dismissLoadingDialog();
-                    if (mounted) {
-                      _showErrorSnackBar(
-                        _saveFailureMessage(e, 'Failed to update address'),
-                      );
-                    }
-                  }
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: theme.primaryColor,
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 12,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
+                          _showLoadingDialog(context, 'Updating Address');
+                          try {
+                            await _updateAddressFields(
+                              addressData,
+                            ).timeout(_networkTimeout);
+                            _dismissLoadingDialog();
+                            if (mounted) {
+                              _showSuccessSnackBar(
+                                'Address updated successfully',
+                              );
+                            }
+                          } catch (e) {
+                            _dismissLoadingDialog();
+                            if (mounted) {
+                              _showErrorSnackBar(
+                                _saveFailureMessage(
+                                  e,
+                                  'Failed to update address',
+                                ),
+                              );
+                            }
+                          }
+                        },
                 ),
-                child: const Text(
-                  'Save',
-                  style: TextStyle(fontWeight: FontWeight.w500),
-                ),
-              ),
-            ],
-          );
-        },
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -1342,38 +1339,22 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         ? selectedCountryId
         : null;
 
-    final stringItems = isLoading
-        ? [
-            const DropdownMenuItem<String>(
-              value: null,
-              child: Text('Loading...'),
-            ),
-          ]
-        : [
-            const DropdownMenuItem<String>(
-              value: null,
-              child: Text(
-                'Select Country',
-                style: TextStyle(fontStyle: FontStyle.italic),
-              ),
-            ),
-            ...countries.map(
-              (country) => DropdownMenuItem<String>(
-                value: country['id'].toString(),
-                child: Text(country['name']),
-              ),
-            ),
-          ];
-
-    return CustomDropdownField(
-      value: safeSelectedCountryId?.toString(),
-      labelText: 'Country',
+    return MoboSelectFormField<String>(
+      label: 'Country',
       hintText: 'Select Country',
-      isDark: isDark,
-      items: stringItems,
-      onChanged: isLoading
-          ? null
-          : (value) => onChanged(value != null ? int.tryParse(value) : null),
+      searchable: true,
+      isLoading: isLoading,
+      enabled: !isLoading,
+      value: safeSelectedCountryId?.toString(),
+      options: [
+        for (final country in countries)
+          MoboOption<String>(
+            value: country['id'].toString(),
+            label: country['name'].toString(),
+          ),
+      ],
+      onChanged: (value) =>
+          onChanged(value != null ? int.tryParse(value) : null),
       validator: (value) => value == null ? 'Please select a country' : null,
     );
   }
@@ -1393,51 +1374,24 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         ? selectedStateId
         : null;
 
-    final stringItems = !enabled
-        ? [
-            const DropdownMenuItem<String>(
-              value: null,
-              child: Text(
-                'Select country first',
-                style: TextStyle(fontStyle: FontStyle.italic),
-              ),
-            ),
-          ]
-        : isLoading
-        ? [
-            const DropdownMenuItem<String>(
-              value: null,
-              child: Text('Loading...'),
-            ),
-          ]
-        : [
-            const DropdownMenuItem<String>(
-              value: null,
-              child: Text(
-                'Select State/Province',
-                style: TextStyle(fontStyle: FontStyle.italic),
-              ),
-            ),
-            ...states.map(
-              (state) => DropdownMenuItem<String>(
-                value: state['id'].toString(),
-                child: Text(state['name']),
-              ),
-            ),
-          ];
-
-    return CustomDropdownField(
-      value: safeSelectedStateId?.toString(),
-      labelText: 'State/Province',
+    return MoboSelectField<String>(
+      label: 'State/Province',
       hintText: enabled
           ? (isLoading ? 'Loading...' : 'Select State/Province')
           : 'Select country first',
-      isDark: isDark,
-      items: stringItems,
-      onChanged: (!enabled || isLoading)
-          ? null
-          : (value) => onChanged(value != null ? int.tryParse(value) : null),
-      validator: (value) => null,
+      searchable: true,
+      isLoading: isLoading,
+      enabled: enabled && !isLoading,
+      value: safeSelectedStateId?.toString(),
+      options: [
+        for (final state in states)
+          MoboOption<String>(
+            value: state['id'].toString(),
+            label: state['name'].toString(),
+          ),
+      ],
+      onChanged: (value) =>
+          onChanged(value != null ? int.tryParse(value) : null),
     );
   }
 
@@ -1448,10 +1402,12 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     required bool isDark,
     required ThemeData theme,
     TextInputType keyboardType = TextInputType.text,
+    bool isRequired = false,
   }) {
     return CustomTextField(
       controller: controller,
       labelText: label,
+      isRequired: isRequired,
       hintText: hint,
       isDark: isDark,
       keyboardType: keyboardType,
@@ -1490,6 +1446,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         ],
         'kwargs': {},
       });
+      DataChangeBus.instance.profileChanged(origin: this);
       await _fetchUserProfile();
     } catch (e) {
       rethrow;
@@ -1558,12 +1515,10 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         );
         final client = await sessionService.client;
         if (client == null) return;
-        final domain = [
-          ['is_company', '=', true],
-        ];
-        if (q.trim().isNotEmpty) {
-          domain.add(['name', 'ilike', q.trim()]);
-        }
+        final domain = relatedCompanyDomain(
+          odooGeneration(sessionService.currentSession?.serverVersion),
+          query: q,
+        );
         final res = await client.callKw({
           'model': 'res.partner',
           'method': 'search_read',
@@ -1724,6 +1679,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
       ],
       'kwargs': {},
     });
+    DataChangeBus.instance.profileChanged(origin: this);
   }
 
   String _formatAddress(Map<String, dynamic> data) {
@@ -1950,12 +1906,23 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
             Padding(
               padding: const EdgeInsets.only(right: 0.0),
               child: TextButton(
-                onPressed: isEditingDisabled || _isSaving
+                // Save is offered only once the form is on screen (it
+                // validates through `_formKey`, which is not mounted under the
+                // loading shimmer) and something has changed.
+                onPressed:
+                    isEditingDisabled ||
+                        _isSaving ||
+                        (_isEditMode &&
+                            (_isLoading ||
+                                _userData == null ||
+                                !_changes.isDirty))
                     ? null
                     : () {
                         if (_isEditMode) {
                           _saveAllChanges();
                         } else {
+                          // A freshly opened edit form is unchanged.
+                          _changes.markClean();
                           setState(() {
                             _isEditMode = true;
                           });
@@ -1981,11 +1948,7 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         ),
         backgroundColor: isDark ? Colors.grey[900]! : Colors.white,
         body: _isLoading
-            ? ListShimmer.buildListShimmer(
-                context,
-                itemCount: 1,
-                type: ShimmerType.profile,
-              )
+            ? ProfileDetailsShimmer(fieldCount: _supportsMobile ? 9 : 8)
             : _userData == null
             ? const Center(child: Text('No user data found'))
             : RefreshIndicator(

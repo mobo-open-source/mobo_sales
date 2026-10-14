@@ -17,6 +17,8 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../../models/product.dart';
 import '../../services/connectivity_service.dart';
+import '../../services/data_change_bus.dart';
+import '../../services/odoo_compat.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../services/runtime_permission_service.dart';
 import '../../services/session_service.dart';
@@ -32,6 +34,7 @@ import '../../widgets/product_list_tile.dart';
 import 'product_details_page.dart';
 import 'create_product_screen.dart';
 import '../../widgets/list_search_bar.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 
 class ProductListScreen extends StatefulWidget {
   const ProductListScreen({super.key});
@@ -154,6 +157,7 @@ class ProductListScreenState extends State<ProductListScreen>
   Timer? _debounceTimer;
   late final ConnectivityService _connectivityService;
   Timer? _retryTimer;
+  DataChangeSubscription? _productChangeSubscription;
 
   static final List<Product> _cachedProducts = [];
   static DateTime? _lastFetchTime;
@@ -230,6 +234,12 @@ class ProductListScreenState extends State<ProductListScreen>
     _searchController = TextEditingController();
     _scrollController = ScrollController();
     _hasSession = false;
+    // A product created, edited or archived anywhere in the app: the list
+    // reads what it shows again, in place.
+    _productChangeSubscription = DataChangeBus.instance.listen(
+      where: (change) => change.isProduct,
+      onChange: (_) => unawaited(_onProductsChanged()),
+    );
 
     _connectivityService = context.read<ConnectivityService>();
     _setupConnectivityListener();
@@ -307,6 +317,63 @@ class ProductListScreenState extends State<ProductListScreen>
     }
 
     _initializeAndLoadProducts();
+  }
+
+  bool _reloadingForChange = false;
+  bool _changedWhileReloading = false;
+
+  /// Reads the products the list shows again after one changed — the page it
+  /// is on, the group counts and the groups that are open — without clearing
+  /// anything first, so the rows stay and the scroll position stays where the
+  /// user left it.
+  Future<void> _onProductsChanged() async {
+    if (!mounted || !_hasLoaded || _isLoading) return;
+    if (_reloadingForChange) {
+      _changedWhileReloading = true;
+      return;
+    }
+    _reloadingForChange = true;
+    try {
+      final productProvider = context.read<ProductProvider>();
+      await productProvider.quietReload();
+      if (!mounted) return;
+      setState(() {
+        _totalProducts = productProvider.totalProducts;
+        _hasMoreData = productProvider.hasMoreData;
+        _currentPage = productProvider.currentPage;
+      });
+      _updateProductTemplates();
+
+      if (productProvider.selectedGroupBy != null) {
+        final opened = _loadedGroups.keys.toList();
+        await _fetchGroupSummary();
+        for (final key in opened) {
+          if (!mounted) return;
+          if (_groupSummary.containsKey(key)) {
+            await loadGroupProducts(key, replace: true);
+          } else {
+            // The group has no product left.
+            _loadedGroups.remove(key);
+            _groupLoadedCounts.remove(key);
+            _groupHasMore.remove(key);
+          }
+        }
+        if (mounted) {
+          setState(() {
+            _cachedGroupSummary = Map.from(_groupSummary);
+            _cachedGroupByField = productProvider.selectedGroupBy;
+          });
+        }
+      }
+    } catch (_) {
+      // The list keeps what it shows; a pull-down reads it again.
+    } finally {
+      _reloadingForChange = false;
+      if (_changedWhileReloading && mounted) {
+        _changedWhileReloading = false;
+        unawaited(_onProductsChanged());
+      }
+    }
   }
 
   void showProductFilterBottomSheet() async {
@@ -465,179 +532,139 @@ class ProductListScreenState extends State<ProductListScreen>
                           ),
                         ),
                       ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: () async {
-                                setDialogState(() {
-                                  tempState['showServicesOnly'] = false;
-                                  tempState['showConsumablesOnly'] = false;
-                                  tempState['showStorableOnly'] = false;
-                                  tempState['showAvailableOnly'] = false;
-                                  tempState['selectedGroupBy'] = null;
-                                });
+                      child: MoboDialogButtons(
+                        secondaryLabel: 'Clear All',
+                        onSecondary: () async {
+                          setDialogState(() {
+                            tempState['showServicesOnly'] = false;
+                            tempState['showConsumablesOnly'] = false;
+                            tempState['showStorableOnly'] = false;
+                            tempState['showAvailableOnly'] = false;
+                            tempState['selectedGroupBy'] = null;
+                          });
 
-                                setState(() {
-                                  _showServicesOnly = false;
-                                  _showConsumablesOnly = false;
-                                  _showStorableOnly = false;
-                                  _showAvailableOnly = false;
+                          setState(() {
+                            _showServicesOnly = false;
+                            _showConsumablesOnly = false;
+                            _showStorableOnly = false;
+                            _showAvailableOnly = false;
 
-                                  _searchController.clear();
-                                  _currentPage = 0;
-                                  _isLoading = true;
-                                  _hasLoaded = false;
-                                  _filteredProductTemplates = [];
-                                });
+                            _searchController.clear();
+                            _currentPage = 0;
+                            _isLoading = true;
+                            _hasLoaded = false;
+                            _filteredProductTemplates = [];
+                          });
 
-                                productProvider.setGroupBy(null);
+                          productProvider.setGroupBy(null);
 
-                                setState(() {
-                                  _currentPage = 0;
-                                  _hasMoreData = true;
-                                  _isLoading = true;
-                                });
-                                await _loadProducts();
+                          setState(() {
+                            _currentPage = 0;
+                            _hasMoreData = true;
+                            _isLoading = true;
+                          });
+                          await _loadProducts();
 
-                                if (mounted) {
-                                  CustomSnackbar.showInfo(
-                                    context,
-                                    'All filters cleared',
+                          if (mounted) {
+                            CustomSnackbar.showInfo(
+                              context,
+                              'All filters cleared',
+                            );
+                            Navigator.of(context).pop();
+                          }
+                        },
+                        primaryLabel: 'Apply',
+                        onPrimary: () async {
+                          try {
+                            Navigator.of(context).pop();
+
+                            setState(() {
+                              _showServicesOnly =
+                                  tempState['showServicesOnly'] ?? false;
+                              _showConsumablesOnly =
+                                  tempState['showConsumablesOnly'] ?? false;
+                              _showStorableOnly =
+                                  tempState['showStorableOnly'] ?? false;
+                              _showAvailableOnly =
+                                  tempState['showAvailableOnly'] ?? false;
+
+                              _currentPage = 0;
+                              _isLoading = true;
+                              _hasLoaded = false;
+                              _filteredProductTemplates = [];
+                            });
+
+                            _groupSummary.clear();
+                            _loadedGroups.clear();
+                            _groupLoadedCounts.clear();
+                            _groupHasMore.clear();
+                            _cachedGroupSummary.clear();
+                            _cachedLoadedGroups.clear();
+                            _cachedGroupByField = null;
+
+                            final provider = productProvider;
+
+                            provider.setFilterState(
+                              showServicesOnly: _showServicesOnly,
+                              showConsumablesOnly: _showConsumablesOnly,
+                              showStorableOnly: _showStorableOnly,
+                              showAvailableOnly: _showAvailableOnly,
+                            );
+
+                            provider.setGroupBy(
+                              tempState['selectedGroupBy'] as String?,
+                            );
+
+                            setState(() {
+                              _currentPage = 0;
+                              _hasMoreData = true;
+                              _isLoading = true;
+                            });
+                            await _loadProducts();
+
+                            final totalFilters =
+                                (tempState['showServicesOnly'] == true
+                                    ? 1
+                                    : 0) +
+                                (tempState['showConsumablesOnly'] == true
+                                    ? 1
+                                    : 0) +
+                                (tempState['showStorableOnly'] == true
+                                    ? 1
+                                    : 0) +
+                                (tempState['showAvailableOnly'] == true
+                                    ? 1
+                                    : 0);
+                            final hasGroupBy =
+                                tempState['selectedGroupBy'] != null;
+
+                            if (mounted) {
+                              String message;
+                              if (totalFilters == 0 && !hasGroupBy) {
+                                message = 'All filters cleared';
+                              } else {
+                                final parts = <String>[];
+                                if (totalFilters > 0) {
+                                  parts.add(
+                                    '$totalFilters filter${totalFilters > 1 ? 's' : ''}',
                                   );
-                                  Navigator.of(context).pop();
                                 }
-                              },
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: isDark
-                                    ? Colors.white
-                                    : Colors.black87,
-                                side: BorderSide(
-                                  color: isDark
-                                      ? Colors.grey[600]!
-                                      : Colors.grey[300]!,
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 12,
-                                ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              child: const Text('Clear All'),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            flex: 2,
-                            child: ElevatedButton(
-                              onPressed: () async {
-                                try {
-                                  Navigator.of(context).pop();
-
-                                  setState(() {
-                                    _showServicesOnly =
-                                        tempState['showServicesOnly'] ?? false;
-                                    _showConsumablesOnly =
-                                        tempState['showConsumablesOnly'] ??
-                                        false;
-                                    _showStorableOnly =
-                                        tempState['showStorableOnly'] ?? false;
-                                    _showAvailableOnly =
-                                        tempState['showAvailableOnly'] ?? false;
-
-                                    _currentPage = 0;
-                                    _isLoading = true;
-                                    _hasLoaded = false;
-                                    _filteredProductTemplates = [];
-                                  });
-
-                                  _groupSummary.clear();
-                                  _loadedGroups.clear();
-                                  _groupLoadedCounts.clear();
-                                  _groupHasMore.clear();
-                                  _cachedGroupSummary.clear();
-                                  _cachedLoadedGroups.clear();
-                                  _cachedGroupByField = null;
-
-                                  final provider = productProvider;
-
-                                  provider.setFilterState(
-                                    showServicesOnly: _showServicesOnly,
-                                    showConsumablesOnly: _showConsumablesOnly,
-                                    showStorableOnly: _showStorableOnly,
-                                    showAvailableOnly: _showAvailableOnly,
-                                  );
-
-                                  provider.setGroupBy(
-                                    tempState['selectedGroupBy'] as String?,
-                                  );
-
-                                  setState(() {
-                                    _currentPage = 0;
-                                    _hasMoreData = true;
-                                    _isLoading = true;
-                                  });
-                                  await _loadProducts();
-
-                                  final totalFilters =
-                                      (tempState['showServicesOnly'] == true
-                                          ? 1
-                                          : 0) +
-                                      (tempState['showConsumablesOnly'] == true
-                                          ? 1
-                                          : 0) +
-                                      (tempState['showStorableOnly'] == true
-                                          ? 1
-                                          : 0) +
-                                      (tempState['showAvailableOnly'] == true
-                                          ? 1
-                                          : 0);
-                                  final hasGroupBy =
-                                      tempState['selectedGroupBy'] != null;
-
-                                  if (mounted) {
-                                    String message;
-                                    if (totalFilters == 0 && !hasGroupBy) {
-                                      message = 'All filters cleared';
-                                    } else {
-                                      final parts = <String>[];
-                                      if (totalFilters > 0) {
-                                        parts.add(
-                                          '$totalFilters filter${totalFilters > 1 ? 's' : ''}',
-                                        );
-                                      }
-                                      if (hasGroupBy) {
-                                        parts.add('group by');
-                                      }
-                                      message =
-                                          'Applied ${parts.join(' and ')}';
-                                    }
-                                    CustomSnackbar.showInfo(context, message);
-                                  }
-                                } catch (e) {
-                                  if (mounted) {
-                                    CustomSnackbar.showError(
-                                      context,
-                                      'Failed to apply filters: ${e.toString()}',
-                                    );
-                                  }
+                                if (hasGroupBy) {
+                                  parts.add('group by');
                                 }
-                              },
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: theme.primaryColor,
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 12,
-                                ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              child: const Text('Apply'),
-                            ),
-                          ),
-                        ],
+                                message = 'Applied ${parts.join(' and ')}';
+                              }
+                              CustomSnackbar.showInfo(context, message);
+                            }
+                          } catch (e) {
+                            if (mounted) {
+                              CustomSnackbar.showError(
+                                context,
+                                'Failed to apply filters: ${e.toString()}',
+                              );
+                            }
+                          }
+                        },
                       ),
                     ),
                   ],
@@ -1058,14 +1085,13 @@ class ProductListScreenState extends State<ProductListScreen>
         content: const Text(
           'Voice search requires microphone access to convert your speech to text.',
         ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Not Now'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Enable'),
+          MoboDialogButtons(
+            secondaryLabel: 'Not Now',
+            onSecondary: () => Navigator.pop(context, false),
+            primaryLabel: 'Enable',
+            onPrimary: () => Navigator.pop(context, true),
           ),
         ],
       ),
@@ -1298,10 +1324,7 @@ class ProductListScreenState extends State<ProductListScreen>
               IconButton(
                 splashRadius: 20,
                 padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(
-                  minWidth: 36,
-                  minHeight: 36,
-                ),
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                 icon: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 200),
                   child: Icon(
@@ -1319,10 +1342,7 @@ class ProductListScreenState extends State<ProductListScreen>
               IconButton(
                 splashRadius: 20,
                 padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(
-                  minWidth: 36,
-                  minHeight: 36,
-                ),
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                 icon: _isScanning
                     ? SizedBox(
                         width: 18,
@@ -1557,19 +1577,10 @@ class ProductListScreenState extends State<ProductListScreen>
           if (result != null) {
             _cachedProducts.clear();
             _lastFetchTime = null;
-            if (mounted) setState(() => _isLoading = true);
             await _loadProducts();
           }
         },
-        backgroundColor: Theme.of(context).brightness == Brightness.dark
-            ? Colors.white
-            : Theme.of(context).primaryColor,
-        child: Icon(
-          HugeIcons.strokeRoundedPackageAdd,
-          color: Theme.of(context).brightness == Brightness.dark
-              ? Colors.black
-              : Colors.white,
-        ),
+        child: const Icon(HugeIcons.strokeRoundedPackageAdd),
       ),
     );
   }
@@ -2686,52 +2697,52 @@ class ProductListScreenState extends State<ProductListScreen>
         return;
       }
 
+      final generation = await OdooSessionManager.serverGeneration();
       List<dynamic> domain = [
         ['sale_ok', '=', true],
+        ...productProvider.typeFilterLeaves(
+          services: _showServicesOnly,
+          consumables: _showConsumablesOnly,
+          storable: _showStorableOnly,
+          generation: generation,
+        ),
       ];
 
-      if (_showServicesOnly) domain.add(['type', '=', 'service']);
-      if (_showConsumablesOnly) domain.add(['type', '=', 'consu']);
-      if (_showStorableOnly) domain.add(['type', '=', 'product']);
       if (_showAvailableOnly) domain.add(['qty_available', '>', 0]);
 
       if (_searchController.text.trim().isNotEmpty) {
-        final searchQuery = _searchController.text.trim();
-        domain.add('|');
-        domain.add('|');
-        domain.add(['name', 'ilike', searchQuery]);
-        domain.add(['default_code', 'ilike', searchQuery]);
-        domain.add(['barcode', 'ilike', searchQuery]);
+        domain.addAll(
+          productSearchDomain(
+            _searchController.text.trim(),
+            generation: generation,
+          ),
+        );
       }
 
-      final result = await client.callKw({
-        'model': 'product.template',
-        'method': 'read_group',
-        'args': [domain],
-        'kwargs': {
-          'fields': ['id'],
-          'groupby': [groupByField],
-          'lazy': false,
-        },
-      });
+      // `read_group` changed in Odoo 19 and 20; OdooCompat returns the old
+      // row shape (`__count`, `[id, name]` for a many2one) on every version.
+      final result = await OdooCompat.readGroup(
+        model: 'product.template',
+        domain: domain,
+        fields: ['id'],
+        groupby: [groupByField],
+        callKw: client.callKw,
+        generation: generation,
+      );
 
-      if (result is List) {
-        _groupSummary.clear();
-        int totalCountFromGroups = 0;
+      _groupSummary.clear();
+      int totalCountFromGroups = 0;
 
-        for (final group in result) {
-          if (group is Map) {
-            final groupKey = _getGroupKeyFromReadGroup(group, groupByField);
-            final count = (group['__count'] ?? 0) as int;
-            _groupSummary[groupKey] = count;
-            totalCountFromGroups += count;
-          }
-        }
+      for (final group in result) {
+        final groupKey = _getGroupKeyFromReadGroup(group, groupByField);
+        final count = (group['__count'] ?? 0) as int;
+        _groupSummary[groupKey] = count;
+        totalCountFromGroups += count;
+      }
 
-        if (mounted) {
-          setState(() {});
-        } else {}
-      } else {}
+      if (mounted) {
+        setState(() {});
+      }
     } catch (e) {}
   }
 
@@ -2784,7 +2795,14 @@ class ProductListScreenState extends State<ProductListScreen>
     }
   }
 
-  Future<void> loadGroupProducts(String groupKey) async {
+  /// Loads the products of group [groupKey]. [replace] reads the group again
+  /// from its start and swaps the rows for the new ones — as many as were
+  /// loaded — once they arrive, so an open group keeps showing what it had in
+  /// the meantime (and the page does not jump).
+  Future<void> loadGroupProducts(
+    String groupKey, {
+    bool replace = false,
+  }) async {
     final productProvider = context.read<ProductProvider>();
     final groupByField = productProvider.selectedGroupBy;
 
@@ -2794,7 +2812,8 @@ class ProductListScreenState extends State<ProductListScreen>
       return;
     }
 
-    if (_loadedGroups.containsKey(groupKey) &&
+    if (!replace &&
+        _loadedGroups.containsKey(groupKey) &&
         _groupLoadedCounts[groupKey] != null) {
       if (_groupHasMore[groupKey] != true) {
         return;
@@ -2816,11 +2835,14 @@ class ProductListScreenState extends State<ProductListScreen>
 
       List<dynamic> domain = [
         ['sale_ok', '=', true],
+        ...productProvider.typeFilterLeaves(
+          services: _showServicesOnly,
+          consumables: _showConsumablesOnly,
+          storable: _showStorableOnly,
+          generation: await OdooSessionManager.serverGeneration(),
+        ),
       ];
 
-      if (_showServicesOnly) domain.add(['type', '=', 'service']);
-      if (_showConsumablesOnly) domain.add(['type', '=', 'consu']);
-      if (_showStorableOnly) domain.add(['type', '=', 'product']);
       if (_showAvailableOnly) domain.add(['qty_available', '>', 0]);
 
       if (_searchController.text.trim().isNotEmpty) {
@@ -2835,8 +2857,9 @@ class ProductListScreenState extends State<ProductListScreen>
       final groupDomain = _buildGroupDomain(groupKey, groupByField);
       domain.addAll(groupDomain);
 
-      final alreadyLoadedCount = _loadedGroups[groupKey]?.length ?? 0;
-      final limit = 30;
+      final previouslyLoaded = _loadedGroups[groupKey]?.length ?? 0;
+      final alreadyLoadedCount = replace ? 0 : previouslyLoaded;
+      final limit = replace && previouslyLoaded > 30 ? previouslyLoaded : 30;
 
       List<dynamic> variantDomain = [];
 
@@ -2918,7 +2941,7 @@ class ProductListScreenState extends State<ProductListScreen>
           .cast<Product>()
           .toList();
 
-      if (_loadedGroups.containsKey(groupKey)) {
+      if (!replace && _loadedGroups.containsKey(groupKey)) {
         final existingIds = _loadedGroups[groupKey]!.map((p) => p.id).toSet();
         final newProducts = products
             .where((p) => !existingIds.contains(p.id))
@@ -3147,8 +3170,6 @@ class ProductListScreenState extends State<ProductListScreen>
         _currentPage = productProvider.currentPage;
         _totalProducts = productProvider.totalProducts;
       });
-
-      _showSuccessSnackBar('Products refreshed successfully');
     } catch (e) {
       if (mounted) {
         _showErrorSnackBar(
@@ -3225,12 +3246,6 @@ class ProductListScreenState extends State<ProductListScreen>
   void _showErrorSnackBar(String message) {
     if (!mounted) return;
     CustomSnackbar.showError(context, message);
-  }
-
-  void _showSuccessSnackBar(String message) {
-    if (!mounted) return;
-
-    CustomSnackbar.showSuccess(context, message);
   }
 
   Widget _buildFullPageShimmer() {
@@ -3780,66 +3795,58 @@ class ProductListScreenState extends State<ProductListScreen>
               ),
             ),
             actions: [
-              TextButton.icon(
-                onPressed: () {
-                  setState(() => _isListening = false);
-                  _speech.stop();
-                  _updateDialogCallback = null;
-                  _dismissListeningDialog();
-                  _cancelListeningTimeout();
-                },
-                icon: Icon(
-                  HugeIcons.strokeRoundedCancelCircleHalfDot,
-                  color: isDark ? Colors.grey[400] : Colors.grey[600],
-                  size: 20,
-                ),
-                label: Text(
-                  'Cancel',
-                  style: TextStyle(
-                    color: isDark ? Colors.grey[400] : Colors.grey[600],
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                style: TextButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-              ),
               if (_voiceInput.isNotEmpty)
-                ElevatedButton.icon(
-                  onPressed: () {
+                MoboDialogButtons(
+                  secondaryLabel: 'Cancel',
+                  onSecondary: () {
+                    setState(() => _isListening = false);
+                    _speech.stop();
+                    _updateDialogCallback = null;
+                    _dismissListeningDialog();
+                    _cancelListeningTimeout();
+                  },
+                  primaryLabel: 'Search',
+                  onPrimary: () {
                     _dismissListeningDialog();
                     _cancelListeningTimeout();
                     _performVoiceSearch();
                   },
-                  icon: Icon(Icons.search, color: Colors.white, size: 20),
+                )
+              else
+                TextButton.icon(
+                  onPressed: () {
+                    setState(() => _isListening = false);
+                    _speech.stop();
+                    _updateDialogCallback = null;
+                    _dismissListeningDialog();
+                    _cancelListeningTimeout();
+                  },
+                  icon: Icon(
+                    HugeIcons.strokeRoundedCancelCircleHalfDot,
+                    color: isDark ? Colors.grey[400] : Colors.grey[600],
+                    size: 20,
+                  ),
                   label: Text(
-                    'Search',
+                    'Cancel',
                     style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
+                      color: isDark ? Colors.grey[400] : Colors.grey[600],
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: primaryColor,
-                    foregroundColor: Colors.white,
+                  style: TextButton.styleFrom(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 10,
+                      horizontal: 16,
+                      vertical: 8,
                     ),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    elevation: 2,
                   ),
                 ),
             ],
-            actionsPadding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+            actionsPadding: _voiceInput.isNotEmpty
+                ? const EdgeInsets.fromLTRB(24, 8, 24, 20)
+                : const EdgeInsets.fromLTRB(8, 0, 8, 8),
           );
         },
       ),
@@ -4473,6 +4480,7 @@ class ProductListScreenState extends State<ProductListScreen>
 
   @override
   void dispose() {
+    _productChangeSubscription?.cancel();
     _cancelListeningTimeout();
     _debounceTimer?.cancel();
     _retryTimer?.cancel();

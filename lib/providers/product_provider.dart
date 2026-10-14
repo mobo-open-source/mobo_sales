@@ -15,14 +15,21 @@ class ProductProvider with ChangeNotifier {
   final SessionService _sessionService;
   final ProductService _productService;
 
+  /// Reads the Odoo generation of the connected server (see `odooGeneration`).
+  /// Replaceable so tests can pose as any version.
+  final Future<int> Function() _generationLoader;
+
   ProductProvider({
     ConnectivityService? connectivityService,
     SessionService? sessionService,
     ProductService? productService,
+    Future<int> Function()? generationLoader,
   }) : _connectivityService =
            connectivityService ?? ConnectivityService.instance,
        _sessionService = sessionService ?? SessionService.instance,
-       _productService = productService ?? ProductService.instance;
+       _productService = productService ?? ProductService.instance,
+       _generationLoader =
+           generationLoader ?? OdooSessionManager.serverGeneration;
 
   List<Product> _products = [];
   bool _isLoading = false;
@@ -130,6 +137,87 @@ class ProductProvider with ChangeNotifier {
     return "$startRecord-$endRecord/$_totalProducts";
   }
 
+  /// The fields a row of the list is made of.
+  List<String> _listFields() => [
+    'id',
+    'name',
+    'list_price',
+    'default_code',
+    'categ_id',
+    'barcode',
+    'image_128',
+    'currency_id',
+    'active',
+    'product_variant_count',
+    'product_variant_ids',
+    if (_availableFields.contains('qty_available')) 'qty_available',
+  ];
+
+  bool _quietReloading = false;
+  bool _quietReloadPending = false;
+
+  /// Reads the page the list is on again from the server, without clearing it
+  /// first: the rows stay on screen (and the scroll position where it is)
+  /// until the new ones arrive. For a product that was edited, archived or
+  /// added somewhere. The filters, the search and the page are the ones in
+  /// force; if the page no longer exists (the last product on it was archived)
+  /// the list steps back to the one before.
+  Future<void> quietReload() async {
+    if (_products.isEmpty && _lastFetchTime == null) return;
+    if (_isLoading || _isLoadingMore || _isSearching || _quietReloading) {
+      // A load is in flight and may have read before the change, or a reload
+      // is: one more runs when it ends.
+      _quietReloadPending = true;
+      return;
+    }
+    if (!_connectivityService.isConnected || !_sessionService.hasValidSession) {
+      return;
+    }
+
+    _quietReloading = true;
+    try {
+      final generation = await _serverGeneration();
+      final domain = _buildDomain(
+        _currentSearchQuery,
+        _currentCategory,
+        _currentFilters,
+        generation: generation,
+      );
+
+      final total = await _productService.getProductCount(domain);
+      final lastPage = total == 0 ? 0 : (total - 1) ~/ _pageSize;
+      final page = _currentPage > lastPage ? lastPage : _currentPage;
+
+      final rows =
+          await FieldValidationService.executeWithFieldValidation<
+            List<Map<String, dynamic>>
+          >(
+            model: 'product.template',
+            initialFields: _listFields(),
+            apiCall: (fields) => _productService.fetchProducts(
+              domain: domain,
+              fields: fields,
+              limit: _pageSize,
+              offset: page * _pageSize,
+            ),
+          );
+
+      _currentPage = page;
+      _totalProducts = total;
+      _processResult(rows);
+      _lastFetchTime = DateTime.now();
+      notifyListeners();
+    } catch (_) {
+      // The list keeps what it has; the next change or a refresh reads again.
+    } finally {
+      _quietReloading = false;
+      if (_quietReloadPending && !_isLoading && !_isLoadingMore) {
+        _quietReloadPending = false;
+        unawaited(quietReload());
+      }
+    }
+  }
+
   /// Jumps to [page] and fetches its products.
   Future<void> goToPage(int page) async {
     if (page < 0 || page == _currentPage) return;
@@ -166,28 +254,15 @@ class ProductProvider with ChangeNotifier {
     notifyListeners();
 
     try {
+      final generation = await _serverGeneration();
       List<dynamic> domain = _buildDomain(
         _currentSearchQuery,
         _currentCategory,
         _currentFilters,
+        generation: generation,
       );
 
-      final List<String> fieldsToFetch = [
-        'id',
-        'name',
-        'list_price',
-        'default_code',
-        'categ_id',
-        'barcode',
-        'image_128',
-        'currency_id',
-        'active',
-        'product_variant_count',
-        'product_variant_ids',
-      ];
-      if (_availableFields.contains('qty_available')) {
-        fieldsToFetch.add('qty_available');
-      }
+      final List<String> fieldsToFetch = _listFields();
 
       try {
         final result =
@@ -241,11 +316,44 @@ class ProductProvider with ChangeNotifier {
     }
   }
 
+  /// The server's Odoo generation, or 0 (unknown, which takes the pre-18
+  /// behaviour) when it cannot be read.
+  Future<int> _serverGeneration() async {
+    try {
+      return await _generationLoader();
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// Whether `product.template` has the `is_storable` flag, as far as the
+  /// field list fetched for the group-by options says. Unknown until then.
+  bool get _hasIsStorable => _availableFields.contains('is_storable');
+
+  /// The domain leaves for the Services / Consumables / Storable chips on the
+  /// connected server (see [productTypeFilterDomain]). [generation] defaults to
+  /// the one of the session already in memory.
+  List<List<dynamic>> typeFilterLeaves({
+    bool services = false,
+    bool consumables = false,
+    bool storable = false,
+    int? generation,
+  }) {
+    return productTypeFilterDomain(
+      generation: generation ?? OdooSessionManager.cachedServerGeneration,
+      services: services,
+      consumables: consumables,
+      storable: storable,
+      hasIsStorable: _hasIsStorable,
+    );
+  }
+
   List<dynamic> _buildDomain(
     String searchQuery,
     String category,
-    Map<String, dynamic>? filters,
-  ) {
+    Map<String, dynamic>? filters, {
+    int? generation,
+  }) {
     final List<dynamic> domain = [];
 
     domain.add(['sale_ok', '=', true]);
@@ -262,15 +370,14 @@ class ProductProvider with ChangeNotifier {
         domain.add(['qty_available', '>', 0]);
       }
 
-      if (filters['showServicesOnly'] == true) {
-        domain.add(['type', '=', 'service']);
-      }
-      if (filters['showConsumablesOnly'] == true) {
-        domain.add(['type', '=', 'consu']);
-      }
-      if (filters['showStorableOnly'] == true) {
-        domain.add(['type', '=', 'product']);
-      }
+      domain.addAll(
+        typeFilterLeaves(
+          services: filters['showServicesOnly'] == true,
+          consumables: filters['showConsumablesOnly'] == true,
+          storable: filters['showStorableOnly'] == true,
+          generation: generation,
+        ),
+      );
       if (filters['showAvailableOnly'] == true) {
         domain.add(['qty_available', '>', 0]);
       }
@@ -306,11 +413,12 @@ class ProductProvider with ChangeNotifier {
 
     final q = searchQuery.trim();
     if (q.isNotEmpty) {
-      domain.add('|');
-      domain.add(['name', 'ilike', q]);
-      domain.add('|');
-      domain.add(['default_code', 'ilike', q]);
-      domain.add(['barcode', 'ilike', q]);
+      domain.addAll(
+        productSearchDomain(
+          q,
+          generation: generation ?? OdooSessionManager.cachedServerGeneration,
+        ),
+      );
     }
 
     return domain;
@@ -372,33 +480,19 @@ class ProductProvider with ChangeNotifier {
     notifyListeners();
 
     try {
+      final generation = await _serverGeneration();
       final List<dynamic> domain = _buildDomain(
         _currentSearchQuery,
         _currentCategory,
         _currentFilters,
+        generation: generation,
       );
 
       final countFuture = _productService
           .getProductCount(domain)
           .timeout(const Duration(seconds: 10), onTimeout: () => 0);
 
-      final List<String> fieldsToFetch = [
-        'id',
-        'name',
-        'list_price',
-        'default_code',
-        'categ_id',
-        'barcode',
-        'image_128',
-        'currency_id',
-        'active',
-        'product_variant_count',
-        'product_variant_ids',
-      ];
-
-      if (_availableFields.contains('qty_available')) {
-        fieldsToFetch.add('qty_available');
-      }
+      final List<String> fieldsToFetch = _listFields();
 
       final listFuture =
           FieldValidationService.executeWithFieldValidation<
@@ -573,10 +667,12 @@ class ProductProvider with ChangeNotifier {
     if (!_isGrouped || _selectedGroupBy == null) return;
 
     try {
+      final generation = await _serverGeneration();
       List<dynamic> domain = _buildDomain(
         _currentSearchQuery,
         _currentCategory,
         _currentFilters,
+        generation: generation,
       );
 
       final response = await _productService.fetchGroupSummary(
@@ -620,10 +716,12 @@ class ProductProvider with ChangeNotifier {
     if (_loadedGroups.containsKey(groupKey)) return;
 
     try {
+      final generation = await _serverGeneration();
       List<dynamic> domain = _buildDomain(
         _currentSearchQuery,
         _currentCategory,
         _currentFilters,
+        generation: generation,
       );
 
       final groupDomain = _buildGroupDomain(groupKey, _selectedGroupBy!);

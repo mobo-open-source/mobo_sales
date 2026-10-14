@@ -6,7 +6,7 @@ import 'package:hugeicons/hugeicons.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import '../../services/runtime_permission_service.dart';
-import 'package:loading_animation_widget/loading_animation_widget.dart';
+import '../../widgets/loading_dialog.dart';
 
 class SelectLocationScreen extends StatefulWidget {
   final LatLng? initialLocation;
@@ -283,35 +283,10 @@ class _SelectLocationScreenState extends State<SelectLocationScreen> {
           if (_isLocationLoading)
             Container(
               color: colorScheme.surface,
-              child: Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    LoadingAnimationWidget.fourRotatingDots(
-                      color: isDark
-                          ? Colors.white
-                          : Theme.of(context).colorScheme.primary,
-                      size: 50,
-                    ),
-                    const SizedBox(height: 24),
-                    Text(
-                      'Getting your location...',
-                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurface,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Please wait while we fetch your current location.',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.onSurface.withOpacity(0.7),
-                      ),
-                    ),
-                  ],
+              child: const Center(
+                child: LoadingCard(
+                  message: 'Getting your location...',
+                  subtitle: 'Please wait while we fetch your current location.',
                 ),
               ),
             ),
@@ -542,72 +517,10 @@ class _SelectLocationScreenState extends State<SelectLocationScreen> {
                 absorbing: true,
                 child: Container(
                   color: Colors.black.withOpacity(0.6),
-                  child: Center(
-                    child: Container(
-                      padding: const EdgeInsets.all(32),
-                      margin: const EdgeInsets.symmetric(horizontal: 40),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).brightness == Brightness.dark
-                            ? Colors.grey[900]
-                            : Colors.white,
-                        borderRadius: BorderRadius.circular(20),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.2),
-                            blurRadius: 20,
-                            offset: const Offset(0, 10),
-                          ),
-                        ],
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 60,
-                            height: 60,
-                            decoration: BoxDecoration(
-                              color: isDark
-                                  ? Colors.white.withOpacity(0.1)
-                                  : Theme.of(
-                                      context,
-                                    ).primaryColor.withOpacity(0.1),
-                              shape: BoxShape.circle,
-                            ),
-                            child: LoadingAnimationWidget.fourRotatingDots(
-                              color: isDark
-                                  ? Colors.white
-                                  : Theme.of(context).primaryColor,
-                              size: 35,
-                            ),
-                          ),
-                          const SizedBox(height: 20),
-                          Text(
-                            'Saving location...',
-                            style: Theme.of(context).textTheme.titleMedium
-                                ?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                  color:
-                                      Theme.of(context).brightness ==
-                                          Brightness.dark
-                                      ? Colors.white
-                                      : Colors.grey[800],
-                                ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Please wait while we save your location',
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(
-                                  color:
-                                      Theme.of(context).brightness ==
-                                          Brightness.dark
-                                      ? Colors.grey[300]
-                                      : Colors.grey[600],
-                                ),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
+                  child: const Center(
+                    child: LoadingCard(
+                      message: 'Saving location...',
+                      subtitle: 'Please wait while we save your location',
                     ),
                   ),
                 ),
@@ -645,10 +558,6 @@ class _SelectLocationScreenState extends State<SelectLocationScreen> {
       floatingActionButton: _selectedLocation != null
           ? FloatingActionButton.extended(
               onPressed: _isSaving ? null : _confirmLocation,
-              backgroundColor: isDark
-                  ? Theme.of(context).colorScheme.onPrimary
-                  : Theme.of(context).colorScheme.primary,
-              foregroundColor: colorScheme.onPrimary,
               elevation: 6,
               label: _isSaving
                   ? Row(

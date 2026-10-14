@@ -5,7 +5,12 @@ import 'package:signature/signature.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import '../models/quote.dart';
+import '../services/data_change_bus.dart';
+import '../services/odoo_error_handler.dart';
 import '../services/odoo_session_manager.dart';
+import '../utils/odoo_binary.dart';
+import '../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../shared/widgets/mobo/mobo_field_label.dart';
 import '../utils/date_picker_utils.dart';
 import 'custom_snackbar.dart';
 
@@ -13,10 +18,16 @@ class SignatureWidget extends StatefulWidget {
   final Quote quotation;
   final Function(Map<String, dynamic>) onSignatureUpdated;
 
+  /// Where the signature is written; the signed-in session when null. A test
+  /// passes its own.
+  @visibleForTesting
+  final Future<dynamic> Function(Map<String, dynamic> payload)? callKw;
+
   const SignatureWidget({
     super.key,
     required this.quotation,
     required this.onSignatureUpdated,
+    this.callKw,
   });
 
   @override
@@ -52,20 +63,22 @@ class _SignatureWidgetState extends State<SignatureWidget> {
         _signedByController.text = quotation.extraData!['signed_by'].toString();
       }
 
-      if (quotation.extraData!['signed_on'] != null &&
-          quotation.extraData!['signed_on'] != false) {
-        try {
-          _signedOnDate = DateTime.parse(
-            quotation.extraData!['signed_on'].toString(),
-          );
-        } catch (e) {}
+      final signedOn = quotation.extraData!['signed_on'];
+      if (signedOn != null && signedOn != false) {
+        _signedOnDate = parseOdooDatetime(signedOn.toString());
       }
 
-      if (quotation.extraData!['signature'] != null &&
-          quotation.extraData!['signature'] != false) {
+      // The image as base64 text, whether the server sent the text (Odoo 17 to
+      // 19), a `{content, size}` object (20) or a data URI.
+      final signature = odooBinaryToBase64(quotation.extraData!['signature']);
+      if (signature != null) {
         try {
-          final signatureData = quotation.extraData!['signature'].toString();
-          _signatureImageBytes = base64Decode(signatureData);
+          final comma = signature.indexOf(',');
+          _signatureImageBytes = base64Decode(
+            signature.startsWith('data:') && comma != -1
+                ? signature.substring(comma + 1)
+                : signature,
+          );
           _hasSignature = true;
           _isSignatureFromUpload = true;
         } catch (e) {
@@ -121,7 +134,13 @@ class _SignatureWidgetState extends State<SignatureWidget> {
         );
       }
     } catch (e) {
-      CustomSnackbar.showError(context, 'Failed to capture signature: $e');
+      CustomSnackbar.showError(
+        context,
+        OdooErrorHandler.toSnackbarMessage(
+          e,
+          fallback: 'Could not capture the signature. Please try again.',
+        ),
+      );
     }
   }
 
@@ -162,7 +181,13 @@ class _SignatureWidgetState extends State<SignatureWidget> {
           );
         }
       } catch (e) {
-        CustomSnackbar.showError(context, 'Failed to upload image: $e');
+        CustomSnackbar.showError(
+          context,
+          OdooErrorHandler.toSnackbarMessage(
+            e,
+            fallback: 'Could not upload the image. Please try again.',
+          ),
+        );
       }
     }
   }
@@ -199,59 +224,13 @@ class _SignatureWidgetState extends State<SignatureWidget> {
                       : Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
-              actionsPadding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 12,
-              ),
+              actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
               actions: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextButton(
-                        onPressed: () => Navigator.of(context).pop(false),
-                        style: TextButton.styleFrom(
-                          foregroundColor: isDark
-                              ? Colors.grey[400]
-                              : Theme.of(context).colorScheme.onSurfaceVariant,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 12,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                        ),
-                        child: const Text(
-                          'Cancel',
-                          style: TextStyle(fontWeight: FontWeight.w500),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () => Navigator.of(context).pop(true),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: isDark
-                              ? Theme.of(context).primaryColor
-                              : Theme.of(context).primaryColor,
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 12,
-                          ),
-                          elevation: isDark ? 0 : 3,
-                        ),
-                        child: const Text(
-                          'Replace',
-                          style: TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                      ),
-                    ),
-                  ],
+                MoboDialogButtons(
+                  secondaryLabel: 'Cancel',
+                  onSecondary: () => Navigator.of(context).pop(false),
+                  primaryLabel: 'Replace',
+                  onPrimary: () => Navigator.of(context).pop(true),
                 ),
               ],
             );
@@ -306,68 +285,20 @@ class _SignatureWidgetState extends State<SignatureWidget> {
                 ),
               ),
               content: Text(
-                'This will remove the signature image but keep the signed by and signed on information. Are you sure?',
+                'This will remove the signature image. The signed by and signed on details stay until you save a new signature. Are you sure?',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: isDark
                       ? Colors.grey[300]
                       : Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
-              actionsPadding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 12,
-              ),
+              actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
               actions: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextButton(
-                        onPressed: () => Navigator.of(context).pop(false),
-                        style: TextButton.styleFrom(
-                          foregroundColor: isDark
-                              ? Colors.grey[400]
-                              : Theme.of(context).colorScheme.onSurfaceVariant,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 12,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                        ),
-                        child: const Text(
-                          'Cancel',
-                          style: TextStyle(fontWeight: FontWeight.w500),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () => Navigator.of(context).pop(true),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: isDark
-                              ? Colors.red[700]
-                              : Theme.of(context).colorScheme.error,
-                          foregroundColor: isDark
-                              ? Colors.white
-                              : Theme.of(context).colorScheme.onError,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 12,
-                          ),
-                          elevation: isDark ? 0 : 3,
-                        ),
-                        child: const Text(
-                          'Clear Image',
-                          style: TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                      ),
-                    ),
-                  ],
+                MoboDialogButtons(
+                  secondaryLabel: 'Cancel',
+                  onSecondary: () => Navigator.of(context).pop(false),
+                  primaryLabel: 'Clear Image',
+                  onPrimary: () => Navigator.of(context).pop(true),
                 ),
               ],
             );
@@ -386,29 +317,43 @@ class _SignatureWidgetState extends State<SignatureWidget> {
 
       await _updateQuotationSignature(clearData);
 
-      setState(() {
-        _signatureController.clear();
-        _signatureImageBytes = null;
-        _hasSignature = false;
-        _isSignatureFromUpload = false;
-      });
-
       if (widget.quotation.extraData != null) {
         widget.quotation.extraData!['signature'] = false;
       }
 
       widget.onSignatureUpdated(clearData);
 
+      if (!mounted) return;
+      setState(() {
+        _signatureController.clear();
+        _signatureImageBytes = null;
+        _hasSignature = false;
+        _isSignatureFromUpload = false;
+        // The next signature is signed when it is saved, not when the cleared
+        // one was.
+        _signedOnDate = null;
+      });
+
       CustomSnackbar.showSuccess(
         context,
         'Signature image cleared successfully',
       );
     } catch (e) {
-      CustomSnackbar.showError(context, 'Failed to clear signature image: $e');
+      if (mounted) {
+        CustomSnackbar.showError(
+          context,
+          OdooErrorHandler.toSnackbarMessage(
+            e,
+            fallback: 'Could not clear the signature. Please try again.',
+          ),
+        );
+      }
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -441,9 +386,7 @@ class _SignatureWidgetState extends State<SignatureWidget> {
 
       final signatureBase64 = base64Encode(signatureBytes);
 
-      final formattedDateTime = DateFormat(
-        'yyyy-MM-dd HH:mm:ss',
-      ).format(signedOn);
+      final formattedDateTime = formatOdooDatetime(signedOn);
 
       final updateData = {
         'signed_by': _signedByController.text.trim(),
@@ -461,17 +404,28 @@ class _SignatureWidgetState extends State<SignatureWidget> {
 
       widget.onSignatureUpdated(updateData);
 
+      if (!mounted) return;
       setState(() {
         _signedOnDate = signedOn;
       });
 
       CustomSnackbar.showSuccess(context, 'Signature saved successfully');
     } catch (e) {
-      CustomSnackbar.showError(context, 'Failed to save signature: $e');
+      if (mounted) {
+        CustomSnackbar.showError(
+          context,
+          OdooErrorHandler.toSnackbarMessage(
+            e,
+            fallback: 'Could not save the signature. Please try again.',
+          ),
+        );
+      }
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -479,12 +433,16 @@ class _SignatureWidgetState extends State<SignatureWidget> {
     Map<String, dynamic> signatureData,
   ) async {
     try {
-      final client = await OdooSessionManager.getClient();
-      if (client == null) {
-        throw Exception('No Odoo client available');
+      var callKw = widget.callKw;
+      if (callKw == null) {
+        final client = await OdooSessionManager.getClient();
+        if (client == null) {
+          throw Exception('No Odoo client available');
+        }
+        callKw = client.callKw;
       }
 
-      final result = await client.callKw({
+      await callKw({
         'model': 'sale.order',
         'method': 'write',
         'args': [
@@ -493,6 +451,10 @@ class _SignatureWidgetState extends State<SignatureWidget> {
         ],
         'kwargs': {},
       });
+
+      // The server has the signature (or has dropped it): the quotation is not
+      // what the lists and the pages open behind this one last showed.
+      DataChangeBus.instance.quotationChanged(widget.quotation.id);
     } catch (e) {
       rethrow;
     }
@@ -538,8 +500,9 @@ class _SignatureWidgetState extends State<SignatureWidget> {
       children: [
         Row(
           children: [
-            Text(
+            MoboFieldLabel(
               'Signed By',
+              isRequired: true,
               style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
@@ -644,7 +607,9 @@ class _SignatureWidgetState extends State<SignatureWidget> {
                     context: context,
                     initialDate: _signedOnDate ?? DateTime.now(),
                     firstDate: DateTime(2020),
-                    lastDate: DateTime.now().add(const Duration(days: 365)),
+                    // Nobody signs in the future: Odoo stamps the moment of
+                    // signing.
+                    lastDate: DateTime.now(),
                   );
                   if (date != null) {
                     final time = await DatePickerUtils.showStandardTimePicker(
@@ -706,8 +671,9 @@ class _SignatureWidgetState extends State<SignatureWidget> {
       children: [
         Row(
           children: [
-            Text(
+            MoboFieldLabel(
               'Signature',
+              isRequired: true,
               style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
@@ -861,3 +827,21 @@ class _SignatureWidgetState extends State<SignatureWidget> {
     );
   }
 }
+
+/// A datetime as Odoo sends it (`2026-10-01 10:00:00`, always UTC), in the
+/// user's time zone. Null when [value] is not one.
+@visibleForTesting
+DateTime? parseOdooDatetime(String value) {
+  final text = value.trim();
+  if (text.isEmpty) return null;
+  final hasZone = RegExp(r'(Z|[+-]\d\d:?\d\d)$').hasMatch(text);
+  final parsed = DateTime.tryParse(
+    hasZone ? text : '${text.replaceFirst(' ', 'T')}Z',
+  );
+  return parsed?.toLocal();
+}
+
+/// [moment] as Odoo wants a datetime written: UTC, `yyyy-MM-dd HH:mm:ss`.
+@visibleForTesting
+String formatOdooDatetime(DateTime moment) =>
+    DateFormat('yyyy-MM-dd HH:mm:ss').format(moment.toUtc());

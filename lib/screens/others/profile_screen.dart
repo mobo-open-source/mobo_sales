@@ -5,22 +5,25 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hugeicons/hugeicons.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'package:provider/provider.dart';
 import 'package:mobo_sales/screens/others/settings_screen.dart';
 import 'package:mobo_sales/utils/app_theme.dart';
 import 'package:shimmer/shimmer.dart';
+import 'package:mobo_sales/utils/form_change_tracker.dart';
+import 'package:mobo_sales/utils/odoo_partner_domains.dart';
+import 'package:mobo_sales/utils/odoo_version.dart';
 import 'package:mobo_sales/utils/server_url_utils.dart';
-import 'package:mobo_sales/services/odoo_schema_service.dart';
 import 'package:mobo_sales/services/session_service.dart';
+import 'package:mobo_sales/services/data_change_bus.dart';
+import 'package:mobo_sales/services/profile_version_stamp.dart';
 import 'package:mobo_sales/widgets/custom_text_field.dart';
-import 'package:mobo_sales/widgets/custom_dropdown.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../../shared/widgets/mobo/mobo_select_form_field.dart';
 import 'package:mobo_sales/widgets/data_loss_warning_dialog.dart';
 import 'package:mobo_sales/screens/others/profile_details_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mobo_sales/services/odoo_session_manager.dart';
 import 'package:mobo_sales/providers/settings_provider.dart';
-import 'package:mobo_sales/services/connectivity_service.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:mobo_sales/widgets/custom_snackbar.dart';
@@ -32,6 +35,12 @@ import 'package:mobo_sales/screens/login/add_account_screen.dart';
 import 'package:mobo_sales/widgets/circular_image_widget.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:mobo_sales/widgets/connection_status_widget.dart';
+import '../../widgets/dispose_when_unmounted.dart';
+import 'package:mobo_sales/widgets/loading_skeletons.dart';
+import 'package:mobo_sales/widgets/loading_dialog.dart';
+import 'package:mobo_sales/widgets/access_denied_dialog.dart';
+import 'package:mobo_sales/services/sales_access.dart';
+import 'package:mobo_sales/utils/database_expiry.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -71,6 +80,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
+  DataChangeSubscription? _profileChangeSubscription;
   SessionService? _sessionService;
   bool _hasInternet = true;
   bool _isEditMode = false;
@@ -97,15 +107,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
     try {
       final cacheKey = await _getCacheKey();
       final prefs = await SharedPreferences.getInstance();
+      // This account's own copy only: the shared key holds whichever account
+      // opened this screen last, and showing that one's name, email and photo
+      // for the signed-in account (even until the fetch lands) is wrong.
       final cached = prefs.getString(cacheKey);
 
-      String? dataToUse = cached;
-      if (dataToUse == null || dataToUse.isEmpty) {
-        dataToUse = prefs.getString(_defaultCacheKeyUser);
-      }
-
-      if (dataToUse != null && dataToUse.isNotEmpty && mounted) {
-        final data = jsonDecode(dataToUse) as Map<String, dynamic>;
+      if (cached != null && cached.isNotEmpty && mounted) {
+        final data = jsonDecode(cached) as Map<String, dynamic>;
         setState(() {
           _userData = data;
           final img = data['image_1920'];
@@ -175,8 +183,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _sessionService = context.read<SessionService>();
     _sessionService?.addListener(_onSessionChanged);
 
+    // Whatever the details screen (or anything else) saves comes through here,
+    // so this screen shows the saved record, not the one it read earlier. The
+    // settings provider refreshes itself on the same event.
+    _profileChangeSubscription = DataChangeBus.instance.listen(
+      where: (change) => change.isProfile,
+      onChange: (_) => unawaited(
+        _fetchUserProfile(forceRefresh: true, syncSettings: false),
+      ),
+    );
+
     _loadCachedUser();
     _fetchUserProfile();
+    // Names and photos of the other accounts; at most once in five minutes.
+    unawaited(_sessionService?.refreshStoredAccountsProfiles());
     _loadCountries();
     _startConnectivityListener();
   }
@@ -191,6 +211,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void dispose() {
     _sessionService?.removeListener(_onSessionChanged);
     _connectivitySub?.cancel();
+    _profileChangeSubscription?.cancel();
+    _profileChangeSubscription = null;
     _nameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
@@ -217,57 +239,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  void _showLoadingDialog(BuildContext context, String message) {
+  void _showLoadingDialog(
+    BuildContext context,
+    String message, {
+    String subtitle = 'Please wait while we process your request',
+  }) {
     if (_isShowingLoadingDialog || !mounted) return;
     _isShowingLoadingDialog = true;
 
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        backgroundColor: isDark ? const Color(0xFF212121) : Colors.white,
-        elevation: 8,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? Colors.white.withOpacity(0.12)
-                      : const Color(0xFF1E88E5).withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: LoadingAnimationWidget.fourRotatingDots(
-                  color: isDark ? Colors.white : const Color(0xFF1E88E5),
-                  size: 32,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                message,
-                style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: isDark ? Colors.white : Colors.grey[900],
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Please wait while we process your request',
-                style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
-                  color: isDark ? Colors.grey[400] : Colors.grey[600],
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
-        ),
-      ),
+      builder: (ctx) => LoadingDialog(message: message, subtitle: subtitle),
     );
   }
 
@@ -493,207 +476,216 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ? _userData!['state_id'][0] as int
         : null;
 
+    // What the dialog opened with. The state list loads after it opens, but
+    // that only fills the options: `selectedStateId` is already the saved one,
+    // so the load cannot make the dialog look edited.
+    final addressChanges = FormChangeTracker(
+      () => {
+        'street': streetController.text.trim(),
+        'street2': street2Controller.text.trim(),
+        'city': cityController.text.trim(),
+        'zip': zipController.text.trim(),
+        'country': selectedCountryId,
+        'state': selectedStateId,
+      },
+    );
+    addressChanges.markClean();
+
+    // Typing reaches the Save button through the dialog's own setter, which
+    // the builder below hands over on every build. The controllers are
+    // disposed with the dialog, which drops this listener.
+    StateSetter? refreshDialog;
+    void onAddressTextChanged() => refreshDialog?.call(() {});
+    streetController.addListener(onAddressTextChanged);
+    street2Controller.addListener(onAddressTextChanged);
+    cityController.addListener(onAddressTextChanged);
+    zipController.addListener(onAddressTextChanged);
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) {
-          if (selectedCountryId != null &&
-              _states.isEmpty &&
-              !_isLoadingStates) {
-            _isLoadingStates = true;
-            _fetchStates(selectedCountryId!).then((states) {
-              if (context.mounted) {
-                setDialogState(() {
-                  _states = states;
-                  _isLoadingStates = false;
-                });
-              }
-            });
-          }
+      builder: (context) => DisposeWhenUnmounted(
+        controllers: [
+          streetController,
+          street2Controller,
+          cityController,
+          zipController,
+        ],
+        child: StatefulBuilder(
+          builder: (context, setDialogState) {
+            refreshDialog = setDialogState;
+            if (selectedCountryId != null &&
+                _states.isEmpty &&
+                !_isLoadingStates) {
+              _isLoadingStates = true;
+              _fetchStates(selectedCountryId!).then((states) {
+                if (context.mounted) {
+                  setDialogState(() {
+                    _states = states;
+                    _isLoadingStates = false;
+                  });
+                }
+              });
+            }
 
-          return AlertDialog(
-            backgroundColor: isDark ? Colors.grey[850] : Colors.white,
-            surfaceTintColor: Colors.transparent,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            title: Text(
-              'Edit Address',
-              style: TextStyle(
-                color: isDark ? Colors.white : Colors.black87,
-                fontWeight: FontWeight.w600,
+            // Save once the address differs from what the dialog opened with and
+            // the one required field, Street Address, is filled.
+            final canSave =
+                addressChanges.isDirty &&
+                streetController.text.trim().isNotEmpty;
+
+            return AlertDialog(
+              backgroundColor: isDark ? Colors.grey[850] : Colors.white,
+              surfaceTintColor: Colors.transparent,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
               ),
-            ),
-            content: SingleChildScrollView(
-              child: SizedBox(
-                width: 400,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _buildAddressTextField(
-                      controller: streetController,
-                      label: 'Street Address',
-                      hint: 'Enter street address',
-                      isDark: isDark,
-                      theme: theme,
-                    ),
-                    const SizedBox(height: 16),
-                    _buildAddressTextField(
-                      controller: street2Controller,
-                      label: 'Street Address 2',
-                      hint: 'Apartment, suite, etc. (optional)',
-                      isDark: isDark,
-                      theme: theme,
-                    ),
-                    const SizedBox(height: 16),
-                    _buildAddressTextField(
-                      controller: cityController,
-                      label: 'City',
-                      hint: 'Enter city',
-                      isDark: isDark,
-                      theme: theme,
-                    ),
-                    const SizedBox(height: 16),
-                    _buildAddressTextField(
-                      controller: zipController,
-                      label: 'ZIP Code',
-                      hint: 'Enter ZIP code',
-                      isDark: isDark,
-                      theme: theme,
-                      keyboardType: TextInputType.number,
-                    ),
-                    const SizedBox(height: 16),
-                    _buildCountryDropdown(
-                      selectedCountryId: selectedCountryId,
-                      countries: _countries,
-                      isLoading: _isLoadingCountries,
-                      isDark: isDark,
-                      theme: theme,
-                      onChanged: (countryId) {
-                        setDialogState(() {
-                          selectedCountryId = countryId;
-                          selectedStateId = null;
-                          _states = [];
-                        });
-                        if (countryId != null) {
-                          _isLoadingStates = true;
-                          _fetchStates(countryId).then((states) {
-                            if (context.mounted) {
-                              setDialogState(() {
-                                _states = states;
-                                _isLoadingStates = false;
-                              });
-                            }
+              title: Text(
+                'Edit Address',
+                style: TextStyle(
+                  color: isDark ? Colors.white : Colors.black87,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              content: SingleChildScrollView(
+                child: SizedBox(
+                  width: 400,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _buildAddressTextField(
+                        controller: streetController,
+                        label: 'Street Address',
+                        hint: 'Enter street address',
+                        isDark: isDark,
+                        theme: theme,
+                        isRequired: true,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildAddressTextField(
+                        controller: street2Controller,
+                        label: 'Street Address 2',
+                        hint: 'Apartment, suite, etc. (optional)',
+                        isDark: isDark,
+                        theme: theme,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildAddressTextField(
+                        controller: cityController,
+                        label: 'City',
+                        hint: 'Enter city',
+                        isDark: isDark,
+                        theme: theme,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildAddressTextField(
+                        controller: zipController,
+                        label: 'ZIP Code',
+                        hint: 'Enter ZIP code',
+                        isDark: isDark,
+                        theme: theme,
+                        keyboardType: TextInputType.number,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildCountryDropdown(
+                        selectedCountryId: selectedCountryId,
+                        countries: _countries,
+                        isLoading: _isLoadingCountries,
+                        isDark: isDark,
+                        theme: theme,
+                        onChanged: (countryId) {
+                          setDialogState(() {
+                            selectedCountryId = countryId;
+                            selectedStateId = null;
+                            _states = [];
                           });
-                        }
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    _buildStateDropdown(
-                      selectedStateId: selectedStateId,
-                      states: _states,
-                      isLoading: _isLoadingStates,
-                      isDark: isDark,
-                      theme: theme,
-                      enabled: selectedCountryId != null,
-                      onChanged: (stateId) {
-                        setDialogState(() => selectedStateId = stateId);
-                      },
-                    ),
-                  ],
+                          if (countryId != null) {
+                            _isLoadingStates = true;
+                            _fetchStates(countryId).then((states) {
+                              if (context.mounted) {
+                                setDialogState(() {
+                                  _states = states;
+                                  _isLoadingStates = false;
+                                });
+                              }
+                            });
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      _buildStateDropdown(
+                        selectedStateId: selectedStateId,
+                        states: _states,
+                        isLoading: _isLoadingStates,
+                        isDark: isDark,
+                        theme: theme,
+                        enabled: selectedCountryId != null,
+                        onChanged: (stateId) {
+                          setDialogState(() => selectedStateId = stateId);
+                        },
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                  streetController.dispose();
-                  street2Controller.dispose();
-                  cityController.dispose();
-                  zipController.dispose();
-                },
-                style: TextButton.styleFrom(
-                  foregroundColor: isDark ? Colors.grey[400] : Colors.grey[700],
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-                child: const Text(
-                  'Cancel',
-                  style: TextStyle(fontWeight: FontWeight.w500),
-                ),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  if (streetController.text.trim().isEmpty) {
-                    _showErrorSnackBar('Street address is required');
-                    return;
-                  }
-                  final addressData = {
-                    'street': streetController.text.trim(),
-                    'street2': street2Controller.text.trim().isEmpty
-                        ? false
-                        : street2Controller.text.trim(),
-                    'city': cityController.text.trim().isEmpty
-                        ? false
-                        : cityController.text.trim(),
-                    'zip': zipController.text.trim().isEmpty
-                        ? false
-                        : zipController.text.trim(),
-                    'country_id': selectedCountryId ?? false,
-                    'state_id': selectedStateId ?? false,
-                  };
+              actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
+              actions: [
+                MoboDialogButtons(
+                  secondaryLabel: 'Cancel',
+                  onSecondary: () {
+                    Navigator.pop(context);
+                  },
+                  primaryLabel: 'Save',
+                  onPrimary: !canSave
+                      ? null
+                      : () async {
+                          if (streetController.text.trim().isEmpty) {
+                            _showErrorSnackBar('Street address is required');
+                            return;
+                          }
+                          final addressData = {
+                            'street': streetController.text.trim(),
+                            'street2': street2Controller.text.trim().isEmpty
+                                ? false
+                                : street2Controller.text.trim(),
+                            'city': cityController.text.trim().isEmpty
+                                ? false
+                                : cityController.text.trim(),
+                            'zip': zipController.text.trim().isEmpty
+                                ? false
+                                : zipController.text.trim(),
+                            'country_id': selectedCountryId ?? false,
+                            'state_id': selectedStateId ?? false,
+                          };
 
-                  final navigator = Navigator.of(context);
-                  navigator.pop();
+                          final navigator = Navigator.of(context);
+                          navigator.pop();
 
-                  streetController.dispose();
-                  street2Controller.dispose();
-                  cityController.dispose();
-                  zipController.dispose();
-
-                  _showLoadingDialog(context, 'Updating Address');
-                  try {
-                    await _updateAddressFields(addressData);
-                    if (mounted) {
-                      _isShowingLoadingDialog = false;
-                      navigator.pop();
-                      _showSuccessSnackBar('Address updated successfully');
-                    }
-                  } catch (e) {
-                    if (mounted) {
-                      _isShowingLoadingDialog = false;
-                      navigator.pop();
-                      _showErrorSnackBar('Failed to update address: $e');
-                    }
-                  }
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: theme.primaryColor,
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 12,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
+                          _showLoadingDialog(context, 'Updating Address');
+                          try {
+                            await _updateAddressFields(addressData);
+                            if (mounted) {
+                              _isShowingLoadingDialog = false;
+                              navigator.pop();
+                              _showSuccessSnackBar(
+                                'Address updated successfully',
+                              );
+                            }
+                          } catch (e) {
+                            if (mounted) {
+                              _isShowingLoadingDialog = false;
+                              navigator.pop();
+                              _showErrorSnackBar(
+                                'Failed to update address: $e',
+                              );
+                            }
+                          }
+                        },
                 ),
-                child: const Text(
-                  'Save',
-                  style: TextStyle(fontWeight: FontWeight.w500),
-                ),
-              ),
-            ],
-          );
-        },
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -712,38 +704,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ? selectedCountryId
         : null;
 
-    final stringItems = isLoading
-        ? [
-            const DropdownMenuItem<String>(
-              value: null,
-              child: Text('Loading...'),
-            ),
-          ]
-        : [
-            const DropdownMenuItem<String>(
-              value: null,
-              child: Text(
-                'Select Country',
-                style: TextStyle(fontStyle: FontStyle.italic),
-              ),
-            ),
-            ...countries.map(
-              (country) => DropdownMenuItem<String>(
-                value: country['id'].toString(),
-                child: Text(country['name']),
-              ),
-            ),
-          ];
-
-    return CustomDropdownField(
-      value: safeSelectedCountryId?.toString(),
-      labelText: 'Country',
+    return MoboSelectFormField<String>(
+      label: 'Country',
       hintText: 'Select Country',
-      isDark: isDark,
-      items: stringItems,
-      onChanged: isLoading
-          ? null
-          : (value) => onChanged(value != null ? int.tryParse(value) : null),
+      searchable: true,
+      isLoading: isLoading,
+      enabled: !isLoading,
+      value: safeSelectedCountryId?.toString(),
+      options: [
+        for (final country in countries)
+          MoboOption<String>(
+            value: country['id'].toString(),
+            label: country['name'].toString(),
+          ),
+      ],
+      onChanged: (value) =>
+          onChanged(value != null ? int.tryParse(value) : null),
       validator: (value) => value == null ? 'Please select a country' : null,
     );
   }
@@ -763,51 +739,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ? selectedStateId
         : null;
 
-    final stringItems = !enabled
-        ? [
-            const DropdownMenuItem<String>(
-              value: null,
-              child: Text(
-                'Select country first',
-                style: TextStyle(fontStyle: FontStyle.italic),
-              ),
-            ),
-          ]
-        : isLoading
-        ? [
-            const DropdownMenuItem<String>(
-              value: null,
-              child: Text('Loading...'),
-            ),
-          ]
-        : [
-            const DropdownMenuItem<String>(
-              value: null,
-              child: Text(
-                'Select State/Province',
-                style: TextStyle(fontStyle: FontStyle.italic),
-              ),
-            ),
-            ...states.map(
-              (state) => DropdownMenuItem<String>(
-                value: state['id'].toString(),
-                child: Text(state['name']),
-              ),
-            ),
-          ];
-
-    return CustomDropdownField(
-      value: safeSelectedStateId?.toString(),
-      labelText: 'State/Province',
+    return MoboSelectField<String>(
+      label: 'State/Province',
       hintText: enabled
           ? (isLoading ? 'Loading...' : 'Select State/Province')
           : 'Select country first',
-      isDark: isDark,
-      items: stringItems,
-      onChanged: (!enabled || isLoading)
-          ? null
-          : (value) => onChanged(value != null ? int.tryParse(value) : null),
-      validator: (value) => null,
+      searchable: true,
+      isLoading: isLoading,
+      enabled: enabled && !isLoading,
+      value: safeSelectedStateId?.toString(),
+      options: [
+        for (final state in states)
+          MoboOption<String>(
+            value: state['id'].toString(),
+            label: state['name'].toString(),
+          ),
+      ],
+      onChanged: (value) =>
+          onChanged(value != null ? int.tryParse(value) : null),
     );
   }
 
@@ -818,10 +767,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required bool isDark,
     required ThemeData theme,
     TextInputType keyboardType = TextInputType.text,
+    bool isRequired = false,
   }) {
     return CustomTextField(
       controller: controller,
       labelText: label,
+      isRequired: isRequired,
       hintText: hint,
       isDark: isDark,
       keyboardType: keyboardType,
@@ -909,7 +860,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
     } catch (e) {}
   }
 
-  Future<void> _fetchUserProfile({bool forceRefresh = false}) async {
+  /// Reads the signed-in user's record and shows it. [syncSettings] says
+  /// whether a [forceRefresh] also re-reads the settings provider's copy (the
+  /// app bar avatar): a pull to refresh needs that; a refresh that answers a
+  /// profile change does not, since the provider heard the same change itself.
+  Future<void> _fetchUserProfile({
+    bool forceRefresh = false,
+    bool syncSettings = true,
+  }) async {
     if (!mounted) return;
     setState(() => _isLoading = _userData == null);
     final sessionService = Provider.of<SessionService>(context, listen: false);
@@ -924,9 +882,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return;
     }
 
-    _supportsMobile = await OdooSchemaService.instance.isWritable(
-      'res.users',
-      'mobile',
+    _supportsMobile = odooHasPartnerMobile(
+      odooGeneration(session.serverVersion),
     );
 
     final client = await sessionService.client;
@@ -950,24 +907,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
 
     try {
-      String? serverWriteDate;
-      try {
-        final writeDateRes = await client.callKw({
-          'model': 'res.users',
-          'method': 'search_read',
-          'args': [
-            [
-              ['id', '=', uid],
-            ],
-            ['write_date'],
-          ],
-          'kwargs': {'limit': 1},
-        });
-        if (writeDateRes is List && writeDateRes.isNotEmpty) {
-          final row = writeDateRes.first as Map<String, dynamic>;
-          serverWriteDate = row['write_date']?.toString();
-        }
-      } catch (_) {}
+      // The user's and the partner's write dates together: a photo changed on
+      // the web writes only the partner, so the user's date alone would leave
+      // the cache looking current.
+      final serverWriteDate = await profileVersionStamp(
+        client.callKw,
+        uid: uid,
+        partnerId: _partnerId ?? partnerIdOf(_userData),
+      );
 
       String? cachedWriteDate;
       try {
@@ -985,14 +932,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
         return;
       }
 
-      final profileFields = await OdooSchemaService.instance
-          .readableFields('res.users', const [
+      final result = await client.callKw({
+        'model': 'res.users',
+        'method': 'read',
+        'args': [uid],
+        'kwargs': {
+          'fields': [
             'name',
             'login',
             'email',
             'image_1920',
             'phone',
-            'mobile',
+            if (_supportsMobile) 'mobile',
             'website',
             'function',
             'company_id',
@@ -1005,13 +956,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
             'country_id',
             'active',
             'write_date',
-          ]);
-
-      final result = await client.callKw({
-        'model': 'res.users',
-        'method': 'read',
-        'args': [uid],
-        'kwargs': {'fields': profileFields},
+          ],
+        },
       });
 
       if (result is List && result.isNotEmpty && mounted) {
@@ -1034,6 +980,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
         });
         _updateControllers();
 
+        // The account list shows the name and photo kept on each stored
+        // account; keep this one's current.
+        unawaited(
+          sessionService.updateStoredAccountProfile(
+            session,
+            name: data['name'] is String ? data['name'] as String : null,
+            imageBase64: avatar,
+          ),
+        );
+        if (forceRefresh && syncSettings && mounted) {
+          unawaited(
+            Provider.of<SettingsProvider>(
+              context,
+              listen: false,
+            ).fetchUserProfile(),
+          );
+        }
+
         await _loadRelatedCompany();
 
         try {
@@ -1041,7 +1005,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
           final writeKey = await _getWriteDateKey();
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString(cacheKey, jsonEncode(data));
-          final wd = (data['write_date'] ?? serverWriteDate)?.toString();
+          // The stamp is taken again now that the partner is known, so the
+          // next open compares like with like.
+          final wd =
+              (await profileVersionStamp(
+                        client.callKw,
+                        uid: uid,
+                        partnerId: partnerIdOf(data),
+                      ) ??
+                      serverWriteDate ??
+                      data['write_date'])
+                  ?.toString();
           if (wd != null) {
             await prefs.setString(writeKey, wd);
           }
@@ -1232,17 +1206,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
             : _functionController.text.trim();
       }
 
-      final accepted = await OdooSchemaService.instance.writableValues(
-        'res.users',
-        updateData,
-      );
-      if (accepted.isNotEmpty) {
+      if (updateData.isNotEmpty) {
         await client.callKw({
           'model': 'res.users',
           'method': 'write',
           'args': [
             [uid],
-            accepted,
+            updateData,
           ],
           'kwargs': {},
         });
@@ -1328,90 +1298,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       barrierDismissible: false,
       builder: (ctx) {
         dialogContext = ctx;
-        final isDark = Theme.of(context).brightness == Brightness.dark;
-        return WillPopScope(
-          onWillPop: () async => false,
-          child: Dialog(
-            backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            elevation: 8,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.primary.withOpacity(0.08),
-                      shape: BoxShape.circle,
-                    ),
-                    padding: const EdgeInsets.all(16),
-                    child: LoadingAnimationWidget.fourRotatingDots(
-                      color: isDark
-                          ? Colors.white
-                          : Theme.of(context).colorScheme.primary,
-                      size: 50,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  Text(
-                    'Logging out...',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white : Colors.black87,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Please wait while we process your request.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: isDark ? Colors.grey[300] : Colors.grey[700],
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-
-                  Consumer2<ConnectivityService, SessionService>(
-                    builder: (_, connectivity, session, __) {
-                      final offline =
-                          !connectivity.isConnected ||
-                          session.isServerUnreachable;
-                      final icon = offline
-                          ? Icons.wifi_off_rounded
-                          : Icons.wifi_rounded;
-                      final color = offline
-                          ? (isDark ? Colors.orange[300] : Colors.orange[700])
-                          : (isDark ? Colors.grey[400] : Colors.grey[600]);
-                      final label = offline
-                          ? 'Offline: logging out locally'
-                          : 'Online';
-                      return Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(icon, size: 16, color: color),
-                          const SizedBox(width: 6),
-                          Text(
-                            label,
-                            style: TextStyle(
-                              fontSize: 12.5,
-                              color: color,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ),
+        return const LoadingDialog(
+          message: 'Logging out...',
+          subtitle: 'Please wait while we process your request.',
         );
       },
     );
@@ -1458,63 +1347,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 : Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    side: BorderSide(
-                      color: isDark ? Colors.grey[700]! : AppTheme.primaryColor,
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w500,
-                      color: AppTheme.primaryColor,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Theme.of(context).primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Log Out',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Log Out',
+            onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
       ),
@@ -1713,12 +1552,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
           );
           final client = await sessionService.client;
           if (client == null) return;
-          final domain = [
-            ['is_company', '=', true],
-          ];
-          if (q.trim().isNotEmpty) {
-            domain.add(['name', 'ilike', q.trim()]);
-          }
+          final domain = relatedCompanyDomain(
+            odooGeneration(sessionService.currentSession?.serverVersion),
+            query: q,
+          );
           final res = await client.callKw({
             'model': 'res.partner',
             'method': 'search_read',
@@ -1780,12 +1617,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         height: 320,
                         width: double.infinity,
                         child: loading
-                            ? Center(
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                    theme.primaryColor,
-                                  ),
+                            ? const SingleChildScrollView(
+                                physics: NeverScrollableScrollPhysics(),
+                                child: RowsSkeleton(
+                                  count: 6,
+                                  leadingSize: 36,
+                                  circleLeading: true,
                                 ),
                               )
                             : companies.isEmpty
@@ -2150,24 +1987,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
               onRetry: () => _fetchUserProfile(forceRefresh: true),
             )
           : RefreshIndicator(
-              onRefresh: () => _fetchUserProfile(forceRefresh: true),
+              onRefresh: () => Future.wait([
+                _fetchUserProfile(forceRefresh: true),
+                SessionService.instance.refreshStoredAccountsProfiles(
+                  force: true,
+                ),
+              ]),
               child: SingleChildScrollView(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     const SizedBox(height: 12),
                     GestureDetector(
-                      onTap: () async {
-                        final isIOS =
-                            Theme.of(context).platform == TargetPlatform.iOS;
-                        final route = MaterialPageRoute(
+                      // What the details screen saves reaches this screen over
+                      // the data bus (see initState), whatever it was: the
+                      // photo and the address as much as the name.
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
                           builder: (context) => const ProfileDetailsScreen(),
-                        );
-                        final result = await Navigator.push(context, route);
-                        if (result == true && mounted) {
-                          _fetchUserProfile(forceRefresh: true);
-                        }
-                      },
+                        ),
+                      ),
                       child: Container(
                         margin: const EdgeInsets.all(20),
                         padding: const EdgeInsets.all(12),
@@ -2584,8 +2424,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     Map<String, dynamic> account,
     SessionService sessionService,
   ) async {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     final needsReauth = account['needsReauth']?.toString() == 'true';
     final hasEmptyPassword = account['password']?.toString().isEmpty == true;
 
@@ -2606,27 +2444,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => Dialog(
-        backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircularProgressIndicator(color: AppTheme.primaryColor),
-              const SizedBox(height: 16),
-              Text(
-                'Switching Account...',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: isDark ? Colors.white : Colors.black87,
-                ),
-              ),
-            ],
-          ),
-        ),
+      builder: (ctx) => LoadingDialog(
+        message: 'Switching Account...',
+        subtitle:
+            'Please wait while we switch to ${account['userName'] ?? 'the account'}',
       ),
     );
 
@@ -2639,6 +2460,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
     } catch (e) {
       if (context.mounted) {
         Navigator.pop(context);
+
+        // By type, before the wording below: this message says "database" and
+        // must not be taken for a wrong password.
+        if (e is DatabaseExpiredException) {
+          CustomSnackbar.showError(context, DatabaseExpiredException.message);
+          return;
+        }
+
+        if (e is SalesAccessException) {
+          await AccessDeniedDialog.showFor(context, e, buttonLabel: 'OK');
+          return;
+        }
 
         if (e.toString().toLowerCase().contains('authentication') ||
             e.toString().toLowerCase().contains('password') ||
@@ -2690,61 +2523,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 : Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isDark
-                        ? Colors.red[700]
-                        : Theme.of(context).colorScheme.error,
-                    foregroundColor: isDark
-                        ? Colors.white
-                        : Theme.of(context).colorScheme.onError,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Remove',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Remove',
+            onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
       ),
@@ -3261,49 +3046,13 @@ class _AccountDrawer extends StatelessWidget {
     BuildContext context,
     Map<String, dynamic> account,
   ) async {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => PopScope(
-        canPop: false,
-        child: Dialog(
-          backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                LoadingAnimationWidget.fourRotatingDots(
-                  color: AppTheme.primaryColor,
-                  size: 35,
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Switching Account...',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Please wait while we switch to ${account['userName']}',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: isDark ? Colors.grey[300] : Colors.grey[700],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+      builder: (ctx) => LoadingDialog(
+        message: 'Switching Account...',
+        subtitle:
+            'Please wait while we switch to ${account['userName'] ?? 'the account'}',
       ),
     );
 
@@ -3384,6 +3133,14 @@ class _AccountDrawer extends StatelessWidget {
       if (context.mounted) {
         Navigator.pop(context);
         Navigator.pop(context);
+        if (e is DatabaseExpiredException) {
+          CustomSnackbar.showError(context, DatabaseExpiredException.message);
+          return;
+        }
+        if (e is SalesAccessException) {
+          await AccessDeniedDialog.showFor(context, e, buttonLabel: 'OK');
+          return;
+        }
         CustomSnackbar.showError(
           context,
           'Error switching account: ${e.toString()}',
@@ -3421,61 +3178,13 @@ class _AccountDrawer extends StatelessWidget {
                 : Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isDark
-                        ? Colors.red[700]
-                        : Theme.of(context).colorScheme.error,
-                    foregroundColor: isDark
-                        ? Colors.white
-                        : Theme.of(context).colorScheme.onError,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Remove',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Remove',
+            onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
       ),

@@ -1,88 +1,155 @@
 import 'package:flutter/material.dart';
+import '../utils/invoice_name.dart';
+import '../utils/odoo_version.dart';
 import '../widgets/confetti_dialogs.dart';
+import 'data_change_bus.dart';
 import 'odoo_session_manager.dart';
 
 /// Manages invoice sending, sale order fetching, and invoice creation against Odoo.
 class InvoiceService {
   static final InvoiceService instance = InvoiceService._internal();
-  InvoiceService._internal();
+  InvoiceService._internal()
+    : _callKw = OdooSessionManager.safeCallKw,
+      _bus = DataChangeBus.instance;
+
+  /// A service that talks to [callKw] instead of the Odoo session and
+  /// announces on [bus]; for tests.
+  @visibleForTesting
+  InvoiceService.forTesting({
+    required Future<dynamic> Function(Map<String, dynamic> payload) callKw,
+    required DataChangeBus bus,
+  }) : _callKw = callKw,
+       _bus = bus;
+
+  final Future<dynamic> Function(Map<String, dynamic> payload) _callKw;
+  final DataChangeBus _bus;
+
+  /// The `res.partner` fields read to fill in the customer when an invoice is
+  /// opened for editing.
+  ///
+  /// `mobile` was removed in Odoo 19 and `company_name` in Odoo 20. Asking for
+  /// a field the server no longer has fails the whole read, and the edit form
+  /// would then show the customer with no contact details at all.
+  static List<String> customerPrefillFields(int generation) => [
+    'id',
+    'name',
+    'email',
+    'phone',
+    if (odooHasPartnerMobile(generation)) 'mobile',
+    'street',
+    'street2',
+    'city',
+    'state_id',
+    'zip',
+    'country_id',
+    'image_1920',
+    if (odooHasPartnerCompanyName(generation)) 'company_name',
+    'vat',
+  ];
 
   /// Sends the invoice email for [moveId] and shows a confirmation dialog on success.
+  ///
+  /// [closeLoadingDialog] is called exactly once on every path that ends
+  /// here — sent, not sent, unsupported or failed — so the caller's loading
+  /// dialog can never be left on screen. It is called before the confirmation
+  /// dialog or the error is shown, never after.
   Future<void> sendInvoice(
     BuildContext context,
     int moveId, {
     required VoidCallback closeLoadingDialog,
   }) async {
+    var dialogClosed = false;
+    void closeDialogOnce() {
+      if (dialogClosed) return;
+      dialogClosed = true;
+      closeLoadingDialog();
+    }
+
     try {
       final session = await OdooSessionManager.getCurrentSession();
       final contextParams = {
         'lang': 'en_US',
         'tz': 'UTC',
-        'allowed_company_ids': session != null && session.allowedCompanyIds.isNotEmpty
+        'allowed_company_ids':
+            session != null && session.allowedCompanyIds.isNotEmpty
             ? session.allowedCompanyIds
-            : (session?.selectedCompanyId != null ? [session!.selectedCompanyId!] : []),
+            : (session?.selectedCompanyId != null
+                  ? [session!.selectedCompanyId!]
+                  : []),
         'active_model': 'account.move',
         'active_id': moveId,
         'active_ids': [moveId],
       };
 
-      final wizardAction = await OdooSessionManager.safeCallKw({
+      final wizardAction = await _callKw({
         'model': 'account.move',
         'method': 'action_invoice_sent',
         'args': [moveId],
         'kwargs': {'context': contextParams},
       });
 
-      if (wizardAction is Map && wizardAction.containsKey('res_model')) {
-        final wizardModel = wizardAction['res_model'];
+      final wizardModel = wizardAction is Map
+          ? wizardAction['res_model']
+          : null;
+      if (wizardModel != 'account.move.send.wizard') {
+        // Another release asks for a different wizard (Odoo 17's is
+        // `account.move.send`), which this flow does not drive. Saying so is
+        // better than leaving the loading dialog up with nothing happening.
+        throw Exception(
+          'Sending invoices by email from the app is not supported by this '
+          'Odoo version. Send it from Odoo instead.',
+        );
+      }
 
-        if (wizardModel == 'account.move.send.wizard') {
-          final wizardCreateResult = await OdooSessionManager.safeCallKw({
-            'model': 'account.move.send.wizard',
-            'method': 'create',
-            'args': [
-              {'move_id': moveId},
-            ],
-            'kwargs': {'context': contextParams},
-          });
+      final wizardCreateResult = await _callKw({
+        'model': 'account.move.send.wizard',
+        'method': 'create',
+        'args': [
+          {'move_id': moveId},
+        ],
+        'kwargs': {'context': contextParams},
+      });
 
-          if (wizardCreateResult is int) {
-            await OdooSessionManager.safeCallKw({
-              'model': 'account.move.send.wizard',
-              'method': 'action_send_and_print',
-              'args': [wizardCreateResult],
-              'kwargs': {'context': contextParams},
-            });
+      if (wizardCreateResult is! int) {
+        throw Exception('Odoo did not open the send wizard for this invoice.');
+      }
 
-            final verifyResult = await OdooSessionManager.safeCallKw({
-              'model': 'account.move',
-              'method': 'read',
-              'args': [moveId],
-              'kwargs': {
-                'fields': ['is_move_sent', 'name'],
-                'context': contextParams,
-              },
-            });
+      await _callKw({
+        'model': 'account.move.send.wizard',
+        'method': 'action_send_and_print',
+        'args': [wizardCreateResult],
+        'kwargs': {'context': contextParams},
+      });
 
-            final isSent = verifyResult is List && verifyResult.isNotEmpty
-                ? verifyResult.first['is_move_sent'] ?? false
-                : false;
-            final invoiceName = verifyResult is List && verifyResult.isNotEmpty
-                ? verifyResult.first['name']?.toString() ?? 'Invoice'
-                : 'Invoice';
+      // The invoice is sent (and its "sent" flag set) on the server from here.
+      _bus.invoiceChanged(moveId);
 
-            if (context.mounted) {
-              closeLoadingDialog();
-              if (isSent) {
-                showInvoiceSentConfettiDialog(context, invoiceName);
-              }
-            }
-          }
+      final verifyResult = await _callKw({
+        'model': 'account.move',
+        'method': 'read',
+        'args': [moveId],
+        'kwargs': {
+          'fields': ['is_move_sent', 'name'],
+          'context': contextParams,
+        },
+      });
+
+      final isSent = verifyResult is List && verifyResult.isNotEmpty
+          ? verifyResult.first['is_move_sent'] ?? false
+          : false;
+      final invoiceName = verifyResult is List && verifyResult.isNotEmpty
+          ? verifyResult.first['name']?.toString() ?? 'Invoice'
+          : 'Invoice';
+
+      if (context.mounted) {
+        closeDialogOnce();
+        if (isSent) {
+          showInvoiceSentConfettiDialog(context, invoiceName);
         }
       }
     } catch (e) {
       if (context.mounted) {
-        closeLoadingDialog();
+        closeDialogOnce();
       }
       rethrow;
     }
@@ -96,7 +163,7 @@ class InvoiceService {
     String order = 'name desc',
   }) async {
     try {
-      final result = await OdooSessionManager.safeCallKw({
+      final result = await _callKw({
         'model': 'sale.order',
         'method': 'search_read',
         'args': [domain],
@@ -129,7 +196,7 @@ class InvoiceService {
   /// Fetches full details for the sale order with [saleOrderId].
   Future<Map<String, dynamic>> fetchSaleOrderDetails(int saleOrderId) async {
     try {
-      final result = await OdooSessionManager.safeCallKw({
+      final result = await _callKw({
         'model': 'sale.order',
         'method': 'read',
         'args': [
@@ -161,7 +228,7 @@ class InvoiceService {
     }
   }
 
-  /// The fields that read across Odoo 17, 18 and 19 without renaming.
+  /// The fields that read across Odoo 17 to 20 without renaming.
   static const _saleOrderLineBaseFields = [
     'id',
     'product_id',
@@ -176,12 +243,31 @@ class InvoiceService {
     'discount',
   ];
 
-  /// sale.order.line's tax and unit-of-measure fields have been renamed
-  /// between Odoo versions (e.g. tax_id -> tax_ids in 17+). Each list holds
+  /// sale.order.line's tax and unit-of-measure fields were renamed in Odoo 19
+  /// (`tax_id` -> `tax_ids`, `product_uom` -> `product_uom_id`). Each list holds
   /// every known alias, tried in order, so the read call below self-heals
   /// instead of failing outright when the server rejects one.
   static const _saleOrderLineTaxFieldAliases = ['tax_id', 'tax_ids'];
-  static const _saleOrderLineUomFieldAliases = ['product_uom', 'product_uom_id'];
+  static const _saleOrderLineUomFieldAliases = [
+    'product_uom',
+    'product_uom_id',
+  ];
+
+  /// The tax field names to try for `sale.order.line` on [generation], the
+  /// name the server has first. Odoo 19 and 20 only know `tax_ids`; asking for
+  /// `tax_id` first made them refuse it (and log an error) before every read.
+  /// An unknown generation (0) keeps the original order.
+  static List<String> saleOrderLineTaxFieldAliases(int generation) =>
+      generation >= 19
+      ? _saleOrderLineTaxFieldAliases.reversed.toList()
+      : _saleOrderLineTaxFieldAliases.toList();
+
+  /// The unit-of-measure field names to try for `sale.order.line`; see
+  /// [saleOrderLineTaxFieldAliases].
+  static List<String> saleOrderLineUomFieldAliases(int generation) =>
+      generation >= 19
+      ? _saleOrderLineUomFieldAliases.reversed.toList()
+      : _saleOrderLineUomFieldAliases.toList();
 
   /// Extracts the offending field name from an "Invalid field 'x' on
   /// 'model'" Odoo server error, or null if the error doesn't match.
@@ -197,7 +283,7 @@ class InvoiceService {
     List<int> lineIds,
   ) async {
     Future<dynamic> attemptRead(String taxField, String uomField) {
-      return OdooSessionManager.safeCallKw({
+      return _callKw({
         'model': 'sale.order.line',
         'method': 'read',
         'args': [lineIds],
@@ -208,28 +294,29 @@ class InvoiceService {
     }
 
     try {
-      var taxField = _saleOrderLineTaxFieldAliases.first;
-      var uomField = _saleOrderLineUomFieldAliases.first;
+      final generation = await OdooSessionManager.serverGeneration();
+      final taxAliases = saleOrderLineTaxFieldAliases(generation);
+      final uomAliases = saleOrderLineUomFieldAliases(generation);
+
+      var taxField = taxAliases.first;
+      var uomField = uomAliases.first;
 
       dynamic result;
-      final maxAttempts =
-          _saleOrderLineTaxFieldAliases.length +
-          _saleOrderLineUomFieldAliases.length;
+      final maxAttempts = taxAliases.length + uomAliases.length;
       for (var attempt = 0; attempt < maxAttempts; attempt++) {
         try {
           result = await attemptRead(taxField, uomField);
           break;
         } catch (e) {
           final invalidField = _invalidFieldFrom(e);
-          final taxIndex = _saleOrderLineTaxFieldAliases.indexOf(taxField);
-          final uomIndex = _saleOrderLineUomFieldAliases.indexOf(uomField);
+          final taxIndex = taxAliases.indexOf(taxField);
+          final uomIndex = uomAliases.indexOf(uomField);
 
-          if (invalidField == taxField &&
-              taxIndex < _saleOrderLineTaxFieldAliases.length - 1) {
-            taxField = _saleOrderLineTaxFieldAliases[taxIndex + 1];
+          if (invalidField == taxField && taxIndex < taxAliases.length - 1) {
+            taxField = taxAliases[taxIndex + 1];
           } else if (invalidField == uomField &&
-              uomIndex < _saleOrderLineUomFieldAliases.length - 1) {
-            uomField = _saleOrderLineUomFieldAliases[uomIndex + 1];
+              uomIndex < uomAliases.length - 1) {
+            uomField = uomAliases[uomIndex + 1];
           } else {
             rethrow;
           }
@@ -248,7 +335,7 @@ class InvoiceService {
   /// Returns all available payment terms from `account.payment.term`.
   Future<List<Map<String, dynamic>>> fetchPaymentTerms() async {
     try {
-      final result = await OdooSessionManager.safeCallKw({
+      final result = await _callKw({
         'model': 'account.payment.term',
         'method': 'search_read',
         'args': [[]],
@@ -268,9 +355,14 @@ class InvoiceService {
   }
 
   /// Creates a new `account.move` record from [invoiceData] and returns its ID.
+  ///
+  /// This is only the write and it announces nothing: the tax estimate below
+  /// creates and deletes a throwaway invoice through it, which no list should
+  /// hear about. The caller that creates a real invoice announces it (see
+  /// `CreateInvoiceProvider`), since it also knows the sale order it is for.
   Future<int> createInvoice(Map<String, dynamic> invoiceData) async {
     try {
-      final result = await OdooSessionManager.safeCallKw({
+      final result = await _callKw({
         'model': 'account.move',
         'method': 'create',
         'args': [invoiceData],
@@ -284,6 +376,20 @@ class InvoiceService {
     }
   }
 
+  /// Writes [values] to the invoice [invoiceId] and announces the change.
+  Future<void> updateInvoice(int invoiceId, Map<String, dynamic> values) async {
+    await _callKw({
+      'model': 'account.move',
+      'method': 'write',
+      'args': [
+        [invoiceId],
+        values,
+      ],
+      'kwargs': {},
+    });
+    _bus.invoiceChanged(invoiceId);
+  }
+
   /// Creates a temporary invoice to calculate tax totals, then deletes it.
   Future<Map<String, dynamic>> calculateTax(
     Map<String, dynamic> tempInvoiceData,
@@ -292,7 +398,7 @@ class InvoiceService {
     try {
       tempMoveId = await createInvoice(tempInvoiceData);
 
-      final result = await OdooSessionManager.safeCallKw({
+      final result = await _callKw({
         'model': 'account.move',
         'method': 'read',
         'args': [
@@ -312,7 +418,7 @@ class InvoiceService {
     } finally {
       if (tempMoveId != null) {
         try {
-          await OdooSessionManager.safeCallKw({
+          await _callKw({
             'model': 'account.move',
             'method': 'unlink',
             'args': [
@@ -328,7 +434,7 @@ class InvoiceService {
   /// Returns the Odoo database ID for the currency with ISO [code].
   Future<int?> getCurrencyId(String code) async {
     try {
-      final result = await OdooSessionManager.safeCallKw({
+      final result = await _callKw({
         'model': 'res.currency',
         'method': 'search_read',
         'args': [
@@ -354,7 +460,7 @@ class InvoiceService {
   /// Creates a `sale.advance.payment.inv` wizard record with [data] and returns its ID.
   Future<int> createAdvancePaymentWizard(Map<String, dynamic> data) async {
     try {
-      final result = await OdooSessionManager.safeCallKw({
+      final result = await _callKw({
         'model': 'sale.advance.payment.inv',
         'method': 'create',
         'args': [data],
@@ -374,7 +480,7 @@ class InvoiceService {
     Map<String, dynamic>? context,
   }) async {
     try {
-      return await OdooSessionManager.safeCallKw({
+      return await _callKw({
         'model': 'sale.advance.payment.inv',
         'method': 'create_invoices',
         'args': [
@@ -397,7 +503,7 @@ class InvoiceService {
       int userCompanyId = 0;
 
       if (session?.userId != null) {
-        final userResult = await OdooSessionManager.safeCallKw({
+        final userResult = await _callKw({
           'model': 'res.users',
           'method': 'read',
           'args': [
@@ -415,7 +521,7 @@ class InvoiceService {
         }
       }
 
-      final result = await OdooSessionManager.safeCallKw({
+      final result = await _callKw({
         'model': 'account.tax',
         'method': 'search_read',
         'args': [
@@ -441,7 +547,7 @@ class InvoiceService {
   /// Associates [invoiceId] with [saleOrderId] in Odoo.
   Future<void> linkInvoiceToSaleOrder(int saleOrderId, int invoiceId) async {
     try {
-      await OdooSessionManager.safeCallKw({
+      await _callKw({
         'model': 'sale.order',
         'method': 'write',
         'args': [
@@ -462,19 +568,20 @@ class InvoiceService {
   /// Returns the display name (sequence number) for the invoice with [invoiceId].
   Future<String?> getInvoiceName(int invoiceId) async {
     try {
-      final result = await OdooSessionManager.safeCallKw({
+      final result = await _callKw({
         'model': 'account.move',
         'method': 'read',
         'args': [
           [invoiceId],
         ],
         'kwargs': {
-          'fields': ['name'],
+          'fields': ['name', 'state'],
         },
       });
 
       if (result is List && result.isNotEmpty) {
-        return result[0]['name']?.toString();
+        // A draft has no number: it is called "Draft", not "false".
+        return invoiceDisplayName(result[0]['name'], result[0]['state']);
       }
       return null;
     } catch (e) {

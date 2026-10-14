@@ -4,15 +4,19 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import 'currency_provider.dart';
+import '../utils/html_text.dart';
+import '../models/invoice_line_values.dart';
 import '../models/contact.dart';
 import '../models/payment_term.dart';
 import '../models/product.dart';
 import '../models/quote.dart';
 import '../widgets/custom_snackbar.dart';
 import 'package:mobo_sales/services/customer_service.dart';
+import '../services/data_change_bus.dart';
 import 'package:mobo_sales/services/product_service.dart';
 import 'package:mobo_sales/services/invoice_service.dart';
 import '../services/odoo_error_handler.dart';
+import '../services/odoo_session_manager.dart';
 import '../services/review_service.dart';
 
 class CreateInvoiceProvider with ChangeNotifier {
@@ -48,6 +52,7 @@ class CreateInvoiceProvider with ChangeNotifier {
   final CustomerService _customerService;
   final ProductService _productService;
   final InvoiceService _invoiceService;
+  final DataChangeBus _bus;
 
   Map<String, dynamic> _taxTotals = {};
   bool _isCalculatingTax = false;
@@ -91,9 +96,11 @@ class CreateInvoiceProvider with ChangeNotifier {
     CustomerService? customerService,
     ProductService? productService,
     InvoiceService? invoiceService,
+    DataChangeBus? bus,
   }) : _customerService = customerService ?? CustomerService.instance,
        _productService = productService ?? ProductService.instance,
-       _invoiceService = invoiceService ?? InvoiceService.instance {
+       _invoiceService = invoiceService ?? InvoiceService.instance,
+       _bus = bus ?? DataChangeBus.instance {
     if (currencyProvider != null) {
       _currencyProvider = currencyProvider;
       _currencyFormat = _currencyProvider!.currencyFormat;
@@ -616,19 +623,11 @@ class CreateInvoiceProvider with ChangeNotifier {
     notifyListeners();
 
     try {
-      final invoiceLines = _invoiceLines.map((line) {
-        return [
-          0,
-          0,
-          {
-            'product_id': line['product_id'],
-            'name': line['product_name'],
-            'quantity': line['quantity'] ?? 1.0,
-            'price_unit': line['unit_price'] ?? 0.0,
-            'product_uom_id': line['product_uom_id'],
-          },
-        ];
-      }).toList();
+      // The product's own taxes are left to Odoo here (this only prices the
+      // lines); a line with no product always says which taxes it has.
+      final invoiceLines = _invoiceLines
+          .map((line) => [0, 0, invoiceLineValues(line, withTaxes: false)])
+          .toList();
 
       final tempInvoiceData = {
         'partner_id': _selectedCustomer!.id,
@@ -761,6 +760,18 @@ class CreateInvoiceProvider with ChangeNotifier {
       return await _invoiceService.filterTaxesByCompany(productTaxIds);
     } catch (e) {}
     return [];
+  }
+
+  /// Puts [lines] — an invoice's own lines, as [invoiceLineFromMoveLine] made
+  /// them — in the form, in their order, and prices them once. For an invoice
+  /// opened for editing.
+  Future<void> loadInvoiceLines(List<Map<String, dynamic>> lines) async {
+    _invoiceLines
+      ..clear()
+      ..addAll(lines);
+    notifyListeners();
+    if (_selectedSaleOrder == null) await calculateTaxForInvoiceLines();
+    notifyListeners();
   }
 
   void updateInvoiceLine(int index, double quantity, double unitPrice) {
@@ -898,6 +909,16 @@ class CreateInvoiceProvider with ChangeNotifier {
   List<String> _availableFields = [];
   bool _isFieldsFetched = false;
 
+  /// The server's Odoo generation, or 0 when it cannot be read: a search
+  /// must never fail because the version could not be looked up.
+  Future<int> _serverGeneration() async {
+    try {
+      return await OdooSessionManager.serverGeneration();
+    } catch (_) {
+      return 0;
+    }
+  }
+
   Future<void> fetchProducts({
     String category = 'All Products',
     bool isLoadMore = false,
@@ -933,11 +954,14 @@ class CreateInvoiceProvider with ChangeNotifier {
       }
 
       if (searchQuery.isNotEmpty) {
-        productDomain.add('|');
-        productDomain.add('|');
-        productDomain.add(['name', 'ilike', searchQuery]);
-        productDomain.add(['default_code', 'ilike', searchQuery]);
-        productDomain.add(['barcode', 'ilike', searchQuery]);
+        // Odoo 20 stopped searching a template's variants through `barcode`;
+        // `productSearchDomain` asks for them explicitly there.
+        productDomain.addAll(
+          productSearchDomain(
+            searchQuery,
+            generation: await _serverGeneration(),
+          ),
+        );
       }
 
       List<String> fields = [
@@ -1086,6 +1110,27 @@ class CreateInvoiceProvider with ChangeNotifier {
     }
   }
 
+  /// Announces the invoice [invoiceId] the server has just created and, when
+  /// it is for a sale order, that order too: its invoicing status and its
+  /// related invoices changed with it. Called as soon as the server has the
+  /// invoice, before the steps that only tidy up after it, so a failure there
+  /// cannot leave the lists without it.
+  void _announceInvoiceCreated(int invoiceId, {int? saleOrderId}) {
+    _bus.invoiceChanged(invoiceId, kind: DataChangeKind.created);
+    if (saleOrderId != null) _bus.quotationChanged(saleOrderId);
+  }
+
+  /// Links the new invoice to its sale order. The invoice exists by now, so a
+  /// refusal here must not turn a created invoice into a "failed to create"
+  /// error (and invite a second, duplicate attempt).
+  Future<void> _linkToSaleOrder(int saleOrderId, int invoiceId) async {
+    try {
+      await _invoiceService.linkInvoiceToSaleOrder(saleOrderId, invoiceId);
+    } catch (e) {
+      log('Linking invoice $invoiceId to sale order $saleOrderId failed: $e');
+    }
+  }
+
   Future<void> _createInvoiceFromSaleOrder(BuildContext context) async {
     try {
       final saleOrderId = _selectedSaleOrder?.id;
@@ -1115,8 +1160,14 @@ class CreateInvoiceProvider with ChangeNotifier {
       }
 
       if (invoiceId == null) {
+        // The wizard ran, so the order's invoicing status changed even though
+        // the invoice cannot be named.
+        _bus.quotationChanged(saleOrderId);
+        _bus.invoiceChanged(null, kind: DataChangeKind.created);
         throw Exception('Failed to get invoice ID from wizard result');
       }
+
+      _announceInvoiceCreated(invoiceId, saleOrderId: saleOrderId);
 
       final writeVals = <String, dynamic>{};
       if (_selectedPaymentTerm != null && _selectedPaymentTerm!.id != 0) {
@@ -1128,7 +1179,17 @@ class CreateInvoiceProvider with ChangeNotifier {
         ).format(_invoiceDate!);
       }
 
-      await _invoiceService.linkInvoiceToSaleOrder(saleOrderId!, invoiceId);
+      await _linkToSaleOrder(saleOrderId!, invoiceId);
+
+      // The wizard makes the invoice; the notes typed here go on it afterwards.
+      final narration = _narration;
+      if (narration != null) {
+        try {
+          await _invoiceService.updateInvoice(invoiceId, {
+            'narration': narration,
+          });
+        } catch (_) {}
+      }
 
       _lastCreatedInvoiceName =
           await _invoiceService.getInvoiceName(invoiceId) ?? 'Invoice';
@@ -1148,23 +1209,9 @@ class CreateInvoiceProvider with ChangeNotifier {
 
   Future<void> _createDirectInvoice(BuildContext context) async {
     try {
-      final invoiceLines = _invoiceLines.map((line) {
-        return [
-          0,
-          0,
-          {
-            'product_id': line['product_id'],
-            'name': line['product_name'],
-            'quantity': line['quantity'] ?? 1.0,
-            'price_unit': line['unit_price'] ?? 0.0,
-            'product_uom_id': line['product_uom_id'],
-            'tax_ids': [
-              [6, 0, line['tax_ids'] ?? []],
-            ],
-            'discount': line['discount'] ?? 0.0,
-          },
-        ];
-      }).toList();
+      final invoiceLines = _invoiceLines
+          .map((line) => [0, 0, invoiceLineValues(line)])
+          .toList();
 
       final invoiceData = {
         'partner_id': _selectedCustomer!.id,
@@ -1173,6 +1220,7 @@ class CreateInvoiceProvider with ChangeNotifier {
         'invoice_line_ids': invoiceLines,
         if (_selectedPaymentTerm != null)
           'invoice_payment_term_id': _selectedPaymentTerm!.id,
+        if (_narration != null) 'narration': _narration,
       };
 
       final int? currencyId = await _invoiceService.getCurrencyId(_currency);
@@ -1181,12 +1229,10 @@ class CreateInvoiceProvider with ChangeNotifier {
       }
 
       final invoiceId = await _invoiceService.createInvoice(invoiceData);
+      _announceInvoiceCreated(invoiceId, saleOrderId: _selectedSaleOrder?.id);
 
       if (_selectedSaleOrder != null) {
-        await _invoiceService.linkInvoiceToSaleOrder(
-          _selectedSaleOrder!.id!,
-          invoiceId,
-        );
+        await _linkToSaleOrder(_selectedSaleOrder!.id!, invoiceId);
       }
 
       _lastCreatedInvoiceName =
@@ -1256,10 +1302,12 @@ class CreateInvoiceProvider with ChangeNotifier {
       if (currencyId != null) {
         invoiceData['currency_id'] = currencyId;
       }
+      if (_narration != null) invoiceData['narration'] = _narration;
 
       final invoiceId = await _invoiceService.createInvoice(invoiceData);
+      _announceInvoiceCreated(invoiceId, saleOrderId: saleOrderId);
 
-      await _invoiceService.linkInvoiceToSaleOrder(saleOrderId!, invoiceId);
+      await _linkToSaleOrder(saleOrderId!, invoiceId);
       _lastCreatedInvoiceName =
           await _invoiceService.getInvoiceName(invoiceId) ?? 'Invoice';
       _lastCreatedInvoiceId = invoiceId;
@@ -1276,7 +1324,18 @@ class CreateInvoiceProvider with ChangeNotifier {
     }
   }
 
-  void resetForm() {
+  String _notes = '';
+
+  /// The notes typed on the form, as text. They are sent as the invoice's
+  /// `narration`, which Odoo keeps as HTML.
+  void setNotes(String notes) => _notes = notes;
+
+  String? get _narration => plainTextToHtml(_notes);
+
+  /// Empties the form: customer, sale order, lines, dates, payment term, and
+  /// what the last attempt left behind (its error, the invoice it created).
+  /// [notify] false is for a screen that is still being built.
+  void resetForm({bool notify = true}) {
     _selectedCustomer = null;
     _selectedSaleOrder = null;
     _saleOrderLines.clear();
@@ -1287,7 +1346,30 @@ class CreateInvoiceProvider with ChangeNotifier {
     _dueDate = DateTime.now().add(const Duration(days: 30));
     _customerSearchController.clear();
     _saleOrderSearchController.clear();
-    notifyListeners();
+    _errorMessage = '';
+    _lastCreatedInvoiceName = null;
+    _lastCreatedInvoiceId = null;
+    _notes = '';
+    if (notify) notifyListeners();
+  }
+
+  /// The screen that owns the form right now. This provider is one for the
+  /// whole app, so whatever one create or edit screen leaves in it is what the
+  /// next one would show.
+  Object? _formOwner;
+
+  /// A create or edit screen takes the form as it opens, and finds it empty.
+  void claimForm(Object owner) {
+    _formOwner = owner;
+    resetForm(notify: false);
+  }
+
+  /// The screen gives the form up as it closes and the form is emptied — unless
+  /// another screen has claimed it meanwhile, which then keeps what it has.
+  void releaseForm(Object owner) {
+    if (!identical(_formOwner, owner)) return;
+    _formOwner = null;
+    resetForm();
   }
 
   void clearSelectedSaleOrder() {

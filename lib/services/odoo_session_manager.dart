@@ -1,13 +1,17 @@
 import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:odoo_rpc/odoo_rpc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 
-import '../core/session/database_expiry.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart' as webview;
+import '../utils/odoo_binary.dart';
+import '../utils/odoo_version.dart';
+import '../utils/database_expiry.dart';
+import 'sales_access.dart';
 
 /// Value object that holds all data for an active Odoo user session.
 class OdooSessionModel {
@@ -219,9 +223,18 @@ class _TimeoutHttpClient extends http.BaseClient {
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    if (OdooSessionManager.shouldSkipSessionRotation(
+      OdooSessionManager.cachedServerGeneration,
+    )) {
+      request.headers.putIfAbsent(
+        OdooSessionManager.skipSessionRotationHeader,
+        () => '1',
+      );
+    }
+
     final response = await _inner.send(request).timeout(_timeout);
 
-    return http.StreamedResponse(
+    final guarded = http.StreamedResponse(
       response.stream.timeout(
         _timeout,
         onTimeout: (sink) => sink.addError(
@@ -235,6 +248,26 @@ class _TimeoutHttpClient extends http.BaseClient {
       isRedirect: response.isRedirect,
       persistentConnection: response.persistentConnection,
       reasonPhrase: response.reasonPhrase,
+    );
+
+    // Every RPC of the app, whichever helper makes it, passes through here, so
+    // this is the one place where Odoo 20's image objects can be turned back
+    // into the base64 text the rest of the app reads. See odoo_binary.dart.
+    if (_mayCarryBinaryObjects(request, response)) {
+      return flattenOdooBinaryResponse(guarded);
+    }
+    return guarded;
+  }
+
+  static bool _mayCarryBinaryObjects(
+    http.BaseRequest request,
+    http.StreamedResponse response,
+  ) {
+    return odooResponseMayCarryBinaryObjects(
+      method: request.method,
+      url: request.url,
+      statusCode: response.statusCode,
+      generation: OdooSessionManager.cachedServerGeneration,
     );
   }
 
@@ -273,6 +306,26 @@ class OdooSessionManager {
           ((X509Certificate cert, String host, int port) => true);
     return _TimeoutHttpClient(IOClient(client), _requestTimeout);
   }
+
+  /// The header with which an Odoo 20 client opts out of session rotation.
+  ///
+  /// Odoo 19 and 20 move a logged-in session to a new id every three hours and
+  /// delete the old one two minutes later (`SESSION_ROTATION_INTERVAL` and
+  /// `SESSION_DELETION_TIMER`). The new id arrives only in a `Set-Cookie` that
+  /// this app, which keeps its own copy of the id, never reads, so the session
+  /// would die three hours after login and need a fresh sign-in, which a user
+  /// with two-factor authentication cannot do silently. Odoo 20 added this
+  /// request header for exactly such clients
+  /// (`SESSION_ROTATION_INTERVAL_HEADER_SKIP` in odoo/http/session.py,
+  /// "used by the mobile app", per its test). Odoo 19 and older ignore it.
+  static const String skipSessionRotationHeader =
+      'X-Odoo-Skip-Session-Rotation-Interval';
+
+  /// Whether requests to a server of [generation] should carry
+  /// [skipSessionRotationHeader]: Odoo 20 and later, and a server whose version
+  /// is not known yet (the header is ignored where it means nothing).
+  static bool shouldSkipSessionRotation(int generation) =>
+      generation == 0 || generation >= 20;
 
   static const String USER_AGENT =
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
@@ -322,6 +375,21 @@ class OdooSessionManager {
     _cachedSession = await OdooSessionModel.fromPrefs();
     return _cachedSession;
   }
+
+  /// The Odoo generation of the connected server (see [odooGeneration]), or 0
+  /// when there is no session or the version cannot be read.
+  ///
+  /// This is what a capability check such as `odooUsesFormattedReadGroup`
+  /// wants: it counts an Odoo 20 pre-release (`19.5a1`) as 20.
+  static Future<int> serverGeneration() async {
+    final session = await getCurrentSession();
+    return odooGeneration(session?.serverVersion);
+  }
+
+  /// [serverGeneration] from the session already in memory, for code that
+  /// cannot await. 0 until a session has been loaded.
+  static int get cachedServerGeneration =>
+      odooGeneration(_cachedSession?.serverVersion);
 
   /// Returns an authenticated `OdooClient`, building one from the cached session if needed.
   static Future<OdooClient?> getClient() async {
@@ -428,11 +496,15 @@ class OdooSessionManager {
     } on DatabaseExpiredException {
       rethrow;
     } catch (e) {
+      if (e is DatabaseExpiredException) rethrow;
+
       if (e is FormatException && e.toString().contains('<html>')) {
         throw Exception(
           'Server returned HTML instead of JSON. Please check server URL and ensure Odoo is running.',
         );
       }
+
+      if (e is SalesAccessException) rethrow;
 
       final errorStr = e.toString().toLowerCase();
       if (errorStr.contains('mfa') ||
@@ -534,10 +606,26 @@ class OdooSessionManager {
         throw Exception('Failed to get valid session info');
       }
 
+      // The session info is in hand (the web view's, after a code was
+      // accepted, or the one just fetched): the expiry is read from it, with no
+      // request of its own, before anything is saved or cached.
+      if (DatabaseExpiry.hasExpired(info['expiration_date'])) {
+        throw const DatabaseExpiredException();
+      }
+
       final int userId = info['uid'] is int
           ? info['uid']
           : int.parse(info['uid'].toString());
       final String serverVersion = info['server_version']?.toString() ?? '17.0';
+
+      // Before a session is saved: a user without Sales access leaves no trace.
+      await requireSalesAccess(
+        url: normalizedUrl,
+        sessionId: sessionId,
+        database: database,
+        userId: userId,
+        serverVersion: serverVersion,
+      );
 
       final userInfo = await _fetchUserCompanies(
         userId,
@@ -599,6 +687,131 @@ class OdooSessionManager {
 
       return true;
     } catch (e) {
+      if (e is DatabaseExpiredException) rethrow;
+      if (e is SalesAccessException) rethrow;
+      return false;
+    }
+  }
+
+  /// A [SalesRpc] that talks to [url] as [sessionId]: one POST per call, the
+  /// whole JSON-RPC reply handed back — including an `error`, which carries the
+  /// server's own exception name and message — and a throw only when the server
+  /// cannot be reached.
+  static SalesRpc _salesRpc(String url, String sessionId) {
+    return (model, method, args) async {
+      final res = await ioClient
+          .post(
+            Uri.parse('$url/web/dataset/call_kw'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'X-Requested-With': 'XMLHttpRequest',
+              'User-Agent': USER_AGENT,
+              'Origin': url,
+              'Referer': '$url/web',
+              'Cookie': 'session_id=$sessionId',
+              'X-Openerp-Session-Id': sessionId,
+            },
+            body: jsonEncode(
+              jsonRpcEnvelope({
+                'model': model,
+                'method': method,
+                'args': args,
+                'kwargs': <String, dynamic>{},
+              }),
+            ),
+          )
+          .timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200) {
+        throw Exception('RPC Session Error ${res.statusCode}');
+      }
+      final body = jsonDecode(res.body);
+      return body is Map<String, dynamic> ? body : <String, dynamic>{};
+    };
+  }
+
+  /// Throws a [SalesAccessException] unless the Sales module is installed on
+  /// the server and the user [userId], signed in with [sessionId], belongs to
+  /// the Sales group (see [SalesAccess]).
+  ///
+  /// [SalesAccessStatus.unverified] throws too, so an account is never let in
+  /// on a guess.
+  static Future<void> requireSalesAccess({
+    required String url,
+    required String sessionId,
+    required String database,
+    required int userId,
+    required String serverVersion,
+  }) async {
+    final status = await SalesAccess.check(
+      majorVersion: parseMajorVersion(serverVersion),
+      userId: userId,
+      rpc: _salesRpc(url, sessionId),
+    ).catchError((_) => SalesAccessStatus.unverified);
+    final problem = SalesAccessException.from(status);
+    if (problem != null) throw problem;
+  }
+
+  /// Why the session saved on this device may no longer use the app, or null
+  /// when it may.
+  ///
+  /// For the app start, where a user whose Sales access was taken away since
+  /// the last sign-in — or whose database lost the Sales module — must not
+  /// walk straight back in. Only a definite answer is a problem: no network,
+  /// an expired session or a server error returns null and leaves the user
+  /// where they were, as the app does offline everywhere else.
+  static Future<SalesAccessException?> currentSessionAccessProblem({
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    try {
+      final session = await getCurrentSession();
+      final userId = session?.userId;
+      if (session == null || userId == null) return null;
+      final status = await SalesAccess.check(
+        majorVersion: parseMajorVersion(session.serverVersion ?? ''),
+        userId: userId,
+        rpc: _salesRpc(session.serverUrl, session.sessionId),
+      ).timeout(timeout);
+      if (status == SalesAccessStatus.unverified) return null;
+      return SalesAccessException.from(status);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Whether the database behind the session saved on this device has expired.
+  ///
+  /// For the app start and the return to the app, where a subscription that
+  /// ran out since the last sign-in must not be walked straight back into. Only
+  /// a definite "expired" is true: no session, no network, a slow server or an
+  /// answer nobody expected is false and leaves the user where they were.
+  static Future<bool> currentSessionDatabaseExpired({
+    Duration timeout = DatabaseExpiry.probeTimeout,
+  }) async {
+    try {
+      final session = await getCurrentSession();
+      final userId = session?.userId;
+      if (session == null || userId == null) return false;
+      final client = OdooClient(
+        session.serverUrl,
+        httpClient: ioClient,
+        sessionId: OdooSession(
+          id: session.sessionId,
+          userId: userId,
+          partnerId: 0,
+          userLogin: session.userLogin,
+          userName: session.userName ?? session.userLogin,
+          userLang: '',
+          userTz: '',
+          isSystem: false,
+          dbName: session.database,
+          serverVersion: session.serverVersion ?? '',
+          companyId: session.selectedCompanyId ?? 0,
+          allowedCompanies: [],
+        ),
+      );
+      return await DatabaseExpiry.isExpired(client, timeout: timeout);
+    } catch (_) {
       return false;
     }
   }
@@ -647,6 +860,23 @@ class OdooSessionManager {
   }
 
   /// Executes an RPC `call_kw` request authenticated by [sessionId].
+  /// [payload] as the body Odoo's `/web/dataset/call_kw` accepts.
+  ///
+  /// The route reads its arguments from the `params` of a JSON-RPC request, so
+  /// a bare `{model, method, args, kwargs}` reaches it with no arguments at all
+  /// and fails. A payload that already carries `params` is a whole request and
+  /// is sent as it is.
+  @visibleForTesting
+  static Map<String, dynamic> jsonRpcEnvelope(Map<String, dynamic> payload) {
+    if (payload.containsKey('params')) return payload;
+    return {
+      'jsonrpc': '2.0',
+      'method': 'call',
+      'params': payload,
+      'id': DateTime.now().millisecondsSinceEpoch,
+    };
+  }
+
   static Future<dynamic> callKwWithSession({
     required String url,
     required String sessionId,
@@ -666,7 +896,7 @@ class OdooSessionManager {
             'Cookie': 'session_id=$sessionId',
             'X-Openerp-Session-Id': sessionId,
           },
-          body: jsonEncode(payload),
+          body: jsonEncode(jsonRpcEnvelope(payload)),
         );
 
         if (res.statusCode != 200) {
@@ -687,14 +917,64 @@ class OdooSessionManager {
   }
 
   /// Parses the major version number from an Odoo [version] string.
-  static int parseMajorVersion(String version) {
+  static int parseMajorVersion(String version) => odooMajorVersion(version);
+
+  /// Whether the version odoo_rpc [reported] has lost what [odooGeneration]
+  /// needs.
+  ///
+  /// `OdooSession.serverVersion` is only the first element of the server's
+  /// `server_version_info`, as text. An Odoo 20 pre-release, which identifies
+  /// itself as `19.5a1`, therefore arrives as `19` and would be taken for Odoo
+  /// 19. Only 19 is ambiguous: 17 and 18 have no point release that changes what
+  /// the app may call, and 20 and later report themselves whole.
+  static bool serverVersionNeedsRefinement(String reported) =>
+      odooMajorVersion(reported) == 19 && !reported.contains('.');
+
+  /// The version string in a `/web/webclient/version_info` reply (`19.5a1`),
+  /// the release series (`19.5`) when the string is missing, or null.
+  static String? parseVersionInfoReply(dynamic reply) {
+    final result = reply is Map ? reply['result'] : null;
+    if (result is! Map) return null;
+    for (final key in const ['server_version', 'server_serie']) {
+      final value = result[key];
+      if (value is String && value.trim().isNotEmpty) return value.trim();
+    }
+    return null;
+  }
+
+  /// The server's full version string, or [reported] when it is already good
+  /// enough or the server does not say. See [serverVersionNeedsRefinement].
+  ///
+  /// `/web/webclient/version_info` needs no session and exists, unchanged, from
+  /// Odoo 17 to 20.
+  static Future<String> _refineServerVersion(
+    String url,
+    String reported,
+  ) async {
+    if (!serverVersionNeedsRefinement(reported)) return reported;
     try {
-      final parts = version.split('.');
-      if (parts.isNotEmpty) {
-        return int.parse(parts[0]);
+      final response = await ioClient
+          .post(
+            Uri.parse('$url/web/webclient/version_info'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'User-Agent': USER_AGENT,
+            },
+            body: jsonEncode({
+              'jsonrpc': '2.0',
+              'method': 'call',
+              'params': {},
+              'id': 1,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final full = parseVersionInfoReply(jsonDecode(response.body));
+        if (full != null) return full;
       }
-    } catch (e) {}
-    return 0;
+    } catch (_) {}
+    return reported;
   }
 
   /// Authenticates against Odoo and returns a populated [OdooSessionModel].
@@ -738,8 +1018,13 @@ class OdooSessionManager {
             "type 'Null' is not a subtype of type 'Map<String, dynamic>'",
           )) {
             try {
+              // Reached when odoo_rpc cannot read the reply: Odoo answers
+              // `{'uid': None}` (no `user_context`) to a user who still owes a
+              // second factor, which is Odoo 19 and 20 behaviour alike. Goes
+              // through ioClient like every other call, so a self-signed
+              // certificate that the first attempt accepted is accepted here.
               final uri = Uri.parse('$normalizedUrl/web/session/authenticate');
-              final response = await http
+              final response = await ioClient
                   .post(
                     uri,
                     headers: {'Content-Type': 'application/json'},
@@ -769,6 +1054,14 @@ class OdooSessionManager {
                   var uid = result['uid'];
                   if (uid is bool) uid = null;
 
+                  // No uid, and no error: the password was right but the user
+                  // still owes a second factor. Said before looking for a
+                  // session cookie, so the login screens always get the
+                  // "two factor" signal they route to the TOTP page on.
+                  if (uid == null) {
+                    throw Exception('two factor authentication required');
+                  }
+
                   String? sessionId;
                   if (result['session_id'] != null) {
                     sessionId = result['session_id'];
@@ -781,10 +1074,6 @@ class OdooSessionManager {
                   }
 
                   if (sessionId != null) {
-                    if (uid == null) {
-                      throw Exception('two factor authentication required');
-                    }
-
                     odooSession = OdooSession(
                       id: sessionId,
                       userId: uid,
@@ -814,6 +1103,18 @@ class OdooSessionManager {
           if (odooSession == null) rethrow;
         }
 
+        // The first thing after the password is accepted: an expired database
+        // is refused before a company is loaded, a session is built or the
+        // caller can store, save or switch to anything.
+        final signedIn = OdooClient(
+          normalizedUrl,
+          httpClient: ioClient,
+          sessionId: odooSession,
+        );
+        if (await DatabaseExpiry.isExpired(signedIn)) {
+          throw const DatabaseExpiredException();
+        }
+
         int? selectedCompanyId;
         List<int> allowedCompanyIds = [];
 
@@ -838,6 +1139,23 @@ class OdooSessionManager {
           }
         }
 
+        // odoo_rpc keeps only the major number; the generation checks need the
+        // whole string (see serverVersionNeedsRefinement).
+        final serverVersion = await _refineServerVersion(
+          normalizedUrl,
+          odooSession.serverVersion,
+        );
+
+        // Nothing leaves here for an account that may not use the app: no
+        // session model for the caller to store, switch to or save.
+        await requireSalesAccess(
+          url: normalizedUrl,
+          sessionId: odooSession.id,
+          database: database,
+          userId: odooSession.userId,
+          serverVersion: serverVersion,
+        );
+
         final sessionData = OdooSessionModel(
           sessionId: odooSession.id,
           userLogin: username,
@@ -849,20 +1167,17 @@ class OdooSessionManager {
           expiresAt: DateTime.now().add(const Duration(hours: 24)),
           selectedCompanyId: selectedCompanyId,
           allowedCompanyIds: allowedCompanyIds,
-          serverVersion: odooSession.serverVersion,
+          serverVersion: serverVersion,
         );
-
-        if (await DatabaseExpiry.isExpired(
-          serverUrl: serverUrl,
-          sessionId: sessionData.sessionId,
-        )) {
-          throw const DatabaseExpiredException();
-        }
 
         return sessionData;
       } on DatabaseExpiredException {
         rethrow;
       } catch (e) {
+        // Neither retried nor read as anything else: it is a definite answer.
+        if (e is DatabaseExpiredException) rethrow;
+        if (e is SalesAccessException) rethrow;
+
         if (e is FormatException && e.toString().contains('<html>')) {
           throw Exception(
             'Server returned HTML instead of JSON. Please check server URL.',
@@ -1385,6 +1700,8 @@ class OdooSessionManager {
     final uri = Uri.parse(url);
     final requestHeaders = {
       'Cookie': 'session_id=${session.sessionId}',
+      if (shouldSkipSessionRotation(odooGeneration(session.serverVersion)))
+        skipSessionRotationHeader: '1',
       ...?headers,
     };
 

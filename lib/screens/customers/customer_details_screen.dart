@@ -4,7 +4,6 @@ import '../../providers/currency_provider.dart';
 
 import 'package:hugeicons/hugeicons.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'package:mobo_sales/screens/others/profile_screen.dart';
 import 'package:mobo_sales/screens/quotations/create_quote_screen.dart';
 import 'package:mobo_sales/screens/invoices/create_invoice_screen.dart';
@@ -14,9 +13,17 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'dart:convert';
 import '../../models/contact.dart';
+import '../../services/customer_service.dart';
+import '../../services/data_change_bus.dart';
+import '../../services/field_validation_service.dart';
+import '../../services/odoo_session_manager.dart';
 import '../../services/session_service.dart';
+import '../../utils/odoo_version.dart';
+import '../../utils/quiet_reload_gate.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import '../../widgets/custom_snackbar.dart';
 import '../../widgets/connection_status_widget.dart';
+import '../../widgets/loading_dialog.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:io';
@@ -48,59 +55,35 @@ class ContactActionException implements Exception {
 }
 
 Future<void> shareContact(BuildContext context, Contact contact) async {
-  final isDark = Theme.of(context).brightness == Brightness.dark;
-  final primaryColor = Theme.of(context).primaryColor;
   BuildContext? dialogContext;
+  var dialogOpen = true;
+
+  // Closes the progress dialog, once. A second call would pop whatever is on
+  // top of the navigator by then: the page itself.
+  void closeDialog() {
+    if (!dialogOpen) return;
+    dialogOpen = false;
+    final ctx = dialogContext;
+    dialogContext = null;
+    if (ctx == null) return;
+    final navigator = Navigator.of(ctx);
+    if (navigator.canPop()) navigator.pop();
+  }
 
   showDialog(
     context: context,
     barrierDismissible: false,
     builder: (ctx) {
       dialogContext = ctx;
-      return Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-        elevation: 8,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                decoration: BoxDecoration(
-                  color: primaryColor.withOpacity(0.08),
-                  shape: BoxShape.circle,
-                ),
-                padding: const EdgeInsets.all(16),
-                child: LoadingAnimationWidget.fourRotatingDots(
-                  color: Theme.of(context).colorScheme.primary,
-                  size: 50,
-                ),
-              ),
-              const SizedBox(height: 24),
-              Text(
-                'Creating contact card...',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
-                  color: isDark ? Colors.white : Colors.black87,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Please wait while we prepare the contact for sharing.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 14,
-                  color: isDark ? Colors.grey[300] : Colors.grey[700],
-                ),
-              ),
-            ],
-          ),
-        ),
+      return const LoadingDialog(
+        message: 'Creating contact card...',
+        subtitle: 'Please wait while we prepare the contact for sharing.',
       );
     },
-  );
+  ).whenComplete(() {
+    dialogOpen = false;
+    dialogContext = null;
+  });
 
   try {
     final imageBytes = await _generateContactImage(contact);
@@ -111,9 +94,7 @@ Future<void> shareContact(BuildContext context, Contact contact) async {
     );
     await file.writeAsBytes(imageBytes);
 
-    if (dialogContext != null && Navigator.of(dialogContext!).canPop()) {
-      Navigator.of(dialogContext!).pop();
-    }
+    closeDialog();
 
     await Share.shareXFiles(
       [XFile(file.path)],
@@ -121,19 +102,15 @@ Future<void> shareContact(BuildContext context, Contact contact) async {
       text: contact.name,
     );
   } on ContactActionException catch (e) {
-    if (dialogContext != null && Navigator.of(dialogContext!).canPop()) {
-      Navigator.of(dialogContext!).pop();
-    }
-    _showShareErrorDialog(context, e.message);
+    closeDialog();
+    if (context.mounted) _showShareErrorDialog(context, e.message);
     rethrow;
   } catch (e) {
-    if (dialogContext != null && Navigator.of(dialogContext!).canPop()) {
-      Navigator.of(dialogContext!).pop();
-    }
+    closeDialog();
     final msg = e is ContactActionException
         ? e.message
         : 'Failed to share contact. Please try again.';
-    _showShareErrorDialog(context, msg);
+    if (context.mounted) _showShareErrorDialog(context, msg);
     if (kDebugMode) {}
     throw ContactActionException(
       'Failed to share contact',
@@ -509,8 +486,11 @@ Future<Uint8List> _generateContactImage(Contact contact) async {
   currentY += 8 * scaleFactor;
   drawFieldAlways('Phone', contact.phone, Icons.phone_outlined);
   currentY += 8 * scaleFactor;
-  drawFieldAlways('Mobile', contact.mobile, Icons.phone_android_outlined);
-  currentY += 8 * scaleFactor;
+  // Odoo 19 merged `mobile` into `phone`; a row that can only be empty is noise.
+  if (odooHasPartnerMobile(OdooSessionManager.cachedServerGeneration)) {
+    drawFieldAlways('Mobile', contact.mobile, Icons.phone_android_outlined);
+    currentY += 8 * scaleFactor;
+  }
   drawFieldAlways('Website', contact.website, Icons.language_outlined);
   currentY += 8 * scaleFactor;
 
@@ -565,9 +545,11 @@ Future<void> copyContactInfo(BuildContext context, Contact contact) async {
 
     infoLines.add('Phone: 	${isReal(contact.phone) ? contact.phone : 'N/A'}');
 
-    infoLines.add(
-      'Mobile: 	${isReal(contact.mobile) ? contact.mobile : 'N/A'}',
-    );
+    if (odooHasPartnerMobile(OdooSessionManager.cachedServerGeneration)) {
+      infoLines.add(
+        'Mobile: 	${isReal(contact.mobile) ? contact.mobile : 'N/A'}',
+      );
+    }
 
     final addressParts = [
       contact.street,
@@ -1193,6 +1175,16 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
   late Animation<double> _fadeAnimation;
   bool _wasEdited = false;
 
+  /// How long the page lets changes announced on the data bus settle before it
+  /// reloads what they affect.
+  static const Duration _busDebounce = Duration(milliseconds: 350);
+  late final QuietReloadGate _reloadGate;
+  DataChangeSubscription? _busSubscription;
+
+  /// Set when the customer's own record changed, as opposed to the orders
+  /// around it: the quiet reload then reads the record (and its picture) too.
+  bool _contactChanged = false;
+
   String _getDisplayName() {
     if ((_contact.isCompany ?? false) &&
         _contact.companyName != null &&
@@ -1222,11 +1214,36 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
       CurvedAnimation(parent: _animationController, curve: Curves.easeInOut),
     );
     _trackCustomerAccess();
+    _reloadGate = QuietReloadGate(_reloadQuietly);
+    _busSubscription = DataChangeBus.instance.listen(
+      where: (change) {
+        // This page announces its own changes with itself as the origin and has
+        // already brought itself up to date.
+        if (identical(change.origin, this)) return false;
+        if (change.isQuotation ||
+            change.isInvoice ||
+            change.entity == DataEntity.payment) {
+          return true;
+        }
+        return change.entity == DataEntity.customer &&
+            (change.id == null || change.id == _contact.id);
+      },
+      debounce: _busDebounce,
+      onChange: (burst) {
+        if (burst.any((c) => c.entity == DataEntity.customer)) {
+          _contactChanged = true;
+        }
+        if (!mounted) return;
+        _reloadGate.changed(debounce: _busDebounce);
+      },
+    );
     _loadCustomerData();
   }
 
   @override
   void dispose() {
+    _busSubscription?.cancel();
+    _reloadGate.dispose();
     _animationController.dispose();
     super.dispose();
   }
@@ -1250,8 +1267,36 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
     } catch (e) {}
   }
 
-  Future<void> _loadCustomerData() async {
+  Future<void> _loadCustomerData() => _reloadGate.run(_loadCustomerDataNow);
+
+  /// Reads everything again in place, with no loading skeleton: the page stays
+  /// as it is, at the scroll position it is at, and the new figures replace
+  /// the old ones when they arrive. This is what a change announced on the
+  /// data bus (and the return from an edit or from creating a document) runs.
+  Future<void> _reloadQuietly() async {
+    if (!mounted || _isLoading) return;
+    final readContact = _contactChanged;
+    _contactChanged = false;
+
+    if (readContact) {
+      await _fetchCompleteCustomerData();
+      if (!mounted) return;
+      if (_contact.imageUrl != null && _contact.imageUrl!.isNotEmpty) {
+        await _loadCustomerImage();
+      } else if (_customerImage != null) {
+        setState(() => _customerImage = null);
+      }
+    }
     if (!mounted) return;
+    await Future.wait([
+      _loadCustomerActivities(keepOnError: true),
+      _loadCustomerStats(keepOnError: true),
+    ]);
+  }
+
+  Future<void> _loadCustomerDataNow() async {
+    if (!mounted) return;
+    _contactChanged = false;
     setState(() {
       _isLoading = true;
       _isLoadingActivities = true;
@@ -1294,55 +1339,33 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
         return;
       }
 
-      final result = await client.callKw({
-        'model': 'res.partner',
-        'method': 'read',
-        'args': [
-          [_contact.id],
-        ],
-        'kwargs': {
-          'fields': [
-            'id',
-            'name',
-            'email',
-            'phone',
-            'mobile',
-            'website',
-            'function',
-            'street',
-            'street2',
-            'city',
-            'state_id',
-            'zip',
-            'country_id',
-            'image_1920',
-            'partner_latitude',
-            'partner_longitude',
-            'create_date',
-            'write_date',
-            'is_company',
-            'company_name',
-            'vat',
-            'company_type',
-            'industry_id',
-            'customer_rank',
-            'user_id',
-            'property_payment_term_id',
-            'credit_limit',
-            'property_product_pricelist',
-            'title',
-            'lang',
-            'tz',
-            'comment',
-            'active',
-            'type',
-            'category_id',
-          ],
-        },
-      });
+      // The fields this server has: Odoo 19 dropped `mobile` and `title`, and
+      // Odoo 20 `company_type` and `company_name`, and asking for a field that
+      // is gone fails the whole read, which used to leave this screen with the
+      // thin contact it was opened with.
+      final generation = await OdooSessionManager.serverGeneration();
+      final result =
+          await FieldValidationService.executeWithFieldValidation<dynamic>(
+            model: 'res.partner',
+            initialFields: partnerReadFieldsFor(
+              kCustomerScreenFields,
+              generation,
+            ),
+            apiCall: (fields) => client.callKw({
+              'model': 'res.partner',
+              'method': 'read',
+              'args': [
+                [_contact.id],
+              ],
+              'kwargs': {'fields': fields},
+            }),
+          );
 
       if (result is List && result.isNotEmpty) {
         final contactData = result[0] as Map<String, dynamic>;
+        // A read that fell back to the bare minimum (id and name) has nothing
+        // to add and would replace the fuller contact the screen already has.
+        if (contactData.length <= 2) return;
         if (!mounted) return;
         setState(() {
           _contact = Contact.fromJson(contactData);
@@ -1380,7 +1403,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
     } catch (e) {}
   }
 
-  Future<void> _loadCustomerActivities() async {
+  Future<void> _loadCustomerActivities({bool keepOnError = false}) async {
     try {
       final sessionService = Provider.of<SessionService>(
         context,
@@ -1454,14 +1477,15 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
         });
       }
     } catch (e) {
-      if (!mounted) return;
+      // A quiet reload that fails leaves the figures that are on screen.
+      if (!mounted || keepOnError) return;
       setState(() {
         _activities = [];
       });
     }
   }
 
-  Future<void> _loadCustomerStats() async {
+  Future<void> _loadCustomerStats({bool keepOnError = false}) async {
     try {
       final sessionService = Provider.of<SessionService>(
         context,
@@ -1557,7 +1581,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
         };
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || keepOnError) return;
       setState(() {
         _customerStats = {
           'total_orders': 0,
@@ -1575,7 +1599,6 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
 
   Future<void> _showChangeCoordinatesDialog() async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primaryColor = Theme.of(context).primaryColor;
 
     return showDialog<void>(
       context: context,
@@ -1605,27 +1628,15 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
           ),
+          actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
           actions: <Widget>[
-            TextButton(
-              child: Text(
-                'Cancel',
-                style: TextStyle(
-                  color: isDark ? Colors.white70 : Colors.black54,
-                ),
-              ),
-              onPressed: () {
+            MoboDialogButtons(
+              secondaryLabel: 'Cancel',
+              onSecondary: () {
                 Navigator.of(context).pop();
               },
-            ),
-            TextButton(
-              child: Text(
-                'Continue',
-                style: TextStyle(
-                  color: isDark ? Colors.white : primaryColor,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              onPressed: () async {
+              primaryLabel: 'Continue',
+              onPrimary: () async {
                 Navigator.of(context).pop();
                 await _openSelectLocationScreen();
               },
@@ -1666,13 +1677,19 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
                 ],
                 'kwargs': {},
               });
-              Future.microtask(() {
-                CustomSnackbar.showSuccess(
-                  context,
-                  'Location updated successfully!',
-                );
-              });
               if (result == true) {
+                DataChangeBus.instance.publish(
+                  DataEntity.customer,
+                  DataChangeKind.updated,
+                  id: _contact.id,
+                  origin: this,
+                );
+                Future.microtask(() {
+                  CustomSnackbar.showSuccess(
+                    context,
+                    'Location updated successfully!',
+                  );
+                });
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (mounted) {
                     setState(() {
@@ -1725,59 +1742,13 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
                 : Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isDark
-                        ? Colors.orange[700]
-                        : Colors.orange[600],
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Archive',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Archive',
+            onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
       ),
@@ -1822,14 +1793,22 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
       },
     );
 
-    if (archived != true || !context.mounted) return;
+    if (archived != true) return;
 
-    final contactProvider = Provider.of<ContactProvider>(
+    // Announced even if this page is gone: the server has archived it, and the
+    // lists must stop showing it.
+    DataChangeBus.instance.publish(
+      DataEntity.customer,
+      DataChangeKind.deleted,
+      id: customer.id,
+      origin: this,
+    );
+    if (!context.mounted) return;
+
+    Provider.of<ContactProvider>(
       context,
       listen: false,
-    );
-    contactProvider.contacts.removeWhere((c) => c.id == customer.id);
-    contactProvider.notifyListeners();
+    ).removeContact(customer.id);
 
     Navigator.of(context).pop(true);
   }
@@ -1886,11 +1865,16 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
                         ),
                       );
                       if (updatedContact != null && updatedContact is Contact) {
+                        if (!mounted) return;
                         setState(() {
                           _contact = updatedContact;
                           _wasEdited = true;
                         });
-                        await _loadCustomerData();
+                        // The saved record is already on screen; read it again
+                        // in place (the edit announced itself on the data bus,
+                        // and the reload that follows that is not repeated).
+                        _contactChanged = true;
+                        await _reloadGate.run(_reloadQuietly);
                       }
                     },
             ),
@@ -3391,6 +3375,12 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
                           listen: false,
                         );
                         provider.updateContactCoordinates(updatedContact);
+                        DataChangeBus.instance.publish(
+                          DataEntity.customer,
+                          DataChangeKind.updated,
+                          id: updatedContact.id,
+                          origin: this,
+                        );
                         setState(() {
                           _contact = updatedContact;
                         });
@@ -3410,6 +3400,12 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
                         listen: false,
                       );
                       provider.updateContactCoordinates(_contact);
+                      DataChangeBus.instance.publish(
+                        DataEntity.customer,
+                        DataChangeKind.updated,
+                        id: _contact.id,
+                        origin: this,
+                      );
 
                       if (mounted) {
                         CustomSnackbar.showSuccess(
@@ -3833,10 +3829,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
 
     return SpeedDial(
       animatedIcon: AnimatedIcons.menu_close,
-      animatedIconTheme: IconThemeData(
-        size: 22,
-        color: isDark ? Colors.black : Colors.white,
-      ),
+      animatedIconTheme: const IconThemeData(size: 22, color: Colors.white),
       spacing: 8,
       spaceBetweenChildren: 8,
       closeManually: false,
@@ -3846,8 +3839,8 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
       direction: SpeedDialDirection.up,
       onOpen: () => HapticFeedback.lightImpact(),
       onClose: () => HapticFeedback.selectionClick(),
-      backgroundColor: isDark ? Colors.white : primaryColor,
-      foregroundColor: isDark ? Colors.black : Colors.white,
+      backgroundColor: primaryColor,
+      foregroundColor: Colors.white,
       overlayColor: Colors.black,
       overlayOpacity: isDark ? 0.30 : 0.20,
       elevation: 4,
@@ -3879,8 +3872,8 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
                 builder: (context) => CreateQuoteScreen(customer: _contact),
               ),
             );
-            if (result == true) {
-              await _loadCustomerData();
+            if (result == true && mounted) {
+              await _reloadGate.run(_reloadQuietly);
             }
           },
         ),
@@ -3906,8 +3899,8 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
                 builder: (context) => CreateInvoiceScreen(customer: _contact),
               ),
             );
-            if (result == true) {
-              await _loadCustomerData();
+            if (result == true && mounted) {
+              await _reloadGate.run(_reloadQuietly);
             }
           },
         ),
@@ -4118,6 +4111,12 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
                       listen: false,
                     );
                     provider.updateContactCoordinates(updatedContact);
+                    DataChangeBus.instance.publish(
+                      DataEntity.customer,
+                      DataChangeKind.updated,
+                      id: updatedContact.id,
+                      origin: this,
+                    );
                     setState(() {
                       _contact = updatedContact;
                     });
@@ -4169,13 +4168,19 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
                             ],
                             'kwargs': {},
                           });
-                          Future.microtask(() {
-                            CustomSnackbar.showSuccess(
-                              context,
-                              'Location updated successfully!',
-                            );
-                          });
                           if (result == true) {
+                            DataChangeBus.instance.publish(
+                              DataEntity.customer,
+                              DataChangeKind.updated,
+                              id: _contact.id,
+                              origin: this,
+                            );
+                            Future.microtask(() {
+                              CustomSnackbar.showSuccess(
+                                context,
+                                'Location updated successfully!',
+                              );
+                            });
                             WidgetsBinding.instance.addPostFrameCallback((_) {
                               if (mounted) {
                                 setState(() {
@@ -4253,61 +4258,13 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
                 : Theme.of(context).colorScheme.onSurfaceVariant,
           ),
         ),
-        actionsPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
         actions: [
-          Row(
-            children: [
-              Expanded(
-                child: TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: TextButton.styleFrom(
-                    foregroundColor: isDark
-                        ? Colors.grey[400]
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isDark
-                        ? Colors.red[700]
-                        : Theme.of(context).colorScheme.error,
-                    foregroundColor: isDark
-                        ? Colors.white
-                        : Theme.of(context).colorScheme.onError,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    elevation: isDark ? 0 : 3,
-                  ),
-                  child: const Text(
-                    'Delete',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-            ],
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Delete',
+            onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
       ),
@@ -4362,33 +4319,11 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
       barrierDismissible: false,
       builder: (BuildContext dialogContext) {
         loadingDialogContext = dialogContext;
-        final isDark = Theme.of(context).brightness == Brightness.dark;
-        final primaryColor = Theme.of(context).primaryColor;
         return StatefulBuilder(
           builder: (BuildContext context, StateSetter setState) {
-            return Dialog(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircularProgressIndicator(
-                      color: isDark ? primaryColor : null,
-                    ),
-                    const SizedBox(width: 16),
-                    Text(
-                      dialogMessage,
-                      style: TextStyle(
-                        color: isDark ? Colors.white : Colors.black87,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            return LoadingDialog(
+              message: dialogMessage,
+              subtitle: 'Please wait while we process your request',
             );
           },
         );
@@ -4504,15 +4439,19 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
           .timeout(kActionTimeout);
 
       if (result == true) {
-        final contactProvider = Provider.of<ContactProvider>(
-          context,
-          listen: false,
+        DataChangeBus.instance.publish(
+          DataEntity.customer,
+          DataChangeKind.deleted,
+          id: customer.id,
+          origin: this,
         );
-        contactProvider.contacts.removeWhere((c) => c.id == customer.id);
-        contactProvider.notifyListeners();
         closeLoadingDialog();
 
         if (context.mounted) {
+          Provider.of<ContactProvider>(
+            context,
+            listen: false,
+          ).removeContact(customer.id);
           CustomSnackbar.showSuccess(context, 'Customer deleted successfully');
           Navigator.of(context).pop(true);
         }
@@ -4536,7 +4475,17 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
         errorMessage = 'Cannot delete customer due to dependencies.';
         shouldArchiveFallback = true;
       } else if (errStr.contains('Record does not exist or has been deleted')) {
+        DataChangeBus.instance.publish(
+          DataEntity.customer,
+          DataChangeKind.deleted,
+          id: customer.id,
+          origin: this,
+        );
         if (context.mounted) {
+          Provider.of<ContactProvider>(
+            context,
+            listen: false,
+          ).removeContact(customer.id);
           CustomSnackbar.showWarning(
             context,
             'This customer has already been deleted.',
@@ -4558,14 +4507,18 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
             'kwargs': {},
           });
           if (archived == true) {
-            final contactProvider = Provider.of<ContactProvider>(
-              context,
-              listen: false,
+            DataChangeBus.instance.publish(
+              DataEntity.customer,
+              DataChangeKind.deleted,
+              id: customer.id,
+              origin: this,
             );
-            contactProvider.contacts.removeWhere((c) => c.id == customer.id);
-            contactProvider.notifyListeners();
 
             if (context.mounted) {
+              Provider.of<ContactProvider>(
+                context,
+                listen: false,
+              ).removeContact(customer.id);
               CustomSnackbar.showWarning(
                 context,
                 'Customer archived instead (had dependencies).',

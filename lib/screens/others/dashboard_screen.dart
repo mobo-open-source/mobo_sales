@@ -37,7 +37,9 @@ import 'dart:async';
 import '../../services/session_service.dart';
 import '../../utils/tap_prevention.dart';
 import 'package:mobo_sales/widgets/circular_image_widget.dart';
+import '../../services/odoo_compat.dart';
 import '../../services/odoo_session_manager.dart';
+import '../../services/data_change_bus.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -113,6 +115,19 @@ class _DashboardScreenState extends State<DashboardScreen>
   bool _isForceRefreshing = false;
   bool _isCheckingConnectivity = false;
   bool _handlingSessionChange = false;
+
+  /// Listens for records changed on other screens (a quotation edited,
+  /// confirmed or cancelled, an invoice posted or paid, a new customer) so the
+  /// figures here do not wait for a cache to expire or a pull to refresh.
+  DataChangeSubscription? _dataChangeSubscription;
+  DataChangeSubscription? _profileChangeSubscription;
+
+  /// A change-driven refresh is in flight. At most one runs at a time.
+  bool _isQuietRefreshing = false;
+
+  /// Another change arrived while [_isQuietRefreshing]: what the running
+  /// refresh read may predate it, so it goes round once more when it is done.
+  bool _quietRefreshPending = false;
 
   int? contactsCount;
   int? quotesCount;
@@ -204,6 +219,19 @@ class _DashboardScreenState extends State<DashboardScreen>
       _isServerUnreachable = true;
     }
 
+    _dataChangeSubscription = DataChangeBus.instance.listen(
+      where: (change) => change.affectsDashboard,
+      onChange: _onDashboardDataChanged,
+    );
+
+    // The user's own name and photo were edited on the profile screens: the
+    // greeting and the avatar follow at once, not when the dashboard is next
+    // opened. Only the header is read again; no figure moves.
+    _profileChangeSubscription = DataChangeBus.instance.listen(
+      where: (change) => change.isProfile,
+      onChange: (_) => unawaited(_refreshUserHeaderQuietly()),
+    );
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initializeUserDataFromSettings();
       _checkConnectivityAndSession();
@@ -274,9 +302,108 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
   }
 
+  /// Reads the signed-in user's name and photo again, for the header, without
+  /// any of the loading or error states of a full refresh. A header read that
+  /// fails must not swap the cards for the error panel (as an explicit refresh
+  /// would), so that is undone, the way [_refreshQuietly] does for the figures.
+  Future<void> _refreshUserHeaderQuietly() async {
+    if (!_canQuietRefresh) return;
+
+    await _refreshUserDataWithRetry();
+
+    if (mounted &&
+        _isServerUnreachable &&
+        !_isForceRefreshing &&
+        !_isCheckingConnectivity) {
+      setState(() {
+        _isServerUnreachable = false;
+      });
+    }
+  }
+
   void _forceRefreshContinueWorkingItems() {
     if (mounted && !isLoadingContinueWorking) {
       _fetchContinueWorkingItems();
+    }
+  }
+
+  /// Whether the dashboard is in a state where it can quietly refresh itself:
+  /// on screen with its first load done, online, with a session, and not in
+  /// the middle of switching account or company (which resets everything).
+  bool get _canQuietRefresh {
+    if (!mounted) return false;
+    if (_isOffline || !_hasSession || _isServerUnreachable) return false;
+    if (_handlingSessionChange || !_initialLoadComplete) return false;
+    final service = _sessionService;
+    return service != null && service.hasValidSession;
+  }
+
+  /// Something that feeds the figures here changed on another screen.
+  ///
+  /// The bus has already collapsed a burst into this one call. Nothing is
+  /// reset or hidden: the numbers on screen stay until the fresh ones arrive.
+  void _onDashboardDataChanged(List<DataChange> burst) {
+    if (!_canQuietRefresh) return;
+
+    // A full refresh (the first load, or a pull to refresh) is already
+    // fetching everything; a second one on top of it would only duplicate it.
+    if (_isForceRefreshing || _isCheckingConnectivity) return;
+
+    if (_isQuietRefreshing) {
+      _quietRefreshPending = true;
+      return;
+    }
+
+    _refreshQuietly();
+  }
+
+  /// Drops this account's cached counts, sales metrics and continue-working
+  /// timestamp, so nothing reads the old figures back and the next fetch is
+  /// not short-circuited by a cache that has not expired. Other accounts'
+  /// caches, and the user data, are left alone.
+  void _dropCurrentAccountDataCaches() {
+    final key = _getCurrentAccountKey();
+    _accountCachedDashboardCounts.remove(key);
+    _accountCachedSalesMetrics.remove(key);
+    _lastCacheTimes.remove('counts_$key');
+    _lastCacheTimes.remove('metrics_$key');
+    _lastContinueWorkingFetch = null;
+  }
+
+  /// Refetches counts, sales metrics and continue-working items through the
+  /// same force-refresh fetches a pull to refresh uses, but without the
+  /// loading flags it raises: the cards and charts keep what they show and
+  /// are replaced by the new figures as each fetch lands.
+  Future<void> _refreshQuietly() async {
+    _isQuietRefreshing = true;
+    try {
+      do {
+        _quietRefreshPending = false;
+        _dropCurrentAccountDataCaches();
+
+        await Future.wait<void>([
+          _fetchDashboardCounts(forceRefresh: true).catchError((_) {}),
+          _fetchSalesMetrics(forceRefresh: true).catchError((_) {}),
+          if (!isLoadingContinueWorking)
+            _fetchContinueWorkingItems().catchError((_) {}),
+        ]);
+
+        // The fetches mark the server unreachable (which swaps the cards for
+        // an error panel) when they fail. A refresh nobody asked for should
+        // not blank figures that are still on screen, so that is undone here;
+        // an explicit refresh still reports it.
+        if (mounted &&
+            _isServerUnreachable &&
+            !_isForceRefreshing &&
+            !_isCheckingConnectivity) {
+          setState(() {
+            _isServerUnreachable = false;
+          });
+        }
+      } while (_quietRefreshPending && _canQuietRefresh);
+    } finally {
+      _isQuietRefreshing = false;
+      _quietRefreshPending = false;
     }
   }
 
@@ -307,6 +434,11 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   @override
   void dispose() {
+    _dataChangeSubscription?.cancel();
+    _dataChangeSubscription = null;
+    _profileChangeSubscription?.cancel();
+    _profileChangeSubscription = null;
+    _quietRefreshPending = false;
     _sessionService?.removeListener(_onSessionChanged);
 
     WidgetsBinding.instance.removeObserver(this);
@@ -1105,33 +1237,29 @@ class _DashboardScreenState extends State<DashboardScreen>
     required String sumField,
   }) async {
     try {
-      final res = await OdooSessionManager.callKwWithCompany({
-        'model': model,
-        'method': 'read_group',
-        'args': [domain],
-        'kwargs': {
-          'fields': ['$sumField:sum'],
-          'groupby': ['currency_rate'],
-          'lazy': false,
-        },
-      });
+      // `read_group` changed signature in Odoo 19 and again in 20; OdooCompat
+      // asks whichever call the server has and returns the rows in the shape
+      // this code has always read.
+      final res = await OdooCompat.readGroup(
+        model: model,
+        domain: domain,
+        fields: ['$sumField:sum'],
+        groupby: const ['currency_rate'],
+        callKw: OdooSessionManager.callKwWithCompany,
+      );
 
-      if (res is List) {
-        double total = 0.0;
-        int count = 0;
+      double total = 0.0;
+      int count = 0;
 
-        for (final row in res) {
-          if (row is! Map) continue;
-          final bucket = _safeToNum(row[sumField])?.toDouble() ?? 0.0;
-          count +=
-              _safeToNum(row['__count'])?.toInt() ??
-              _safeToNum(row['currency_rate_count'])?.toInt() ??
-              0;
-          total += bucket / _orderRate(row['currency_rate']);
-        }
-        return {'sum': total, 'count': count, 'converted': true};
+      for (final row in res) {
+        final bucket = _safeToNum(row[sumField])?.toDouble() ?? 0.0;
+        count +=
+            _safeToNum(row['__count'])?.toInt() ??
+            _safeToNum(row['currency_rate_count'])?.toInt() ??
+            0;
+        total += bucket / _orderRate(row['currency_rate']);
       }
-      return {'sum': 0.0, 'count': 0, 'converted': true};
+      return {'sum': total, 'count': count, 'converted': true};
     } catch (_) {
       final recs = await OdooSessionManager.callKwWithCompany({
         'model': model,
@@ -1163,17 +1291,15 @@ class _DashboardScreenState extends State<DashboardScreen>
     required String sumField,
   }) async {
     try {
-      final res = await OdooSessionManager.callKwWithCompany({
-        'model': model,
-        'method': 'read_group',
-        'args': [domain],
-        'kwargs': {
-          'fields': ['$sumField:sum'],
-          'groupby': [],
-        },
-      });
-      if (res is List && res.isNotEmpty) {
-        final row = res.first as Map<String, dynamic>;
+      final res = await OdooCompat.readGroup(
+        model: model,
+        domain: domain,
+        fields: ['$sumField:sum'],
+        groupby: const [],
+        callKw: OdooSessionManager.callKwWithCompany,
+      );
+      if (res.isNotEmpty) {
+        final row = res.first;
         final sumVal = _safeToNum(row[sumField])?.toDouble() ?? 0.0;
         final cnt = _safeToNum(row['__count'])?.toInt() ?? 0;
         return {'sum': sumVal, 'count': cnt};
@@ -1217,31 +1343,28 @@ class _DashboardScreenState extends State<DashboardScreen>
     DateTime rangeStart,
   ) async {
     try {
-      final result = await OdooSessionManager.callKwWithCompany({
-        'model': 'sale.order',
-        'method': 'read_group',
-        'args': [
+      // `done` is no longer a sale.order state (the selection is draft, sent,
+      // sale, cancel in Odoo 17 to 20), so it simply matches nothing.
+      final result = await OdooCompat.readGroup(
+        model: 'sale.order',
+        domain: [
           [
-            [
-              'state',
-              'in',
-              ['sale', 'done'],
-            ],
-            ['date_order', '>=', startDate],
-            ['date_order', '<', endDateExclusive],
+            'state',
+            'in',
+            ['sale', 'done'],
           ],
+          ['date_order', '>=', startDate],
+          ['date_order', '<', endDateExclusive],
         ],
-        'kwargs': {
-          'fields': ['date_order', 'amount_total:sum'],
-          'groupby': ['date_order:day', 'currency_rate'],
-          'orderby': 'date_order:day',
-          'lazy': false,
-        },
-      });
+        fields: const ['date_order', 'amount_total:sum'],
+        groupby: const ['date_order:day', 'currency_rate'],
+        orderby: 'date_order:day',
+        callKw: OdooSessionManager.callKwWithCompany,
+      );
 
       final Map<String, double> revenueByDate = {};
 
-      if (result is List && result.isNotEmpty) {
+      if (result.isNotEmpty) {
         for (final group in result) {
           try {
             final dateStr =
@@ -1331,84 +1454,71 @@ class _DashboardScreenState extends State<DashboardScreen>
     try {
       await _loadCurrencyRates();
 
-      final res = await OdooSessionManager.callKwWithCompany({
-        'model': 'sale.order.line',
-        'method': 'read_group',
-        'args': [domain],
-        'kwargs': {
-          'fields': ['product_id', 'product_uom_qty:sum', 'price_total:sum'],
-          'groupby': ['product_id', 'currency_id'],
-          'orderby': 'product_uom_qty:sum desc',
-          'limit': limit * 20,
-          'lazy': false,
-        },
-      });
+      final res = await OdooCompat.readGroup(
+        model: 'sale.order.line',
+        domain: domain,
+        fields: const ['product_id', 'product_uom_qty:sum', 'price_total:sum'],
+        groupby: const ['product_id', 'currency_id'],
+        orderby: 'product_uom_qty:sum desc',
+        limit: limit * 20,
+        callKw: OdooSessionManager.callKwWithCompany,
+      );
 
-      if (res is List) {
-        final Map<int, Map<String, dynamic>> byProduct = {};
+      final Map<int, Map<String, dynamic>> byProduct = {};
 
-        for (final group in res) {
-          try {
-            final productInfo = group['product_id'];
-            if (productInfo is! List || productInfo.length < 2) continue;
-            final productId = productInfo[0] as int;
+      for (final group in res) {
+        try {
+          final productInfo = group['product_id'];
+          if (productInfo is! List || productInfo.length < 2) continue;
+          final productId = productInfo[0] as int;
 
-            final cur = group['currency_id'];
-            final curId = (cur is List && cur.isNotEmpty)
-                ? _safeToNum(cur.first)?.toInt()
-                : _safeToNum(cur)?.toInt();
-            final rate = curId == null ? null : _currencyRates[curId];
+          final cur = group['currency_id'];
+          final curId = (cur is List && cur.isNotEmpty)
+              ? _safeToNum(cur.first)?.toInt()
+              : _safeToNum(cur)?.toInt();
+          final rate = curId == null ? null : _currencyRates[curId];
 
-            final rawTotal =
-                _safeToNum(group['price_total'])?.toDouble() ?? 0.0;
-            final qty = _safeToNum(group['product_uom_qty'])?.toDouble() ?? 0.0;
+          final rawTotal = _safeToNum(group['price_total'])?.toDouble() ?? 0.0;
+          final qty = _safeToNum(group['product_uom_qty'])?.toDouble() ?? 0.0;
 
-            final entry = byProduct.putIfAbsent(
-              productId,
-              () => {
-                'id': productId,
-                'name': productInfo[1] as String,
-                'qty': 0.0,
-                'total': 0.0,
-                'orders_count': 0,
-              },
-            );
-            entry['qty'] = (entry['qty'] as double) + qty;
-            if (rate != null && rate > 0) {
-              entry['total'] = (entry['total'] as double) + rawTotal / rate;
-            }
-          } catch (_) {}
-        }
-
-        final ranked = byProduct.values.toList()
-          ..sort((a, b) => (b['qty'] as double).compareTo(a['qty'] as double));
-        final items = ranked.take(limit).toList();
-
-        for (final item in items) {
-          try {
-            final ordersCountRes = await OdooSessionManager.callKwWithCompany({
-              'model': 'sale.order.line',
-              'method': 'read_group',
-              'args': [
-                [
-                  ...domain,
-                  ['product_id', '=', item['id']],
-                ],
-              ],
-              'kwargs': {
-                'fields': ['order_id'],
-                'groupby': ['order_id'],
-              },
-            });
-            item['orders_count'] = (ordersCountRes is List)
-                ? ordersCountRes.length
-                : 0;
-          } catch (_) {}
-        }
-
-        return items;
+          final entry = byProduct.putIfAbsent(
+            productId,
+            () => {
+              'id': productId,
+              'name': productInfo[1] as String,
+              'qty': 0.0,
+              'total': 0.0,
+              'orders_count': 0,
+            },
+          );
+          entry['qty'] = (entry['qty'] as double) + qty;
+          if (rate != null && rate > 0) {
+            entry['total'] = (entry['total'] as double) + rawTotal / rate;
+          }
+        } catch (_) {}
       }
-      return [];
+
+      final ranked = byProduct.values.toList()
+        ..sort((a, b) => (b['qty'] as double).compareTo(a['qty'] as double));
+      final items = ranked.take(limit).toList();
+
+      for (final item in items) {
+        try {
+          final ordersCountRes = await OdooCompat.readGroup(
+            model: 'sale.order.line',
+            domain: [
+              ...domain,
+              ['product_id', '=', item['id']],
+            ],
+            fields: const ['order_id'],
+            groupby: const ['order_id'],
+            callKw: OdooSessionManager.callKwWithCompany,
+          );
+          item['orders_count'] = ordersCountRes.length;
+        } catch (_) {}
+      }
+
+      return items;
     } catch (e) {
       final es = e.toString();
       if (!es.contains('does not exist') && !es.contains('read_group')) {
@@ -2657,10 +2767,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       backgroundColor: backgroundColor,
       floatingActionButton: SpeedDial(
         animatedIcon: AnimatedIcons.menu_close,
-        animatedIconTheme: IconThemeData(
-          size: 22,
-          color: isDark ? Colors.black : Colors.white,
-        ),
+        animatedIconTheme: const IconThemeData(size: 22, color: Colors.white),
         spacing: 8,
         spaceBetweenChildren: 8,
         closeManually: false,
@@ -2671,12 +2778,8 @@ class _DashboardScreenState extends State<DashboardScreen>
         onOpen: () => HapticFeedback.lightImpact(),
         onClose: () => HapticFeedback.selectionClick(),
 
-        backgroundColor: isDark
-            ? Colors.white
-            : Theme.of(context).colorScheme.primary,
-        foregroundColor: isDark
-            ? Colors.black
-            : Theme.of(context).colorScheme.onPrimary,
+        backgroundColor: Theme.of(context).colorScheme.primary,
+        foregroundColor: Colors.white,
         overlayColor: Colors.black,
         overlayOpacity: isDark ? 0.30 : 0.20,
         elevation: 4,

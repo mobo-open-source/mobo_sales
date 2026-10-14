@@ -356,6 +356,7 @@ class OdooApiService {
     }
     return null;
   }
+
   static String? _extractDbFromCookies(String? setCookie) {
     if (setCookie == null) return null;
 
@@ -379,6 +380,7 @@ class OdooApiService {
 
     return null;
   }
+
   static String? _extractDbFromHtml(String body) {
     try {
       final assignmentMatch = RegExp(
@@ -523,6 +525,7 @@ class OdooApiService {
     } catch (_) {}
     return null;
   }
+
   static Future<String?> _probeDbWithRpc(
     String baseUrl, {
     String? cookies,
@@ -691,6 +694,7 @@ class OdooApiService {
     }
     return null;
   }
+
   static const String _userAgent =
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 }

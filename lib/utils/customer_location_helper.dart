@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:mobo_sales/utils/app_theme.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/contact.dart';
 import '../services/session_service.dart';
+import '../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import '../widgets/custom_snackbar.dart';
-import 'package:loading_animation_widget/loading_animation_widget.dart';
+import '../widgets/loading_dialog.dart';
 
 /// Logic for geolocalizing a customer and opening their location in a maps application.
 Future<void> handleCustomerLocation({
@@ -18,7 +18,6 @@ Future<void> handleCustomerLocation({
 }) async {
   final theme = Theme.of(parentContext);
   final isDark = theme.brightness == Brightness.dark;
-  final primaryColor = theme.primaryColor;
   double? lat = contact.latitude;
   double? lng = contact.longitude;
 
@@ -118,57 +117,13 @@ Future<void> handleCustomerLocation({
                 ),
               ],
             ),
-            actionsPadding: const EdgeInsets.symmetric(
-              horizontal: 16,
-              vertical: 12,
-            ),
+            actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
             actions: [
-              Row(
-                children: [
-                  Expanded(
-                    child: TextButton(
-                      onPressed: () => Navigator.of(ctx).pop(false),
-                      style: TextButton.styleFrom(
-                        foregroundColor: isDark
-                            ? Colors.grey[400]
-                            : theme.colorScheme.onSurfaceVariant,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 12,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                      ),
-                      child: const Text(
-                        'Cancel',
-                        style: TextStyle(fontWeight: FontWeight.w500),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: () => Navigator.of(ctx).pop(true),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.primaryColor,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 12,
-                        ),
-                        elevation: isDark ? 0 : 3,
-                      ),
-                      child: const Text(
-                        'Geolocalize',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  ),
-                ],
+              MoboDialogButtons(
+                secondaryLabel: 'Cancel',
+                onSecondary: () => Navigator.of(ctx).pop(false),
+                primaryLabel: 'Geolocalize',
+                onPrimary: () => Navigator.of(ctx).pop(true),
               ),
             ],
           ),
@@ -184,52 +139,9 @@ Future<void> handleCustomerLocation({
       barrierDismissible: false,
       builder: (ctx) {
         dialogContext = ctx;
-        return Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-          elevation: 8,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    color: isDark
-                        ? Colors.white.withOpacity(0.1)
-                        : primaryColor.withOpacity(0.1),
-                    shape: BoxShape.circle,
-                  ),
-                  child: LoadingAnimationWidget.fourRotatingDots(
-                    color: isDark ? Colors.white : primaryColor,
-                    size: 35,
-                  ),
-                ),
-                const SizedBox(height: 24),
-                Text(
-                  'Geolocalizing customer...',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white : Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Please wait while we fetch the location.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: isDark ? Colors.grey[300] : Colors.grey[700],
-                  ),
-                ),
-              ],
-            ),
-          ),
+        return const LoadingDialog(
+          message: 'Geolocalizing customer...',
+          subtitle: 'Please wait while we fetch the location.',
         );
       },
     );
@@ -334,7 +246,13 @@ Future<Contact?> _geoLocalizeCustomer(
             ['id', '=', contact.id],
           ],
         ],
-        'kwargs': {'fields': [], 'limit': 1},
+        // Only the coordinates. An empty list reads every field, including
+        // the contact statistics Odoo 20 added, which count documents across
+        // every installed app: a lot of work to get two numbers.
+        'kwargs': {
+          'fields': ['partner_latitude', 'partner_longitude'],
+          'limit': 1,
+        },
       });
 
       if (customerResult is List && customerResult.isNotEmpty) {

@@ -6,7 +6,14 @@ import 'package:provider/provider.dart';
 import 'package:shimmer/shimmer.dart';
 import '../../providers/currency_provider.dart';
 import '../../providers/invoice_details_provider_enterprise.dart';
+import '../../services/data_change_bus.dart';
+import '../../services/odoo_session_manager.dart';
+import '../../services/payment_service.dart';
 import '../../services/session_service.dart';
+import '../../shared/widgets/mobo/mobo_bottom_action_bar.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../../shared/widgets/mobo/mobo_field_label.dart';
+import '../../shared/widgets/mobo/mobo_select_form_field.dart';
 import '../../utils/date_picker_utils.dart';
 import '../../widgets/custom_snackbar.dart';
 
@@ -218,20 +225,19 @@ class _PaymentRegisterScreenState extends State<PaymentRegisterScreen>
           ? widget.invoiceData['company_id'][0]
           : widget.invoiceData['company_id'] ?? 1;
 
+      // `company_id` and `deprecated` do not exist on every release of
+      // `account.account`: the domain is built for the server's generation.
+      final generation = await OdooSessionManager.serverGeneration();
+
       final accountsResult = await client
           .callKw({
             'model': 'account.account',
             'method': 'search_read',
             'args': [
-              [
-                ['company_id', '=', companyId],
-                [
-                  'account_type',
-                  'in',
-                  ['expense', 'asset_current', 'income_other'],
-                ],
-                ['deprecated', '=', false],
-              ],
+              PaymentService.writeoffAccountDomain(
+                generation: generation,
+                companyId: companyId,
+              ),
               ['id', 'name', 'code', 'account_type'],
             ],
             'kwargs': {
@@ -439,18 +445,18 @@ class _PaymentRegisterScreenState extends State<PaymentRegisterScreen>
           })
           .timeout(const Duration(seconds: 30));
 
+      // The server has the payment: tell every list and page that shows it or
+      // the invoice it was registered against.
+      final paymentId = result is Map ? result['res_id'] : null;
+      DataChangeBus.instance.paymentChanged(
+        paymentId is int ? paymentId : null,
+      );
+      DataChangeBus.instance.invoiceChanged(invoiceId);
+
       await Future.delayed(const Duration(milliseconds: 500));
 
-      await client
-          .callKw({
-            'model': 'account.move',
-            'method': 'invalidate_cache',
-            'args': [
-              [invoiceId],
-            ],
-            'kwargs': {},
-          })
-          .timeout(const Duration(seconds: 10));
+      // No `invalidate_cache` here: it is not an Odoo method on any release
+      // since 16, and every RPC call reads through a fresh ORM cache anyway.
 
       final updatedInvoiceResult = await client
           .callKw({
@@ -583,24 +589,13 @@ class _PaymentRegisterScreenState extends State<PaymentRegisterScreen>
                 ],
               ],
             ),
+            actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
             actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: Text(
-                  'Cancel',
-                  style: TextStyle(color: theme.primaryColor),
-                ),
-              ),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context, true),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: theme.primaryColor,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-                child: const Text('Register Payment'),
+              MoboDialogButtons(
+                secondaryLabel: 'Cancel',
+                onSecondary: () => Navigator.pop(context, false),
+                primaryLabel: 'Register Payment',
+                onPrimary: () => Navigator.pop(context, true),
               ),
             ],
           ),
@@ -850,7 +845,10 @@ class _PaymentRegisterScreenState extends State<PaymentRegisterScreen>
                                     controller: _amountController,
                                     keyboardType: TextInputType.number,
                                     decoration: InputDecoration(
-                                      labelText: 'Payment Amount',
+                                      label: const MoboFieldLabel(
+                                        'Payment Amount',
+                                        isRequired: true,
+                                      ),
                                       prefixText:
                                           '${currencyProvider.getCurrencySymbol(currencyCode ?? 'USD')} ',
                                       border: OutlineInputBorder(
@@ -913,66 +911,40 @@ class _PaymentRegisterScreenState extends State<PaymentRegisterScreen>
                                   else
                                     SizedBox(
                                       width: double.infinity,
-                                      child: DropdownButtonFormField<Map<String, dynamic>>(
-                                        initialValue: _selectedJournal,
-                                        decoration: InputDecoration(
-                                          labelText: 'Payment Journal',
-                                          border: OutlineInputBorder(
-                                            borderRadius: BorderRadius.circular(
-                                              12,
+                                      child: MoboSelectFormField<int>(
+                                        label: 'Payment Journal',
+                                        isRequired: true,
+                                        value: _selectedJournal?['id'] as int?,
+                                        options: [
+                                          for (final journal in _journals)
+                                            MoboOption<int>(
+                                              value: journal['id'] as int,
+                                              label:
+                                                  '${journal['name']} (${journal['code'] ?? ''})',
+                                              leading: Icon(
+                                                journal['type'] == 'cash'
+                                                    ? HugeIcons
+                                                          .strokeRoundedCash01
+                                                    : HugeIcons
+                                                          .strokeRoundedCreditCard,
+                                                size: 16,
+                                                color: isDark
+                                                    ? Colors.grey[400]
+                                                    : Colors.grey[600],
+                                              ),
                                             ),
-                                          ),
-                                          filled: true,
-                                          fillColor: isDark
-                                              ? const Color(0xFF2A2A2A)
-                                              : Colors.grey[50],
-                                        ),
-                                        style: TextStyle(
-                                          color: isDark
-                                              ? Colors.white
-                                              : Colors.black87,
-                                        ),
-                                        dropdownColor: isDark
-                                            ? const Color(0xFF2A2A2A)
-                                            : Colors.white,
-                                        isExpanded: true,
-                                        items: _journals.map((journal) {
-                                          return DropdownMenuItem<
-                                            Map<String, dynamic>
-                                          >(
-                                            value: journal,
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                Icon(
-                                                  journal['type'] == 'cash'
-                                                      ? HugeIcons
-                                                            .strokeRoundedCash01
-                                                      : HugeIcons
-                                                            .strokeRoundedCreditCard,
-                                                  size: 16,
-                                                  color: isDark
-                                                      ? Colors.grey[400]
-                                                      : Colors.grey[600],
-                                                ),
-                                                const SizedBox(width: 8),
-                                                Flexible(
-                                                  child: Text(
-                                                    '${journal['name']} (${journal['code'] ?? ''})',
-                                                    overflow:
-                                                        TextOverflow.ellipsis,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          );
-                                        }).toList(),
-                                        onChanged: (value) {
+                                        ],
+                                        onChanged: (id) {
+                                          final journal = id == null
+                                              ? null
+                                              : _journals.firstWhere(
+                                                  (j) => j['id'] == id,
+                                                );
                                           setState(() {
-                                            _selectedJournal = value;
+                                            _selectedJournal = journal;
                                             _selectedPaymentMethodLine = null;
                                           });
-                                          if (value != null) {
+                                          if (journal != null) {
                                             _loadPaymentMethodLines();
                                           }
                                         },
@@ -989,60 +961,38 @@ class _PaymentRegisterScreenState extends State<PaymentRegisterScreen>
                                   if (_selectedJournal != null)
                                     SizedBox(
                                       width: double.infinity,
-                                      child:
-                                          DropdownButtonFormField<
-                                            Map<String, dynamic>
-                                          >(
-                                            initialValue:
-                                                _selectedPaymentMethodLine,
-                                            decoration: InputDecoration(
-                                              labelText: 'Payment Method',
-                                              border: OutlineInputBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(12),
-                                              ),
-                                              filled: true,
-                                              fillColor: isDark
-                                                  ? const Color(0xFF2A2A2A)
-                                                  : Colors.grey[50],
+                                      child: MoboSelectFormField<int>(
+                                        label: 'Payment Method',
+                                        isRequired: true,
+                                        value:
+                                            _selectedPaymentMethodLine?['id']
+                                                as int?,
+                                        options: [
+                                          for (final method
+                                              in _paymentMethodLines)
+                                            MoboOption<int>(
+                                              value: method['id'] as int,
+                                              label: '${method['name']}',
                                             ),
-                                            style: TextStyle(
-                                              color: isDark
-                                                  ? Colors.white
-                                                  : Colors.black87,
-                                            ),
-                                            dropdownColor: isDark
-                                                ? const Color(0xFF2A2A2A)
-                                                : Colors.white,
-                                            isExpanded: true,
-                                            items: _paymentMethodLines.map((
-                                              method,
-                                            ) {
-                                              return DropdownMenuItem<
-                                                Map<String, dynamic>
-                                              >(
-                                                value: method,
-                                                child: Text(
-                                                  method['name'],
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                ),
-                                              );
-                                            }).toList(),
-                                            onChanged: (value) {
-                                              setState(
-                                                () =>
-                                                    _selectedPaymentMethodLine =
-                                                        value,
-                                              );
-                                            },
-                                            validator: (value) {
-                                              if (value == null) {
-                                                return 'Please select a payment method';
-                                              }
-                                              return null;
-                                            },
-                                          ),
+                                        ],
+                                        onChanged: (id) {
+                                          setState(
+                                            () => _selectedPaymentMethodLine =
+                                                id == null
+                                                ? null
+                                                : _paymentMethodLines
+                                                      .firstWhere(
+                                                        (m) => m['id'] == id,
+                                                      ),
+                                          );
+                                        },
+                                        validator: (value) {
+                                          if (value == null) {
+                                            return 'Please select a payment method';
+                                          }
+                                          return null;
+                                        },
+                                      ),
                                     ),
                                   const SizedBox(height: 16),
 
@@ -1225,65 +1175,44 @@ class _PaymentRegisterScreenState extends State<PaymentRegisterScreen>
                                       else
                                         SizedBox(
                                           width: double.infinity,
-                                          child:
-                                              DropdownButtonFormField<
-                                                Map<String, dynamic>
-                                              >(
-                                                initialValue:
-                                                    _selectedWriteoffAccount,
-                                                decoration: InputDecoration(
-                                                  labelText:
-                                                      'Write-off Account',
-                                                  border: OutlineInputBorder(
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          12,
-                                                        ),
-                                                  ),
-                                                  filled: true,
-                                                  fillColor: isDark
-                                                      ? const Color(0xFF2A2A2A)
-                                                      : Colors.grey[50],
-                                                ),
-                                                style: TextStyle(
-                                                  color: isDark
-                                                      ? Colors.white
-                                                      : Colors.black87,
-                                                ),
-                                                dropdownColor: isDark
-                                                    ? const Color(0xFF2A2A2A)
-                                                    : Colors.white,
-                                                isExpanded: true,
-                                                items: _writeoffAccounts.map((
-                                                  account,
-                                                ) {
-                                                  return DropdownMenuItem<
-                                                    Map<String, dynamic>
-                                                  >(
-                                                    value: account,
-                                                    child: Text(
+                                          child: MoboSelectFormField<int>(
+                                            label: 'Write-off Account',
+                                            isRequired: true,
+                                            // A chart of accounts is long.
+                                            searchable: true,
+                                            value:
+                                                _selectedWriteoffAccount?['id']
+                                                    as int?,
+                                            options: [
+                                              for (final account
+                                                  in _writeoffAccounts)
+                                                MoboOption<int>(
+                                                  value: account['id'] as int,
+                                                  label:
                                                       '${account['code']} - ${account['name']}',
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                    ),
-                                                  );
-                                                }).toList(),
-                                                onChanged: (value) {
-                                                  setState(
-                                                    () =>
-                                                        _selectedWriteoffAccount =
-                                                            value,
-                                                  );
-                                                },
-                                                validator: (value) {
-                                                  if (_paymentDifferenceHandling ==
-                                                          'reconcile' &&
-                                                      value == null) {
-                                                    return 'Please select a write-off account';
-                                                  }
-                                                  return null;
-                                                },
-                                              ),
+                                                ),
+                                            ],
+                                            onChanged: (id) {
+                                              setState(
+                                                () => _selectedWriteoffAccount =
+                                                    id == null
+                                                    ? null
+                                                    : _writeoffAccounts
+                                                          .firstWhere(
+                                                            (a) =>
+                                                                a['id'] == id,
+                                                          ),
+                                              );
+                                            },
+                                            validator: (value) {
+                                              if (_paymentDifferenceHandling ==
+                                                      'reconcile' &&
+                                                  value == null) {
+                                                return 'Please select a write-off account';
+                                              }
+                                              return null;
+                                            },
+                                          ),
                                         ),
                                       const SizedBox(height: 16),
                                       TextFormField(
@@ -1309,98 +1238,6 @@ class _PaymentRegisterScreenState extends State<PaymentRegisterScreen>
                                     ],
                                   ],
                                 ),
-
-                              const SizedBox(height: 32),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: OutlinedButton(
-                                      onPressed: _isLoading
-                                          ? null
-                                          : () => Navigator.pop(context),
-                                      style: OutlinedButton.styleFrom(
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 16,
-                                        ),
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(
-                                            12,
-                                          ),
-                                        ),
-                                        side: BorderSide(
-                                          color: theme.primaryColor,
-                                        ),
-                                      ),
-                                      child: Text(
-                                        'Cancel',
-                                        style: TextStyle(
-                                          color: theme.primaryColor,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 16),
-                                  Expanded(
-                                    flex: 2,
-                                    child: ElevatedButton(
-                                      onPressed: _isLoading
-                                          ? null
-                                          : _registerPayment,
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: theme.primaryColor,
-                                        foregroundColor: Colors.white,
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 16,
-                                        ),
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(
-                                            12,
-                                          ),
-                                        ),
-                                        elevation: 2,
-                                      ),
-                                      child: Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.center,
-                                        children: [
-                                          if (_isLoading) ...[
-                                            const SizedBox(
-                                              width: 16,
-                                              height: 16,
-                                              child: CircularProgressIndicator(
-                                                strokeWidth: 2,
-                                                valueColor:
-                                                    AlwaysStoppedAnimation<
-                                                      Color
-                                                    >(Colors.white),
-                                              ),
-                                            ),
-                                            const SizedBox(width: 8),
-                                          ] else ...[
-                                            const Icon(
-                                              HugeIcons
-                                                  .strokeRoundedCheckmarkCircle01,
-                                              size: 18,
-                                              color: Colors.white,
-                                            ),
-                                            const SizedBox(width: 8),
-                                          ],
-                                          Text(
-                                            _isLoading
-                                                ? 'Processing...'
-                                                : 'Register Payment',
-                                            style: const TextStyle(
-                                              fontWeight: FontWeight.w600,
-                                              fontSize: 16,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
                             ],
                           ),
                         ),
@@ -1408,6 +1245,85 @@ class _PaymentRegisterScreenState extends State<PaymentRegisterScreen>
                     ),
                   ),
           ),
+          bottomNavigationBar: _isLoading
+              ? null
+              : MoboBottomActionBar(
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _isLoading
+                              ? null
+                              : () => Navigator.pop(context),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            side: BorderSide(color: theme.primaryColor),
+                          ),
+                          child: Text(
+                            'Cancel',
+                            style: TextStyle(
+                              color: theme.primaryColor,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        flex: 2,
+                        child: ElevatedButton(
+                          onPressed: _isLoading ? null : _registerPayment,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: theme.primaryColor,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            elevation: 2,
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              if (_isLoading) ...[
+                                const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    valueColor: AlwaysStoppedAnimation<Color>(
+                                      Colors.white,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                              ] else ...[
+                                const Icon(
+                                  HugeIcons.strokeRoundedCheckmarkCircle01,
+                                  size: 18,
+                                  color: Colors.white,
+                                ),
+                                const SizedBox(width: 8),
+                              ],
+                              Text(
+                                _isLoading
+                                    ? 'Processing...'
+                                    : 'Register Payment',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 16,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
         );
       },
     );

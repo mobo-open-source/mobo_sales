@@ -77,9 +77,12 @@ class FieldValidationService {
 
   /// Extracts the offending field name from an Odoo [errorMessage], if possible.
   ///
-  /// Handles both shapes Odoo emits: the quoted form used when reading a field
-  /// list (`Invalid field 'foo' on model 'res.partner'`) and the dotted form
-  /// used for domain leaves (`Invalid field res.partner.foo in leaf ...`).
+  /// Handles both shapes Odoo emits: the quoted form used when reading or
+  /// writing a field list (`Invalid field 'foo' on model 'res.partner'` up to
+  /// Odoo 18, `Invalid field 'foo' on 'res.partner'` and
+  /// `Invalid field 'foo' in 'res.partner'` from 19) and the dotted form used
+  /// for domain conditions (`Invalid field res.partner.foo in leaf ...` up to
+  /// 18, `... in condition ...` from 19).
   static String? extractInvalidField(String errorMessage) {
     final patterns = [
       RegExp(r"Invalid field '([^']+)'"),
@@ -133,10 +136,14 @@ class FieldValidationService {
   /// rather than in the requested field list.
   ///
   /// Pruning the field list cannot resolve these, so they must surface to the
-  /// caller instead of being retried.
+  /// caller instead of being retried. Odoo 17 and 18 name the offending term a
+  /// "leaf" (or "domain term"); 19 and 20 call it a "condition", and word every
+  /// problem with one that way (`Invalid field ... in condition (...)`, `Field
+  /// has no SQL representation because it is not stored in condition (...)`).
   static bool isDomainFieldError(String errorMessage) {
     return errorMessage.contains('in leaf') ||
         errorMessage.contains('in domain term') ||
+        errorMessage.contains('in condition (') ||
         RegExp(r'Invalid field\s+[\w.]+\.\w+').hasMatch(errorMessage);
   }
 

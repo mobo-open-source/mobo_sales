@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import '../services/data_change_bus.dart';
 import '../services/permission_service.dart';
 import '../services/odoo_error_handler.dart';
 import '../services/invoice_details_service.dart';
@@ -14,14 +15,42 @@ class InvoiceDetailsProvider extends ChangeNotifier {
 
   final InvoiceDetailsService _invoiceDetailsService;
   final PermissionService _permissionService;
+  final DataChangeBus _bus;
 
   InvoiceDetailsProvider({
     InvoiceDetailsService? invoiceDetailsService,
     PermissionService? permissionService,
+    DataChangeBus? bus,
   }) : _invoiceDetailsService =
            invoiceDetailsService ?? InvoiceDetailsService(),
-       _permissionService = permissionService ?? PermissionService.instance {
+       _permissionService = permissionService ?? PermissionService.instance,
+       _bus = bus ?? DataChangeBus.instance {
     currencyFormat = NumberFormat.currency(locale: 'en_US', decimalDigits: 2);
+  }
+
+  /// Whether the invoice on screen was made from a sale order (its origin names
+  /// one), so that cancelling, resetting or deleting it also changes that
+  /// order's invoicing status.
+  bool get _linkedToSaleOrder {
+    final origin = invoiceOrigin.trim();
+    return origin.isNotEmpty && origin.toLowerCase() != 'false';
+  }
+
+  /// Announces a change to the invoice [id] that the server has accepted. The
+  /// origin is this provider, so the details page that drives it, which reloads
+  /// itself, can tell its own announcement from somebody else's.
+  ///
+  /// [affectsSaleOrder] is for the changes that move the order's invoicing
+  /// status (cancel, reset, delete); the order's id is not known here, so the
+  /// announcement names none and the quotation lists refresh as a whole.
+  void _announce(
+    int id, {
+    DataChangeKind kind = DataChangeKind.updated,
+    bool affectsSaleOrder = false,
+  }) {
+    final linked = affectsSaleOrder && _linkedToSaleOrder;
+    _bus.invoiceChanged(id, kind: kind, origin: this);
+    if (linked) _bus.quotationChanged(null, origin: this);
   }
 
   Future<void> clearData() async {
@@ -172,10 +201,17 @@ class InvoiceDetailsProvider extends ChangeNotifier {
     }
   }
 
+  /// Loads the invoice [invoiceId] and its partner and lines.
+  ///
+  /// [silent] reloads in place: what is on screen stays until the new data
+  /// replaces it, with no loading state in between, and a failed reload leaves
+  /// it as it was. It is for refreshing a page that is already showing the
+  /// invoice because the invoice changed somewhere else.
   Future<void> fetchInvoiceDetails(
     BuildContext context,
-    String invoiceId,
-  ) async {
+    String invoiceId, {
+    bool silent = false,
+  }) async {
     if (invoiceId.isEmpty) {
       _errorMessage = 'Invalid invoice ID';
       _isLoading = false;
@@ -183,10 +219,12 @@ class InvoiceDetailsProvider extends ChangeNotifier {
       return;
     }
 
-    _isLoading = true;
-    _errorMessage = '';
-    _invoice = null;
-    notifyListeners();
+    if (!silent) {
+      _isLoading = true;
+      _errorMessage = '';
+      _invoice = null;
+      notifyListeners();
+    }
 
     try {
       int parsedInvoiceId = int.parse(invoiceId);
@@ -266,14 +304,17 @@ class InvoiceDetailsProvider extends ChangeNotifier {
           } catch (e) {}
         }
 
+        _errorMessage = '';
         setInvoiceData(invoiceData);
       } else {
+        // Gone from the server (deleted elsewhere): there is nothing to keep.
+        if (silent) _invoice = null;
         _errorMessage = 'Invoice with ID $parsedInvoiceId not found';
       }
     } catch (e) {
-      _errorMessage = OdooErrorHandler.toUserMessage(e);
+      if (!silent) _errorMessage = OdooErrorHandler.toUserMessage(e);
     }
-    _isLoading = false;
+    if (!silent) _isLoading = false;
     notifyListeners();
   }
 
@@ -312,6 +353,7 @@ class InvoiceDetailsProvider extends ChangeNotifier {
       }
 
       await _invoiceDetailsService.postInvoice(parsedInvoiceId);
+      _announce(parsedInvoiceId);
 
       await fetchInvoiceDetails(context, invoiceId);
       return true;
@@ -349,28 +391,10 @@ class InvoiceDetailsProvider extends ChangeNotifier {
         return false;
       }
 
-      if (currentState == 'posted') {
-        bool cancelled = await cancelInvoice(context, invoiceId);
-        if (!cancelled) {
-          _errorMessage = 'Failed to cancel invoice before resetting to draft';
-          notifyListeners();
-          _isProcessing = false;
-          _isLoading = false;
-          notifyListeners();
-          return false;
-        }
-
-        currentState = invoiceState;
-        if (currentState != 'cancel') {
-          _errorMessage =
-              "Failed to cancel invoice before resetting to draft (current state: $currentState).";
-          notifyListeners();
-          _isProcessing = false;
-          _isLoading = false;
-          notifyListeners();
-          return false;
-        }
-      }
+      // `button_draft` takes a posted invoice straight back to draft; it does
+      // not need cancelling first. (Calling [cancelInvoice] from here used to
+      // return false at once, because this method is already processing, so
+      // resetting a posted invoice always failed.)
 
       final canWriteMove = await _permissionService.canWrite('account.move');
       if (!canWriteMove) {
@@ -384,6 +408,7 @@ class InvoiceDetailsProvider extends ChangeNotifier {
       }
 
       await _invoiceDetailsService.resetToDraft(parsedInvoiceId);
+      _announce(parsedInvoiceId, affectsSaleOrder: true);
 
       await fetchInvoiceDetails(context, invoiceId);
       return true;
@@ -432,6 +457,7 @@ class InvoiceDetailsProvider extends ChangeNotifier {
       }
 
       await _invoiceDetailsService.cancelInvoice(parsedInvoiceId);
+      _announce(parsedInvoiceId, affectsSaleOrder: true);
 
       await fetchInvoiceDetails(context, invoiceId);
       return true;
@@ -463,6 +489,11 @@ class InvoiceDetailsProvider extends ChangeNotifier {
       }
 
       await _invoiceDetailsService.deleteInvoice(parsedInvoiceId);
+      _announce(
+        parsedInvoiceId,
+        kind: DataChangeKind.deleted,
+        affectsSaleOrder: true,
+      );
 
       return true;
     } catch (e) {

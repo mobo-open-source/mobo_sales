@@ -31,6 +31,7 @@ class AppTheme {
       backgroundColor: primaryColor,
       foregroundColor: Colors.white,
       elevation: 0,
+      surfaceTintColor: Colors.transparent,
     ),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
@@ -38,6 +39,7 @@ class AppTheme {
         foregroundColor: Colors.white,
       ),
     ),
+    floatingActionButtonTheme: _floatingActionButtonTheme,
     inputDecorationTheme: InputDecorationTheme(
       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
       focusedBorder: OutlineInputBorder(
@@ -61,6 +63,7 @@ class AppTheme {
     appBarTheme: const AppBarTheme(
       backgroundColor: primaryColor,
       foregroundColor: Colors.white,
+      surfaceTintColor: Colors.transparent,
       elevation: 0,
     ),
     elevatedButtonTheme: ElevatedButtonThemeData(
@@ -69,6 +72,7 @@ class AppTheme {
         foregroundColor: Colors.white,
       ),
     ),
+    floatingActionButtonTheme: _floatingActionButtonTheme,
     inputDecorationTheme: InputDecorationTheme(
       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
       focusedBorder: OutlineInputBorder(
@@ -77,4 +81,12 @@ class AppTheme {
       ),
     ),
   );
+
+  /// Floating action buttons are brand red with a white icon in both light
+  /// and dark mode.
+  static const FloatingActionButtonThemeData _floatingActionButtonTheme =
+      FloatingActionButtonThemeData(
+        backgroundColor: primaryColor,
+        foregroundColor: Colors.white,
+      );
 }

@@ -3,11 +3,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:odoo_rpc/odoo_rpc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../core/session/database_expiry.dart';
 import '../services/session_service.dart';
 import '../services/auth_service.dart';
 import '../services/odoo_api_service.dart';
 import '../screens/login/totp_page.dart';
+import '../services/sales_access.dart';
+import '../widgets/access_denied_dialog.dart';
+import '../utils/database_expiry.dart';
 
 /// Manages user login form state, database discovery, and authentication flow.
 class LoginProvider with ChangeNotifier {
@@ -16,6 +18,17 @@ class LoginProvider with ChangeNotifier {
   bool disableFields = false;
   String? database;
   String? errorMessage;
+
+  /// Whether the last sign-in was refused because the database has expired. The
+  /// credentials screen reads it to go back to the server screen, which is where
+  /// that message is shown.
+  bool databaseExpired = false;
+
+  /// Whether the last sign-in was refused because the account may not use the
+  /// app (no Sales access, no Sales module, a portal user, access that could not
+  /// be checked) and the popup saying so has been answered. The credentials
+  /// screen reads it to go back to the server (URL) screen.
+  bool accessRefused = false;
   bool isLoading = false;
   bool isLoadingDatabases = false;
   List<String> dropdownItems = [];
@@ -384,6 +397,8 @@ class LoginProvider with ChangeNotifier {
 
     isLoading = true;
     errorMessage = null;
+    databaseExpired = false;
+    accessRefused = false;
     disableFields = true;
     _safeNotifyListeners();
 
@@ -418,8 +433,22 @@ class LoginProvider with ChangeNotifier {
         errorMessage = 'Login failed. Please check your credentials.';
         return false;
       }
+    } on SalesAccessException catch (e) {
+      // Nothing was saved: the sign-in stopped before a session existed. The
+      // popup says why; the button on it takes the user back to the server
+      // screen (the credentials screen does that on `accessRefused`).
+      isLoading = false;
+      disableFields = false;
+      errorMessage = null;
+      _safeNotifyListeners();
+      if (context.mounted) await AccessDeniedDialog.showFor(context, e);
+      accessRefused = true;
+      return false;
     } on DatabaseExpiredException {
+      // Nothing was saved. Tested by type, before any wording is looked at:
+      // the message mentions "database" and must not read as a wrong one.
       errorMessage = DatabaseExpiredException.message;
+      databaseExpired = true;
       return false;
     } on SocketException catch (e) {
       errorMessage = _formatSocketError(e);
@@ -464,6 +493,9 @@ class LoginProvider with ChangeNotifier {
               await _setAuthenticationTimestamp();
               return true;
             }
+            // The code was right but the account may not use the app: TotpPage
+            // said why in its popup and closed with `false`.
+            if (result == false) accessRefused = true;
           }
         }
         return false;
