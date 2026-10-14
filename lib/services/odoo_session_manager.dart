@@ -5,6 +5,8 @@ import 'package:odoo_rpc/odoo_rpc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
+
+import '../core/session/database_expiry.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart' as webview;
 
 /// Value object that holds all data for an active Odoo user session.
@@ -236,8 +238,20 @@ class _TimeoutHttpClient extends http.BaseClient {
     );
   }
 
+  /// Deliberately does nothing.
+  ///
+  /// [OdooSessionManager.ioClient] is a single process-wide transport shared
+  /// by every `OdooClient` the app builds, and `OdooClient.close()` closes
+  /// whatever http client it was handed. Closing it on behalf of one
+  /// discarded client would disable every other caller for the rest of the
+  /// process, with each later request failing as
+  /// `ClientException: HTTP request failed. Client is already closed.` — a
+  /// message that reads like a transport fault and sends everyone off to
+  /// check a healthy network. The shared transport's lifetime is the
+  /// process's. Clients that build their own http client still close it;
+  /// only this shared one is exempt.
   @override
-  void close() => _inner.close();
+  void close() {}
 }
 
 /// Manages the low-level Odoo RPC client, session caching, and authentication.
@@ -411,6 +425,8 @@ class OdooSessionManager {
       }
 
       return true;
+    } on DatabaseExpiredException {
+      rethrow;
     } catch (e) {
       if (e is FormatException && e.toString().contains('<html>')) {
         throw Exception(
@@ -682,6 +698,11 @@ class OdooSessionManager {
   }
 
   /// Authenticates against Odoo and returns a populated [OdooSessionModel].
+  ///
+  /// The database-expiry check lives here rather than in
+  /// `loginAndSaveSession`, because adding and switching accounts
+  /// authenticate directly; guarding only the former would let an expired
+  /// database back in through the account switcher.
   static Future<OdooSessionModel?> authenticate({
     required String serverUrl,
     required String database,
@@ -831,7 +852,16 @@ class OdooSessionManager {
           serverVersion: odooSession.serverVersion,
         );
 
+        if (await DatabaseExpiry.isExpired(
+          serverUrl: serverUrl,
+          sessionId: sessionData.sessionId,
+        )) {
+          throw const DatabaseExpiredException();
+        }
+
         return sessionData;
+      } on DatabaseExpiredException {
+        rethrow;
       } catch (e) {
         if (e is FormatException && e.toString().contains('<html>')) {
           throw Exception(
@@ -858,6 +888,10 @@ class OdooSessionManager {
   }
 
   /// Executes an RPC call with the current company context injected into kwargs.
+  ///
+  /// A failure is reported with the detail Odoo nests under
+  /// `error.data.message`. The top-level message is the generic
+  /// "Odoo Server Error", which hides what actually went wrong.
   static Future<dynamic> callKwWithCompany(Map<String, dynamic> payload) async {
     final session = await getCurrentSession();
     if (session == null) {
@@ -1009,9 +1043,6 @@ class OdooSessionManager {
           } catch (_) {}
         }
       }
-      // Surface the detailed server message (Odoo nests the real cause under
-      // error.data.message); the top-level message is the generic
-      // "Odoo Server Error", which hides what actually went wrong.
       final dataMsg = data['error']['data']?['message']?.toString() ?? '';
       throw Exception('$message${dataMsg.isNotEmpty ? ': $dataMsg' : ''}');
     }

@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../services/session_service.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../services/odoo_api_service.dart';
+import '../../core/session/database_expiry.dart';
 import 'login_layout.dart'
     show
         LoginLayout,
@@ -292,12 +293,16 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
       String errorMessage =
           'Could not connect to server. Please check the URL and try again.';
 
-      if (errStr.contains('timeout') ||
-          errStr.contains('Connection timeout')) {
+      if (errStr.contains('timeout') || errStr.contains('Connection timeout')) {
         errorMessage =
             'Connection timeout. Please check your internet connection and try again.';
       } else if (errStr.contains('404') || errStr.contains('not found')) {
         errorMessage = 'Server not found. Please verify the URL is correct.';
+      } else if (errStr.toLowerCase().contains('failed host lookup') ||
+          errStr.toLowerCase().contains('nodename nor servname') ||
+          errStr.toLowerCase().contains('no address associated')) {
+        errorMessage =
+            'Server not found. Please check the server address for typos.';
       } else if (errStr.contains('connection') ||
           errStr.contains('network') ||
           errStr.contains('SocketException')) {
@@ -305,8 +310,7 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
             'Unable to connect to server. Check URL and network connection.';
       } else if (errStr.contains('FormatException') ||
           errStr.contains('Invalid')) {
-        errorMessage =
-            'Invalid server URL format. Please check and try again.';
+        errorMessage = 'Invalid server URL format. Please check and try again.';
       } else if (errStr.contains('ACCESS_DENIED_DB_LIST')) {
         errorMessage =
             'Database listing is disabled (list_db=false). Cannot fetch databases automatically.';
@@ -346,6 +350,14 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
     return '$_selectedProtocol$url';
   }
 
+  /// Signs in and stores an additional account.
+  ///
+  /// Authenticates directly rather than through `loginAndSaveSession`, so the
+  /// expiry guard there does not cover this path and is repeated below —
+  /// without it an expired database could be added through the switcher.
+  ///
+  /// Host-lookup failures are named separately from connection failures: a
+  /// name that does not resolve is a typo, not a network fault.
   Future<void> _addAccount() async {
     final fullUrl = _getFullUrl();
     final finalDb = _selectedDatabase ?? '';
@@ -374,6 +386,17 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
         setState(() {
           _errorMessage =
               'Authentication failed. Please check your credentials.';
+          _isLoading = false;
+        });
+        return;
+      }
+
+      if (await DatabaseExpiry.isExpired(
+        serverUrl: fullUrl,
+        sessionId: newSession.sessionId,
+      )) {
+        setState(() {
+          _errorMessage = DatabaseExpiredException.message;
           _isLoading = false;
         });
         return;
@@ -519,6 +542,17 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
       return 'The specified database does not exist on this server. Please verify the name or contact your administrator.';
     }
 
+    if (errorLower.contains('failed host lookup') ||
+        errorLower.contains('nodename nor servname') ||
+        errorLower.contains('no address associated')) {
+      return 'Server not found. Please check the server address for typos.';
+    }
+
+    if (errorLower.contains('connection refused')) {
+      return 'Server is not responding. Please verify the server address and '
+          'port, and that Odoo is running.';
+    }
+
     if (errorLower.contains('connection') ||
         errorLower.contains('network') ||
         errorLower.contains('timeout') ||
@@ -590,7 +624,8 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
               LoginUrlAutocompleteField(
                 controller: _urlController,
                 suggestions: _urlHistory,
-                onSuggestionSelected: (selection) => _setUrlFromFullUrl(selection),
+                onSuggestionSelected: (selection) =>
+                    _setUrlFromFullUrl(selection),
                 child: LoginUrlTextField(
                   controller: _urlController,
                   hint: 'Server Address',
@@ -622,11 +657,14 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
                       _errorMessage = null;
                     });
 
-                    _debounceTimer = Timer(const Duration(milliseconds: 700), () {
-                      if (mounted) {
-                        _validateUrlAndFetchDatabases();
-                      }
-                    });
+                    _debounceTimer = Timer(
+                      const Duration(milliseconds: 700),
+                      () {
+                        if (mounted) {
+                          _validateUrlAndFetchDatabases();
+                        }
+                      },
+                    );
                   },
                 ),
               ),

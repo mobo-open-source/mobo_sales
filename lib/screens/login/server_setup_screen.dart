@@ -227,7 +227,7 @@ class _ServerSetupScreenState extends State<ServerSetupScreen>
                                 LoginDropdownField(
                                   hint: provider.isLoadingDatabases
                                       ? 'Loading...'
-                                      : provider.errorMessage != null
+                                      : provider.dropdownItems.isEmpty
                                       ? 'Unable to load'
                                       : 'Database',
                                   value: provider.database,
@@ -291,5 +291,3 @@ class _ServerSetupScreenState extends State<ServerSetupScreen>
     );
   }
 }
-
-

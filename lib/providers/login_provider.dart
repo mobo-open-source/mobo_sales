@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:odoo_rpc/odoo_rpc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../core/session/database_expiry.dart';
 import '../services/session_service.dart';
 import '../services/auth_service.dart';
 import '../services/odoo_api_service.dart';
@@ -205,48 +206,85 @@ class LoginProvider with ChangeNotifier {
         urlCheck = true;
         errorMessage = null;
 
-        if (database != null &&
-            uniqueDbList.contains(database)) {
+        if (database != null && uniqueDbList.contains(database)) {
           database = database;
         } else if (uniqueDbList.isNotEmpty) {
           database = uniqueDbList.first.toString();
         }
       }
     } on SocketException catch (e) {
-      String msg = 'Network error occurred. Please check your internet connection and server URL.';
-      if (e.toString().contains('Network is unreachable')) {
-        msg = 'No internet connection. Please check your network settings and try again.';
-      } else if (e.toString().contains('Connection refused')) {
-        msg = 'Server is not responding. Please verify the server URL and ensure the server is running.';
+      final detail = e.toString().toLowerCase();
+      String msg =
+          'Network error occurred. Please check your internet connection and server URL.';
+      if (detail.contains('failed host lookup') ||
+          detail.contains('nodename nor servname') ||
+          detail.contains('no address associated')) {
+        msg = 'Server not found. Please check the server address for typos.';
+      } else if (detail.contains('network is unreachable')) {
+        msg =
+            'No internet connection. Please check your network settings and try again.';
+      } else if (detail.contains('connection refused')) {
+        msg =
+            'Server is not responding. Please verify the server address and port, '
+            'and that Odoo is running.';
       }
       await attemptFallback(msg);
     } on TimeoutException catch (_) {
-      await attemptFallback('Connection timed out. The server may be slow or unreachable. Please try again.');
+      await attemptFallback(
+        'Connection timed out. The server may be slow or unreachable. Please try again.',
+      );
     } on OdooException catch (e) {
       await attemptFallback(_formatOdooError(e));
     } on FormatException catch (e) {
-      String msg = 'Server sent invalid data format. Please verify this is an Odoo server.';
+      String msg =
+          'Server sent invalid data format. Please verify this is an Odoo server.';
       if (e.toString().toLowerCase().contains('html')) {
-        msg = 'Invalid server response. This may not be an Odoo server or the URL path is incorrect.';
+        msg =
+            'Invalid server response. This may not be an Odoo server or the URL path is incorrect.';
       }
       await attemptFallback(msg);
     } catch (e) {
       final errorStr = e.toString().toLowerCase();
-      String msg = 'Unable to connect to server. Please verify the server URL is correct.';
+      String msg =
+          'Unable to connect to server. Please verify the server URL is correct.';
       if (errorStr.contains('handshake')) {
-        msg = 'SSL connection failed. Try using HTTP instead of HTTPS or contact your administrator.';
+        msg =
+            'SSL connection failed. Try using HTTP instead of HTTPS or contact your administrator.';
       } else if (errorStr.contains('certificate')) {
-        msg = 'SSL certificate error. The server certificate may be invalid or expired.';
+        msg =
+            'SSL certificate error. The server certificate may be invalid or expired.';
       } else if (errorStr.contains('host')) {
-        msg = 'Cannot reach server. Please check the server URL and your internet connection.';
+        msg =
+            'Cannot reach server. Please check the server URL and your internet connection.';
       } else if (errorStr.contains('access_denied_db_list')) {
-        msg = 'Database listing is disabled (list_db=false). Cannot fetch databases automatically.';
+        msg =
+            'Database listing is disabled (list_db=false). Cannot fetch databases automatically.';
       }
       await attemptFallback(msg);
     } finally {
       isLoadingDatabases = false;
       _safeNotifyListeners();
     }
+  }
+
+  /// Names the actual cause of a [SocketException] instead of blaming the
+  /// user's connection for every one of them.
+  static String _formatSocketError(SocketException error) {
+    final detail = error.toString().toLowerCase();
+    if (detail.contains('failed host lookup') ||
+        detail.contains('nodename nor servname') ||
+        detail.contains('no address associated')) {
+      return 'Server not found. Please check the server address for typos.';
+    }
+    if (detail.contains('connection refused')) {
+      return 'Server is not responding. Please verify the server address and '
+          'port, and that Odoo is running.';
+    }
+    if (detail.contains('network is unreachable')) {
+      return 'No internet connection. Please check your network settings and '
+          'try again.';
+    }
+    return 'Network connection failed. Please check your internet connection.';
   }
 
   void _resetDatabaseState() {
@@ -277,12 +315,22 @@ class LoginProvider with ChangeNotifier {
     }
   }
 
-  /// Sets the currently selected [value] database.
+  /// Sets the currently selected [value] database, clearing any error.
+  ///
+  /// An error belongs to the database that produced it, so choosing another
+  /// clears it. It has to be cleared here rather than on the screen, which
+  /// re-syncs from this value on its next build.
   void setDatabase(String? value) {
     database = value;
+    errorMessage = null;
     notifyListeners();
   }
 
+  /// Turns a raw sign-in failure into wording that names its actual cause.
+  ///
+  /// Branch order matters: a DNS failure is itself a [SocketException], so
+  /// the host-lookup cases have to be tested before the generic socket case
+  /// or a mistyped address is reported as a broken connection.
   String _formatLoginError(dynamic error) {
     final errorStr = error.toString().toLowerCase();
 
@@ -298,6 +346,13 @@ class LoginProvider with ChangeNotifier {
     } else if (errorStr.contains('database') &&
         errorStr.contains('not found')) {
       return 'Selected database is not available. Please choose a different database.';
+    } else if (errorStr.contains('failed host lookup') ||
+        errorStr.contains('nodename nor servname') ||
+        errorStr.contains('no address associated')) {
+      return 'Server not found. Please check the server address for typos.';
+    } else if (errorStr.contains('connection refused')) {
+      return 'Server is not responding. Please verify the server address and '
+          'port, and that Odoo is running.';
     } else if (errorStr.contains('network') || errorStr.contains('socket')) {
       return 'Network connection failed. Please check your internet connection.';
     } else if (errorStr.contains('timeout')) {
@@ -363,9 +418,11 @@ class LoginProvider with ChangeNotifier {
         errorMessage = 'Login failed. Please check your credentials.';
         return false;
       }
-    } on SocketException {
-      errorMessage =
-          'Network connection failed. Please check your internet connection.';
+    } on DatabaseExpiredException {
+      errorMessage = DatabaseExpiredException.message;
+      return false;
+    } on SocketException catch (e) {
+      errorMessage = _formatSocketError(e);
       return false;
     } on TimeoutException {
       errorMessage =

@@ -17,6 +17,7 @@ import 'package:intl/intl.dart';
 import 'package:mobo_sales/services/odoo_session_manager.dart';
 import 'package:mobo_sales/widgets/circular_image_widget.dart';
 import 'package:mobo_sales/utils/app_theme.dart';
+import 'package:mobo_sales/core/session/database_expiry.dart';
 import 'widgets/lazy_load_indexed_stack.dart';
 
 class HomeScaffold extends StatefulWidget {
@@ -26,7 +27,8 @@ class HomeScaffold extends StatefulWidget {
   HomeScaffoldState createState() => HomeScaffoldState();
 }
 
-class HomeScaffoldState extends State<HomeScaffold> {
+class HomeScaffoldState extends State<HomeScaffold>
+    with WidgetsBindingObserver {
   int _selectedIndex = 0;
   bool _hasInitializedSettings = false;
   late List<String> _titles;
@@ -39,16 +41,30 @@ class HomeScaffoldState extends State<HomeScaffold> {
   int _profileFetchAttempts = 0;
   static const int _maxProfileFetchAttempts = 3;
 
+  /// Checks the database's expiry on start, and again on resume via
+  /// [didChangeAppLifecycleState]: a subscription can lapse while the app is
+  /// open or backgrounded, and the stored session would otherwise keep
+  /// working until the next cold start.
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    DatabaseExpiry.enforceOnStoredSession();
     _initializeTitles();
 
     _initializeSettingsProvider();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      DatabaseExpiry.enforceOnStoredSession();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _cachedProfileAction = null;
     super.dispose();
   }

@@ -8,8 +8,8 @@ import 'package:image_picker/image_picker.dart';
 import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'package:provider/provider.dart';
 import 'package:mobo_sales/utils/app_theme.dart';
+import 'package:mobo_sales/services/odoo_schema_service.dart';
 import 'package:mobo_sales/services/session_service.dart';
-import 'package:mobo_sales/utils/odoo_version.dart';
 import 'package:mobo_sales/widgets/custom_text_field.dart';
 import 'package:mobo_sales/widgets/custom_dropdown.dart';
 import 'package:mobo_sales/widgets/data_loss_warning_dialog.dart';
@@ -473,6 +473,11 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
   /// Whether this server still has `res.partner.mobile` (removed in Odoo 19).
   bool _supportsMobile = true;
 
+  /// Loads the signed-in user's profile.
+  ///
+  /// The field list is narrowed to what this server actually defines. A read
+  /// is all-or-nothing: asking for one field a release dropped fails the
+  /// whole request and takes every other value down with it.
   Future<void> _fetchUserProfile({bool forceRefresh = false}) async {
     if (!mounted) return;
     setState(() => _isLoading = _userData == null);
@@ -488,8 +493,9 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
       return;
     }
 
-    _supportsMobile = odooHasPartnerMobile(
-      odooMajorVersion(session.serverVersion),
+    _supportsMobile = await OdooSchemaService.instance.isWritable(
+      'res.users',
+      'mobile',
     );
 
     final client = await sessionService.client;
@@ -513,18 +519,14 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     }
 
     try {
-      final result = await client.callKw({
-        'model': 'res.users',
-        'method': 'read',
-        'args': [uid],
-        'kwargs': {
-          'fields': [
+      final profileFields = await OdooSchemaService.instance
+          .readableFields('res.users', const [
             'name',
             'login',
             'email',
             'image_1920',
             'phone',
-            if (_supportsMobile) 'mobile',
+            'mobile',
             'website',
             'function',
             'company_id',
@@ -537,8 +539,13 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
             'country_id',
             'active',
             'write_date',
-          ],
-        },
+          ]);
+
+      final result = await client.callKw({
+        'model': 'res.users',
+        'method': 'read',
+        'args': [uid],
+        'kwargs': {'fields': profileFields},
       });
 
       if (result is List && result.isNotEmpty && mounted) {
@@ -668,15 +675,21 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         throw Exception('Session expired. Please log in again.');
       }
 
-      await client.callKw({
-        'model': 'res.users',
-        'method': 'write',
-        'args': [
-          [uid],
-          updates,
-        ],
-        'kwargs': {},
-      });
+      final accepted = await OdooSchemaService.instance.writableValues(
+        'res.users',
+        updates,
+      );
+      if (accepted.isNotEmpty) {
+        await client.callKw({
+          'model': 'res.users',
+          'method': 'write',
+          'args': [
+            [uid],
+            accepted,
+          ],
+          'kwargs': {},
+        });
+      }
     }
 
     await _fetchUserProfile();

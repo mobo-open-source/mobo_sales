@@ -10,8 +10,8 @@ import 'package:provider/provider.dart';
 import 'package:mobo_sales/screens/others/settings_screen.dart';
 import 'package:mobo_sales/utils/app_theme.dart';
 import 'package:shimmer/shimmer.dart';
-import 'package:mobo_sales/utils/odoo_version.dart';
 import 'package:mobo_sales/utils/server_url_utils.dart';
+import 'package:mobo_sales/services/odoo_schema_service.dart';
 import 'package:mobo_sales/services/session_service.dart';
 import 'package:mobo_sales/widgets/custom_text_field.dart';
 import 'package:mobo_sales/widgets/custom_dropdown.dart';
@@ -924,8 +924,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return;
     }
 
-    _supportsMobile = odooHasPartnerMobile(
-      odooMajorVersion(session.serverVersion),
+    _supportsMobile = await OdooSchemaService.instance.isWritable(
+      'res.users',
+      'mobile',
     );
 
     final client = await sessionService.client;
@@ -984,18 +985,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
         return;
       }
 
-      final result = await client.callKw({
-        'model': 'res.users',
-        'method': 'read',
-        'args': [uid],
-        'kwargs': {
-          'fields': [
+      final profileFields = await OdooSchemaService.instance
+          .readableFields('res.users', const [
             'name',
             'login',
             'email',
             'image_1920',
             'phone',
-            if (_supportsMobile) 'mobile',
+            'mobile',
             'website',
             'function',
             'company_id',
@@ -1008,8 +1005,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
             'country_id',
             'active',
             'write_date',
-          ],
-        },
+          ]);
+
+      final result = await client.callKw({
+        'model': 'res.users',
+        'method': 'read',
+        'args': [uid],
+        'kwargs': {'fields': profileFields},
       });
 
       if (result is List && result.isNotEmpty && mounted) {
@@ -1230,13 +1232,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
             : _functionController.text.trim();
       }
 
-      if (updateData.isNotEmpty) {
+      final accepted = await OdooSchemaService.instance.writableValues(
+        'res.users',
+        updateData,
+      );
+      if (accepted.isNotEmpty) {
         await client.callKw({
           'model': 'res.users',
           'method': 'write',
           'args': [
             [uid],
-            updateData,
+            accepted,
           ],
           'kwargs': {},
         });

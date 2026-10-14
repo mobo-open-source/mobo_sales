@@ -8,6 +8,7 @@ import 'package:loading_animation_widget/loading_animation_widget.dart';
 import '../../providers/login_provider.dart';
 import 'reset_password_screen.dart';
 import 'login_layout.dart';
+import '../../core/session/database_expiry.dart';
 import '../../services/session_service.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../services/biometric_context_service.dart';
@@ -370,6 +371,14 @@ class _CredentialsScreenState extends State<CredentialsScreen> {
                                 biometricContext.endAccountOperation(
                                   'account_add',
                                 );
+                              } else if (provider.errorMessage ==
+                                  DatabaseExpiredException.message) {
+                                await HapticFeedback.heavyImpact();
+                                if (!mounted) return;
+                                biometricContext.endAccountOperation(
+                                  'account_add',
+                                );
+                                Navigator.of(context).pop();
                               } else if (!ok && provider.errorMessage != null) {
                                 await HapticFeedback.heavyImpact();
                                 if (!mounted) return;

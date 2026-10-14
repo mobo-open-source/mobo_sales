@@ -11,6 +11,7 @@ import '../../services/odoo_session_manager.dart';
 import '../../widgets/connection_status_widget.dart';
 import '../../widgets/empty_state_widget.dart';
 import 'delivery_details_screen.dart';
+import '../../services/odoo_error_classifier.dart';
 
 class DeliveryListScreen extends StatefulWidget {
   final String? saleOrderName;
@@ -743,22 +744,16 @@ class _DeliveryListScreenState extends State<DeliveryListScreen>
     }
   }
 
-  bool _isServerUnreachableError(dynamic error) {
-    final errorString = error.toString().toLowerCase();
-    return errorString.contains('socketexception') ||
-        errorString.contains('connection refused') ||
-        errorString.contains('connection timeout') ||
-        errorString.contains('host unreachable') ||
-        errorString.contains('no route to host') ||
-        errorString.contains('network is unreachable') ||
-        errorString.contains('failed to connect') ||
-        errorString.contains('connection failed') ||
-        errorString.contains('server returned html instead of json') ||
-        errorString.contains('server may be down') ||
-        errorString.contains('url incorrect') ||
-        errorString.contains('odoo server error') ||
-        errorString.contains('unexpected response');
-  }
+  /// Delegates to [OdooErrorClassifier] so this screen agrees with the rest
+  /// of the app on what "unreachable" means.
+  ///
+  /// This used to keep its own copy of the marker list, which still counted a
+  /// bare `Odoo Server Error` as a transport failure. Odoo returns that phrase
+  /// for every server-side Python exception — access rights, validation, a
+  /// missing field — so an ordinary application error sent the user off to
+  /// check a network that was working fine.
+  bool _isServerUnreachableError(dynamic error) =>
+      OdooErrorClassifier.isServerUnreachable(error);
 
   Color _getStateColor(String state) {
     switch (state) {
