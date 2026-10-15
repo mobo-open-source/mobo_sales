@@ -40,6 +40,9 @@ import 'package:mobo_sales/widgets/circular_image_widget.dart';
 import '../../services/odoo_compat.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../services/data_change_bus.dart';
+import '../../services/odoo_error_handler.dart';
+import '../../widgets/create_action_gate.dart';
+import '../../services/connectivity_service.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -703,6 +706,13 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
   }
 
+  /// Why a create action cannot be started from this screen, or null.
+  String? get _createBlocked => createBlockedReason(
+    isConnected: context.read<ConnectivityService>().isConnected,
+    hasSession: context.read<SessionService>().hasValidSession,
+    listError: _dashboardErrorMessage,
+  );
+
   /// Whether [error] is the server telling us the session is no longer good.
   ///
   /// Matched on the message because the RPC layer surfaces it as a plain
@@ -1174,9 +1184,16 @@ class _DashboardScreenState extends State<DashboardScreen>
           errorString.contains('wrong database') ||
           errorString.contains('access denied');
 
-      if (mounted && isServerError) {
+      if (mounted) {
+        // A failure that is not about the server — an expired session above
+        // all — used to set nothing at all, so the tiles simply showed zeros
+        // and nothing told the user why.
         setState(() {
-          _isServerUnreachable = true;
+          if (isServerError) {
+            _isServerUnreachable = true;
+          } else {
+            _dashboardErrorMessage = OdooErrorHandler.toSnackbarMessage(e);
+          }
         });
       }
     }
@@ -1951,9 +1968,14 @@ class _DashboardScreenState extends State<DashboardScreen>
           errorString.contains('access denied');
 
       if (!mounted) return;
+      // A failure that is not about the server — an expired session above
+      // all — used to set nothing at all, so the tiles simply showed zeros
+      // and nothing told the user why.
       setState(() {
         if (isServerError) {
           _isServerUnreachable = true;
+        } else {
+          _dashboardErrorMessage = OdooErrorHandler.toSnackbarMessage(e);
         }
       });
     }
@@ -2766,6 +2788,14 @@ class _DashboardScreenState extends State<DashboardScreen>
     return Scaffold(
       backgroundColor: backgroundColor,
       floatingActionButton: SpeedDial(
+        // Every action behind this dial opens a create screen, and those need
+        // the server to fill their dropdowns and to save. Opening a menu of
+        // four things none of which can work is worse than saying why once,
+        // so `onPress` is set while blocked — which the widget treats as a
+        // plain button and never expands.
+        onPress: _createBlocked == null
+            ? null
+            : () => CustomSnackbar.showInfo(context, _createBlocked!),
         animatedIcon: AnimatedIcons.menu_close,
         animatedIconTheme: const IconThemeData(size: 22, color: Colors.white),
         spacing: 8,
@@ -2783,7 +2813,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         overlayColor: Colors.black,
         overlayOpacity: isDark ? 0.30 : 0.20,
         elevation: 4,
-        tooltip: 'Create',
+        tooltip: _createBlocked ?? 'Create',
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
         childPadding: const EdgeInsets.all(6),
         childMargin: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),

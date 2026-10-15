@@ -21,6 +21,8 @@ import '../../shared/widgets/mobo/mobo_select_field.dart';
 import '../../widgets/custom_snackbar.dart';
 import '../../widgets/loading_dialog.dart';
 import '../../services/odoo_error_classifier.dart';
+import '../../utils/lost_image_recovery.dart';
+import '../../services/odoo_error_handler.dart';
 
 class CreateProductScreen extends StatefulWidget {
   final Product? product;
@@ -173,6 +175,7 @@ class _CreateProductScreenState extends State<CreateProductScreen>
   @override
   void initState() {
     super.initState();
+    _recoverPhotoLostToRestart();
     _isEditMode = widget.product != null;
     final p = widget.product;
     String clean(String? v) => (v == null || v == 'false') ? '' : v;
@@ -242,20 +245,43 @@ class _CreateProductScreenState extends State<CreateProductScreen>
       OdooErrorClassifier.isServerUnreachable(error);
 
   Future<void> _pickImageFromSource(ImageSource source) async {
-    final picked = await _picker.pickImage(
-      source: source,
-      imageQuality: 80,
-      maxWidth: 600,
-    );
-    if (picked != null) {
-      setState(() {
-        _pickedImageFile = File(picked.path);
-      });
-      final bytes = await picked.readAsBytes();
-      setState(() {
-        _pickedImageBase64 = base64Encode(bytes);
-      });
+    try {
+      final picked = await _picker.pickImage(
+        source: source,
+        imageQuality: 80,
+        maxWidth: 600,
+      );
+      if (picked == null) return;
+      await _useImage(picked);
+    } catch (e) {
+      // A refused permission or an unavailable camera used to throw out of
+      // here with nothing shown, so the button simply appeared to do nothing.
+      if (!mounted) return;
+      CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e));
     }
+  }
+
+  /// Picks up a photo Android kept aside when it destroyed the app while the
+  /// camera was in front. See [recoverLostImage].
+  Future<void> _recoverPhotoLostToRestart() async {
+    final lost = await recoverLostImage(_picker);
+    if (lost == null || !mounted) return;
+    await _useImage(lost);
+  }
+
+  /// Reads [picked] into the form. Encoding is awaited before the second
+  /// `setState`, so both guards are needed: the user can leave the screen
+  /// while a large photo is still being read.
+  Future<void> _useImage(XFile picked) async {
+    if (!mounted) return;
+    setState(() {
+      _pickedImageFile = File(picked.path);
+    });
+    final bytes = await picked.readAsBytes();
+    if (!mounted) return;
+    setState(() {
+      _pickedImageBase64 = base64Encode(bytes);
+    });
   }
 
   void _showImageSourceActionSheet() {

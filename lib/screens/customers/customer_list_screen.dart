@@ -26,6 +26,8 @@ import 'select_location_screen.dart';
 import 'package:latlong2/latlong.dart';
 import '../../services/odoo_error_classifier.dart';
 import '../../widgets/list_search_bar.dart';
+import '../../services/odoo_error_handler.dart';
+import '../../widgets/create_action_gate.dart';
 
 class CustomerListScreen extends StatefulWidget {
   final bool showForcedAppBar;
@@ -1078,8 +1080,15 @@ class CustomerListScreenState extends State<CustomerListScreen>
             builder: (context, provider, child) {
               return Padding(
                 padding: EdgeInsets.only(bottom: 0.0),
-                child: FloatingActionButton(
+                child: CreateActionFab(
                   heroTag: 'fab_create_customer',
+                  blockedReason: createBlockedReason(
+                    isConnected: context
+                        .read<ConnectivityService>()
+                        .isConnected,
+                    hasSession: context.read<SessionService>().hasValidSession,
+                    listError: provider.error,
+                  ),
                   onPressed: () async {
                     final isIOS =
                         Theme.of(context).platform == TargetPlatform.iOS;
@@ -1120,7 +1129,18 @@ class CustomerListScreenState extends State<CustomerListScreen>
                 onClear: _clearSearchAndReload,
               ),
 
-              SizedBox(height: 16),
+              // Paired with the pagination row below, which this gap exists
+              // to separate from the search bar. The row disappears on an
+              // empty result or a failed load; left unconditional, the gap
+              // stayed and pushed the centred message ~8px below where the
+              // other lists put theirs.
+              Consumer<ContactProvider>(
+                builder: (context, provider, _) =>
+                    (!provider.hasInitiallyLoaded ||
+                        provider.getPaginationText() == '0 items')
+                    ? const SizedBox.shrink()
+                    : const SizedBox(height: 16),
+              ),
 
               Consumer<ContactProvider>(
                 builder: (context, provider, _) {
@@ -1435,7 +1455,9 @@ class CustomerListScreenState extends State<CustomerListScreen>
                               child: EmptyStateWidget(
                                 icon: HugeIcons.strokeRoundedUserMultiple,
                                 title: 'Error Loading Customers',
-                                message: error,
+                                message: OdooErrorHandler.toSnackbarMessage(
+                                  error,
+                                ),
                                 showRetry: true,
                                 onRetry: () {
                                   final filters = _buildCurrentFilters();

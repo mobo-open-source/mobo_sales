@@ -34,6 +34,7 @@ import 'package:mobo_sales/screens/login/credentials_screen.dart';
 import 'package:mobo_sales/screens/login/add_account_screen.dart';
 import 'package:mobo_sales/widgets/circular_image_widget.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:mobo_sales/services/odoo_error_classifier.dart';
 import 'package:mobo_sales/widgets/connection_status_widget.dart';
 import '../../widgets/dispose_when_unmounted.dart';
 import 'package:mobo_sales/widgets/loading_skeletons.dart';
@@ -60,6 +61,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
   File? _pickedImageFile;
   String? _pickedImageBase64;
   final ImagePicker _picker = ImagePicker();
+
+  /// Why the last profile read failed, verbatim, or null if it did not.
+  ///
+  /// Passed to [ConnectionStatusWidget.serverErrorMessage], which already
+  /// turns it into the right title and wording — "Session Expired", a socket
+  /// failure, a 500, an HTML response. It was never being set, so every
+  /// failure hit that widget's `error == null` branch and reported "Can't
+  /// Reach Server" regardless of what actually happened.
+  String? _profileError;
+
   static const String _defaultCacheKeyUser = 'user_profile';
   static const String _defaultCacheKeyUserWriteDate = 'user_profile_write_date';
 
@@ -188,9 +199,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     // settings provider refreshes itself on the same event.
     _profileChangeSubscription = DataChangeBus.instance.listen(
       where: (change) => change.isProfile,
-      onChange: (_) => unawaited(
-        _fetchUserProfile(forceRefresh: true, syncSettings: false),
-      ),
+      onChange: (_) =>
+          unawaited(_fetchUserProfile(forceRefresh: true, syncSettings: false)),
     );
 
     _loadCachedUser();
@@ -877,6 +887,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
+          _profileError = 'Session expired';
         });
       }
       return;
@@ -891,6 +902,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
+          _profileError = 'Session expired';
         });
       }
       return;
@@ -901,6 +913,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
+          _profileError = 'Session expired';
         });
       }
       return;
@@ -968,6 +981,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             : null;
         setState(() {
           _userData = data;
+          _profileError = null;
           _avatarBase64Cache = avatar;
           if (data['partner_id'] is List &&
               (data['partner_id'] as List).isNotEmpty &&
@@ -1025,15 +1039,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
       } else {
         if (mounted) {
           setState(() {
-            _userData = _userData;
             _isLoading = false;
+            _profileError =
+                'The server returned an unexpected response for res.users.';
           });
         }
       }
     } catch (e) {
+      // Kept verbatim: ConnectionStatusWidget matches on the text to tell a
+      // dead session from a socket failure from a 500, and a summarised
+      // message would defeat that.
+      debugPrint('[profile] read failed: $e');
       if (mounted) {
         setState(() {
           _isLoading = false;
+          _profileError = e.toString();
         });
       }
     }
@@ -1400,6 +1420,88 @@ class _ProfileScreenState extends State<ProfileScreen> {
       trailing: trailing ?? const Icon(Icons.chevron_right_rounded),
       onTap: onTap,
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+    );
+  }
+
+  /// The profile card when there is nothing to put in it.
+  ///
+  /// Deliberately the same container as the real card — same margin,
+  /// padding, brand fill, radius and shadow — with the reason written in it
+  /// instead of a name and email. The alternative was the full-screen
+  /// illustration, which pushed the actions below the fold and said "Can't
+  /// Reach Server" whatever had actually gone wrong.
+  ///
+  /// The wording comes from [ConnectionStatusWidget.errorInfoFor], the same
+  /// mapping the rest of the app shows, so a dead session reads as "Session
+  /// Expired" here too rather than as a second opinion.
+  Widget _buildProfileErrorCard() {
+    final info = ConnectionStatusWidget.errorInfoFor(_profileError);
+    final isSession = OdooErrorClassifier.isSessionExpired(_profileError);
+
+    return Container(
+      margin: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppTheme.primaryColor,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            // The real card still uses the deprecated withOpacity; same
+            // colour, without adding another one.
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 16,
+            spreadRadius: 2,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            info['title'] ?? 'Could not load your profile',
+            style: GoogleFonts.manrope(
+              color: Colors.white,
+              fontSize: 17,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.5,
+              height: 1.2,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            info['message'] ?? '',
+            style: GoogleFonts.manrope(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w400,
+              letterSpacing: 0.7,
+              height: 1.3,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              onPressed: () => _fetchUserProfile(forceRefresh: true),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.white,
+                side: const BorderSide(color: Colors.white70),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 10,
+                ),
+              ),
+              // An expired session will not come back from a retry, so the
+              // action below the card is the useful one.
+              child: Text(isSession ? 'Try again' : 'Retry'),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1982,9 +2084,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
             )
           : _userData == null
-          ? ConnectionStatusWidget(
-              serverUnreachable: true,
-              onRetry: () => _fetchUserProfile(forceRefresh: true),
+          // Only the profile card needs the fetch. Everything below it —
+          // Logout included — does not, and replacing the whole body with the
+          // error made the one screen that can sign you out disappear exactly
+          // when a dead session was the likely cause. So the card states the
+          // problem in its own place and the rest of the screen carries on.
+          ? SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              child: Column(
+                children: [
+                  const SizedBox(height: 12),
+                  _buildProfileErrorCard(),
+                  const SizedBox(height: 12),
+                  _buildQuickActionsSection(context),
+                ],
+              ),
             )
           : RefreshIndicator(
               onRefresh: () => Future.wait([

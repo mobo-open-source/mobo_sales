@@ -23,6 +23,8 @@ import '../../services/odoo_error_classifier.dart';
 import '../../widgets/list_search_bar.dart';
 import '../../utils/quotation_status.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../../services/odoo_error_handler.dart';
+import '../../widgets/create_action_gate.dart';
 
 class QuotationListScreen extends StatefulWidget {
   final int? customerId;
@@ -1150,8 +1152,10 @@ class _QuotationListScreenState extends State<QuotationListScreen>
                     hasScrollBody: false,
                     child: EmptyStateWidget(
                       icon: HugeIcons.strokeRoundedFileScript,
-                      title: 'Error Loading Data',
-                      message: provider.errorMessage!,
+                      title: 'Error Loading Quotations',
+                      message: OdooErrorHandler.toSnackbarMessage(
+                        provider.errorMessage,
+                      ),
                       showRetry: true,
                       onRetry: () => provider.refreshQuotations(),
                     ),
@@ -2505,8 +2509,19 @@ class _QuotationListScreenState extends State<QuotationListScreen>
                           child: const Icon(Icons.arrow_upward_rounded),
                         ),
                       ),
-                    FloatingActionButton(
+                    CreateActionFab(
                       heroTag: 'fab_create_quote',
+                      blockedReason: createBlockedReason(
+                        isConnected: context
+                            .read<ConnectivityService>()
+                            .isConnected,
+                        hasSession: context
+                            .read<SessionService>()
+                            .hasValidSession,
+                        listError: context
+                            .read<QuotationProvider>()
+                            .errorMessage,
+                      ),
                       onPressed: () async {
                         final isIOS =
                             Theme.of(context).platform == TargetPlatform.iOS;

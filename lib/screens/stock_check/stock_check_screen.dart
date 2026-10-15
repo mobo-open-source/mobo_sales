@@ -24,6 +24,8 @@ import 'package:flutter/services.dart';
 import '../../services/odoo_error_classifier.dart';
 import '../../widgets/list_search_bar.dart';
 import 'inventory_details_screen.dart';
+import '../../services/odoo_error_handler.dart';
+import '../../widgets/empty_state_widget.dart';
 
 class StockCheckPage extends StatefulWidget {
   const StockCheckPage({super.key});
@@ -52,6 +54,13 @@ class _StockCheckPageState extends State<StockCheckPage> {
 
   String? _clickedTileId;
   bool _isServerUnreachable = false;
+
+  /// Why the last load failed, or null when it succeeded.
+  ///
+  /// Without it an empty list reads as "No products found" whatever the
+  /// reason, so a failure — an expired session above all — looked like a
+  /// catalogue with nothing in it.
+  String? _loadErrorMessage;
 
   Timer? _debounceTimer;
   String _currentSearchQuery = '';
@@ -407,6 +416,7 @@ class _StockCheckPageState extends State<StockCheckPage> {
     setState(() {
       _isLoading = true;
       _hasSearched = false;
+      _loadErrorMessage = null;
       _currentPage = 0;
       _hasMoreData = true;
       _productTemplates = [];
@@ -579,16 +589,12 @@ class _StockCheckPageState extends State<StockCheckPage> {
         if (mounted) {
           setState(() {
             _isServerUnreachable = false;
+            _loadErrorMessage = OdooErrorHandler.toSnackbarMessage(e);
             _productTemplates = [];
             _filteredProductTemplates = [];
             _hasMoreData = false;
             _isLoading = false;
           });
-
-          CustomSnackbar.showError(
-            context,
-            'Error loading stock data: ${e.toString()}',
-          );
         }
       }
     } finally {
@@ -1766,6 +1772,27 @@ class _StockCheckPageState extends State<StockCheckPage> {
                         context,
                         itemCount: 8,
                         type: ShimmerType.product,
+                      );
+                    }
+
+                    if (_loadErrorMessage != null &&
+                        _filteredProductTemplates.isEmpty) {
+                      return RefreshIndicator(
+                        onRefresh: () async => _initializeAndLoadStock(),
+                        child: CustomScrollView(
+                          slivers: [
+                            SliverFillRemaining(
+                              hasScrollBody: false,
+                              child: EmptyStateWidget(
+                                icon: HugeIcons.strokeRoundedPackageSearch,
+                                title: 'Error Loading Stock',
+                                message: _loadErrorMessage!,
+                                showRetry: true,
+                                onRetry: _initializeAndLoadStock,
+                              ),
+                            ),
+                          ],
+                        ),
                       );
                     }
 

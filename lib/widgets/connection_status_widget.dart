@@ -28,7 +28,7 @@ class ConnectionStatusWidget extends StatelessWidget {
     final backgroundColor = isDark ? Colors.grey.shade900 : Colors.grey[50]!;
 
     if (serverUnreachable) {
-      final errorInfo = _getErrorInfo(serverErrorMessage);
+      final errorInfo = errorInfoFor(serverErrorMessage);
 
       return _buildLottieErrorState(
         context,
@@ -102,7 +102,14 @@ class ConnectionStatusWidget extends StatelessWidget {
     );
   }
 
-  Map<String, String> _getErrorInfo(String? error) {
+  /// Maps a raw error string to the title and wording shown for it.
+  ///
+  /// Public and static so a screen that renders the failure in its own
+  /// layout — rather than with this widget's full-screen illustration —
+  /// still gets the same words. Duplicating the matching elsewhere is how
+  /// two parts of the app end up disagreeing about what the same error
+  /// means.
+  static Map<String, String> errorInfoFor(String? error) {
     if (error == null || error.isEmpty) {
       return {
         'title': 'Can\'t Reach Server',

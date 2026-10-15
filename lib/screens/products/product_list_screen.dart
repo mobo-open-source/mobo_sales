@@ -35,6 +35,8 @@ import 'product_details_page.dart';
 import 'create_product_screen.dart';
 import '../../widgets/list_search_bar.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../../services/odoo_error_handler.dart';
+import '../../widgets/create_action_gate.dart';
 
 class ProductListScreen extends StatefulWidget {
   const ProductListScreen({super.key});
@@ -1363,31 +1365,35 @@ class ProductListScreenState extends State<ProductListScreen>
             ],
           ),
 
-          Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 16.0,
-              vertical: 4.0,
-            ),
-            child: Row(
-              children: [
-                _buildFilterIndicator(isDark, productProvider.isGrouped),
+          // Hidden while a load failure is on screen: a "0-0/0" pagination
+          // row above an error reads as a real, empty result.
+          if (!(productProvider.error != null &&
+              productProvider.products.isEmpty))
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16.0,
+                vertical: 4.0,
+              ),
+              child: Row(
+                children: [
+                  _buildFilterIndicator(isDark, productProvider.isGrouped),
 
-                if (productProvider.isGrouped) ...[
-                  const SizedBox(width: 8),
-                  _buildGroupByPill(
-                    isDark,
-                    productProvider.groupByOptions[productProvider
-                            .selectedGroupBy] ??
-                        productProvider.selectedGroupBy!,
-                  ),
+                  if (productProvider.isGrouped) ...[
+                    const SizedBox(width: 8),
+                    _buildGroupByPill(
+                      isDark,
+                      productProvider.groupByOptions[productProvider
+                              .selectedGroupBy] ??
+                          productProvider.selectedGroupBy!,
+                    ),
+                  ],
+
+                  const Spacer(),
+
+                  _buildTopPaginationBar(productProvider),
                 ],
-
-                const Spacer(),
-
-                _buildTopPaginationBar(productProvider),
-              ],
+              ),
             ),
-          ),
           Expanded(
             child: Consumer2<ConnectivityService, SessionService>(
               builder: (context, connectivityService, sessionService, child) {
@@ -1418,6 +1424,37 @@ class ProductListScreenState extends State<ProductListScreen>
                     serverErrorMessage: productProvider.isServerUnreachable
                         ? 'Unable to load products from server/database. Please check your server or try again.'
                         : null,
+                  );
+                }
+
+                // Any other failure the provider recorded — an expired
+                // session above all. Without this the provider set `error`,
+                // nothing rendered it, and the screen sat on its skeletons
+                // with no way for the user to know what had happened.
+                if (productProvider.error != null &&
+                    productProvider.products.isEmpty) {
+                  // Hosted the same way as the other lists — a scrollable
+                  // sliver that fills the viewport — so the message sits at
+                  // the same height on every screen and pull-to-refresh
+                  // works here too.
+                  return RefreshIndicator(
+                    onRefresh: () async => _loadProducts(),
+                    child: CustomScrollView(
+                      slivers: [
+                        SliverFillRemaining(
+                          hasScrollBody: false,
+                          child: EmptyStateWidget(
+                            icon: HugeIcons.strokeRoundedPackage,
+                            title: 'Error Loading Products',
+                            message: OdooErrorHandler.toSnackbarMessage(
+                              productProvider.error,
+                            ),
+                            showRetry: true,
+                            onRetry: _loadProducts,
+                          ),
+                        ),
+                      ],
+                    ),
                   );
                 }
 
@@ -1568,8 +1605,13 @@ class ProductListScreenState extends State<ProductListScreen>
         ],
       ),
 
-      floatingActionButton: FloatingActionButton(
+      floatingActionButton: CreateActionFab(
         heroTag: 'fab_create_product',
+        blockedReason: createBlockedReason(
+          isConnected: context.read<ConnectivityService>().isConnected,
+          hasSession: context.read<SessionService>().hasValidSession,
+          listError: context.read<ProductProvider>().error,
+        ),
         onPressed: () async {
           final result = await Navigator.of(context).push(
             MaterialPageRoute(builder: (context) => CreateProductScreen()),

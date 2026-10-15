@@ -44,9 +44,12 @@ class OdooErrorClassifier {
   /// A bare HTTP status number is also not enough on its own: amounts and
   /// record ids routinely contain `500`, so the message must additionally read
   /// like a transport failure.
+  /// A session failure is excluded too: it is not something checking the
+  /// network will fix, and it has its own wording.
   static bool isServerUnreachable(Object? error) {
     final message = error?.toString().toLowerCase() ?? '';
     if (message.isEmpty) return false;
+    if (isSessionExpired(message)) return false;
 
     for (final marker in _transportMarkers) {
       if (message.contains(marker)) return true;
@@ -55,4 +58,27 @@ class OdooErrorClassifier {
     if (!_httpStatus.hasMatch(message)) return false;
     return _httpContextMarkers.any(message.contains);
   }
+
+  /// Returns `true` when [error] means this session is no longer usable and
+  /// signing in again is the only way forward.
+  ///
+  /// The RPC layer surfaces this as a plain `Exception('Odoo Session
+  /// Expired: ...')` rather than a typed error, and four places in the app
+  /// had each written their own test for it. This is the one they should
+  /// share.
+  static bool isSessionExpired(Object? error) {
+    final message = error?.toString().toLowerCase() ?? '';
+    if (message.isEmpty) return false;
+    return _sessionMarkers.any(message.contains);
+  }
+
+  static const List<String> _sessionMarkers = [
+    'session has expired',
+    'session expired',
+    'session is no longer valid',
+    'sessionexpired',
+    'session invalid',
+    'invalid session',
+    'no active session',
+  ];
 }

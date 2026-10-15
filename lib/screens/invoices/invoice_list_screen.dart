@@ -23,6 +23,8 @@ import '../../models/invoice.dart';
 import '../../services/odoo_error_classifier.dart';
 import '../../widgets/list_search_bar.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../../services/odoo_error_handler.dart';
+import '../../widgets/create_action_gate.dart';
 
 class InvoiceListScreen extends StatefulWidget {
   final int? customerId;
@@ -58,6 +60,13 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
   bool _isLoading = true;
   bool _isInitialized = false;
   bool _isServerUnreachable = false;
+
+  /// Why the last load failed, or null when it succeeded.
+  ///
+  /// Without this an empty list reads as "No invoices yet" whatever the
+  /// reason, so a failed load — an expired session above all — looked like an
+  /// account with no invoices in it.
+  String? _loadErrorMessage;
   String _searchQuery = '';
   static const double _smallPadding = 8.0;
   static const double _tinyPadding = 4.0;
@@ -229,24 +238,6 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
 
   bool _isServerUnreachableError(dynamic error) =>
       OdooErrorClassifier.isServerUnreachable(error);
-
-  String _getErrorMessage(dynamic error) {
-    final errorString = error.toString().toLowerCase();
-
-    if (errorString.contains('valueerror')) {
-      return 'Invalid search or filter criteria';
-    } else if (errorString.contains('odooexception')) {
-      return 'Failed to connect to Odoo server';
-    } else if (errorString.contains('socketexception')) {
-      return 'Network connection error';
-    } else if (errorString.contains('timeout')) {
-      return 'Request timed out';
-    } else if (errorString.contains('session')) {
-      return 'Session expired or invalid';
-    } else {
-      return 'An unexpected error occurred';
-    }
-  }
 
   String _getInvoiceStatusLabel(Invoice invoice) {
     switch (invoice.status.toLowerCase()) {
@@ -662,6 +653,7 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
           _isLoading = true;
           _accessErrorMessage = null;
           _isServerUnreachable = false;
+          _loadErrorMessage = null;
         });
       } else {
         if (!mounted) return;
@@ -816,16 +808,17 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
         _isLoading = false;
         _isLoadingMore = false;
         _isInitialized = true;
+        _loadErrorMessage = OdooErrorHandler.toSnackbarMessage(e);
         if (isServerError) {
           _isServerUnreachable = true;
         }
       });
 
-      if (isServerError) {
-      } else {
-        if (mounted) {
-          _showErrorSnackBar('Failed to load invoices: ${_getErrorMessage(e)}');
-        }
+      // Only when some invoices are already on screen. With an empty list the
+      // error state below says the same thing, and showing both put a toast
+      // over the message it was repeating.
+      if (!isServerError && mounted && (_invoices?.isNotEmpty ?? false)) {
+        _showErrorSnackBar(OdooErrorHandler.toSnackbarMessage(e));
       }
     } finally {
       // A change arrived while this load was running, which may not include
@@ -2294,8 +2287,15 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
                       child: const Icon(Icons.arrow_upward_rounded),
                     ),
                   ),
-                FloatingActionButton(
+                CreateActionFab(
                   heroTag: 'fab_create_invoice',
+                  blockedReason: createBlockedReason(
+                    isConnected: context
+                        .read<ConnectivityService>()
+                        .isConnected,
+                    hasSession: context.read<SessionService>().hasValidSession,
+                    listError: _loadErrorMessage,
+                  ),
                   onPressed: () async {
                     final isIOS =
                         Theme.of(context).platform == TargetPlatform.iOS;
@@ -2365,6 +2365,27 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
               onPressed: _initializeAndFetch,
               icon: const Icon(Icons.refresh, color: Colors.white),
               label: const Text('Retry'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if ((_invoices == null || _invoices!.isEmpty) &&
+        _loadErrorMessage != null) {
+      return RefreshIndicator(
+        onRefresh: _handleRefresh,
+        child: CustomScrollView(
+          slivers: [
+            SliverFillRemaining(
+              hasScrollBody: false,
+              child: EmptyStateWidget(
+                icon: HugeIcons.strokeRoundedInvoice01,
+                title: 'Error Loading Invoices',
+                message: _loadErrorMessage!,
+                showRetry: true,
+                onRetry: _handleRefresh,
+              ),
             ),
           ],
         ),
