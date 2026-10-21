@@ -468,6 +468,22 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen>
             ),
             textAlign: TextAlign.center,
           ),
+          const SizedBox(height: 10),
+          // The server queues the mail and reports success before delivery is
+          // attempted, and this screen runs before login so there is no
+          // session to check the mail queue with. Nothing here can confirm
+          // arrival, so give the usual fallback rather than hedge the title.
+          Text(
+            "Didn't get it? Check your spam folder, or contact your "
+            "administrator.",
+            style: GoogleFonts.manrope(
+              fontSize: 12,
+              color: Colors.white60,
+              height: 1.4,
+              fontWeight: FontWeight.w400,
+            ),
+            textAlign: TextAlign.center,
+          ),
         ],
       ),
     );

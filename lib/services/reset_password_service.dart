@@ -216,10 +216,11 @@ class ResetPasswordService {
           }
         }
 
+        // The redirect revealed nothing either way; do not call that sent.
         return {
-          'success': true,
+          'success': false,
           'message':
-              'Password reset email sent successfully. Please check your email for reset instructions.',
+              'The server did not confirm a reset email was sent. Please contact your administrator.',
         };
       }
 
@@ -249,9 +250,9 @@ class ResetPasswordService {
           }
 
           return {
-            'success': true,
+            'success': false,
             'message':
-                'Password reset email sent successfully. Please check your email for reset instructions.',
+                'The server did not confirm a reset email was sent. Please contact your administrator.',
           };
         }
       } else if (response.statusCode == 400) {
@@ -306,6 +307,34 @@ class ResetPasswordService {
         };
       }
     }
+  }
+
+  /// Reads Odoo's own alert banner out of a reset response.
+  ///
+  /// Odoo reports every outcome the same way — unknown login, a mail server
+  /// that will not send, success — as
+  /// `<p class="alert alert-danger">reason</p>` or its `alert-success` twin.
+  /// Keying on the class rather than on English phrases means an error nobody
+  /// anticipated (an SMTP failure, say) is still recognised as an error, on a
+  /// server in any language, and the server's own wording reaches the user.
+  ///
+  /// Returns `null` when the page carries no banner, which must not be read
+  /// as success.
+  static ({bool isError, String message})? _alertBanner(String html) {
+    final match = RegExp(
+      '<(?:p|div)[^>]*class=["\'][^"\']*alert-(danger|success)[^"\']*["\']'
+      '[^>]*>(.*?)</(?:p|div)>',
+      caseSensitive: false,
+      dotAll: true,
+    ).firstMatch(html);
+    if (match == null) return null;
+
+    final text = match
+        .group(2)!
+        .replaceAll(RegExp('<[^>]*>'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    return (isError: match.group(1)!.toLowerCase() == 'danger', message: text);
   }
 
   static bool _containsSuccessIndicators(String responseBody) {
@@ -518,7 +547,27 @@ class ResetPasswordService {
 
       final Map<String, String> cookies = {};
 
-      final initialGet = await _getFollowingRedirects(
+      // Bind the session to a database first.
+      //
+      // On a multi-database server Odoo issues no session_id until a database
+      // is picked, and /web/reset_password answers 404 without one — which
+      // reads exactly like the reset feature being uninstalled. The form's
+      // CSRF token is derived from the session too, so the POST would be
+      // rejected even once the form loaded. `/odoo?db=` is what Odoo's own
+      // database selector links to, and it sets the cookie on its 302.
+      if (database.trim().isNotEmpty) {
+        try {
+          await _getFollowingRedirects(
+            '$cleanUrl/odoo?db=${Uri.encodeQueryComponent(database.trim())}',
+            cookies,
+          );
+        } catch (_) {
+          // Best effort: a single-database server needs no selection.
+        }
+      }
+
+      // Called for its side effect: adds to `cookies`.
+      await _getFollowingRedirects(
         '$loginUrl?redirect=/web/login$dbQuery',
         cookies,
       );
@@ -588,6 +637,27 @@ class ResetPasswordService {
       }
 
       if (postResponse.statusCode == 200) {
+        // Odoo's own banner first: it catches failures no phrase list
+        // anticipates, such as a mail server that cannot send, and carries
+        // the server's wording so the user sees the real reason.
+        final banner = _alertBanner(postResponse.body);
+        if (banner != null) {
+          if (banner.isError) {
+            return {
+              'success': false,
+              'message': banner.message.isNotEmpty
+                  ? banner.message
+                  : 'The server rejected the password reset request.',
+            };
+          }
+          return {
+            'success': true,
+            'message': banner.message.isNotEmpty
+                ? banner.message
+                : 'Password reset email sent successfully. Please check your email for reset instructions.',
+          };
+        }
+
         final body = postResponse.body.toLowerCase();
         if (_containsSuccessIndicators(body)) {
           return {
@@ -603,10 +673,12 @@ class ResetPasswordService {
           };
         }
 
+        // Neither a banner nor a recognised phrase. Odoo re-renders the reset
+        // form on failure, so silence is not evidence the mail went out.
         return {
-          'success': true,
+          'success': false,
           'message':
-              'Password reset email sent successfully. Please check your email for reset instructions.',
+              'The server did not confirm a reset email was sent. Please contact your administrator.',
         };
       }
 
