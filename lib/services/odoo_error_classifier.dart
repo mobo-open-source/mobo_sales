@@ -18,6 +18,13 @@ class OdooErrorClassifier {
     'no route to host',
     'network is unreachable',
     'server returned html instead of json',
+    // What the above looks like before anything names it: `jsonDecode` meeting
+    // a web page. A proxy's error page, a maintenance page or a redirect to
+    // the login form all arrive this way, and Dart reports them as
+    // "FormatException: Unexpected character (at character 1) <html>".
+    'unexpected character (at character',
+    '<!doctype html',
+    '<html',
     'server may be down',
     'unexpected response',
     'url incorrect',

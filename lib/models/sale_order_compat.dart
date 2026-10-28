@@ -135,30 +135,69 @@ const List<String> saleOrderSignatureFields = [
   'signature',
 ];
 
-/// Whether the signature tab is worth showing for the order [row] was read
-/// from (a read of [saleOrderSignatureFields]).
+/// Whether [value] is a value Odoo would call set, rather than its `false`.
+bool _isSet(dynamic value) {
+  if (value == null || value == false) return false;
+  if (value is String) return value.trim().isNotEmpty;
+  if (value is Map) return value.isNotEmpty;
+  return true;
+}
+
+/// Whether the order [row] was read from has a signature on file.
+bool _carriesSignature(Map<String, dynamic> row) =>
+    _isSet(row['signed_by']) ||
+    _isSet(row['signed_on']) ||
+    _isSet(row['signature']);
+
+/// Whether the signature tab has anything to offer for the order [row] was
+/// read from (a read of [saleOrderSignatureFields], `state` and
+/// [saleOrderExpiryField]).
 ///
-/// It is Odoo's own rule for its "Customer Signature" page
-/// (`invisible="not require_signature and not signed_by and not signature and
-/// not signed_on"`, Odoo 17 and 19; 18 hides the page for good and 20 no longer
-/// has it, so the app follows the rule where the page exists): the server has
-/// the fields, and the order either asks for an online signature or already
-/// carries one. A server without the fields, or an order that neither needs a
-/// signature nor has one, has no tab.
+/// Either the order can still be signed, or it carries a signature to show.
+/// An order that asks for a signature but can no longer be given one — it was
+/// confirmed, or it expired — has neither, and a tab holding "Not signed yet"
+/// and nothing to press is a dead end a tester rightly reported.
+///
+/// A server without any of the fields has nothing to read and no tab.
 bool saleOrderShowsSignature(Map<String, dynamic> row) {
   if (!saleOrderSignatureFields.any(row.containsKey)) return false;
+  return saleOrderHasToBeSigned(row) || _carriesSignature(row);
+}
 
-  bool isSet(dynamic value) {
-    if (value == null || value == false) return false;
-    if (value is String) return value.trim().isNotEmpty;
-    if (value is Map) return value.isNotEmpty;
-    return true;
-  }
+/// The extra field [saleOrderHasToBeSigned] needs beside the signature ones.
+///
+/// `is_expired` is computed and not stored, so it cannot be searched — but it
+/// reads back fine, which is better than re-deriving "past its validity date"
+/// here and getting the timezone wrong.
+const String saleOrderExpiryField = 'is_expired';
 
-  return row['require_signature'] == true ||
-      isSet(row['signed_by']) ||
-      isSet(row['signed_on']) ||
-      isSet(row['signature']);
+/// Whether Odoo would accept a signature for this order right now.
+///
+/// This is Odoo's `sale.order._has_to_be_signed()`, which is the same in 17,
+/// 18, 19 and 20:
+///
+/// ```python
+/// return (self.state in ['draft', 'sent']
+///         and not self.is_expired
+///         and self.require_signature
+///         and not self.signature)
+/// ```
+///
+/// Odoo enforces it on the portal, the only place a sale order is ever
+/// signed; the app asks the same question before offering to capture one, so
+/// a confirmed, expired or already-signed order is shown its signature rather
+/// than a pen.
+///
+/// [row] is an order read with [saleOrderSignatureFields], [state] and
+/// [saleOrderExpiryField]. A row missing `is_expired` — a server that refused
+/// the field — is treated as not expired, which is what the app assumed
+/// before it asked at all.
+bool saleOrderHasToBeSigned(Map<String, dynamic> row) {
+  final state = row['state']?.toString();
+  if (state != 'draft' && state != 'sent') return false;
+  if (row[saleOrderExpiryField] == true) return false;
+  if (row['require_signature'] != true) return false;
+  return !_isSet(row['signature']);
 }
 
 // ---------------------------------------------------------------------------

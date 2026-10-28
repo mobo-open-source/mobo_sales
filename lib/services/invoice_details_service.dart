@@ -146,8 +146,18 @@ class InvoiceDetailsService {
   }
 
   /// Posts (confirms) the invoice with [invoiceId] in Odoo.
-  Future<void> postInvoice(int invoiceId) async {
-    await OdooSessionManager.safeCallKw({
+  ///
+  /// Returns null when the invoice is posted, or the name of the step Odoo
+  /// stopped at when it is not.
+  ///
+  /// `action_post` does not always post. It returns a window action instead
+  /// when Odoo wants something confirmed first — the abnormal-amount wizard,
+  /// and from Odoo 20 a future-dated or hash-restricted entry — and some of
+  /// the actions it returns (an autoprint job, a report) come *after* a
+  /// successful post. The shape of the action cannot tell those apart, so the
+  /// invoice's own state decides.
+  Future<String?> postInvoice(int invoiceId) async {
+    final result = await OdooSessionManager.safeCallKw({
       'model': 'account.move',
       'method': 'action_post',
       'args': [
@@ -155,6 +165,37 @@ class InvoiceDetailsService {
       ],
       'kwargs': {},
     });
+
+    if (result == true || result == null || result == false) return null;
+
+    final state = await readInvoiceState(invoiceId);
+    if (state == 'posted') return null;
+
+    final name = result is Map ? result['name']?.toString() : null;
+    return (name != null && name.isNotEmpty) ? name : 'another confirmation';
+  }
+
+  /// The `state` of the invoice with [invoiceId], or null when it cannot be
+  /// read.
+  Future<String?> readInvoiceState(int invoiceId) async {
+    try {
+      final rows = await OdooSessionManager.safeCallKw({
+        'model': 'account.move',
+        'method': 'read',
+        'args': [
+          [invoiceId],
+          ['state'],
+        ],
+        'kwargs': {},
+      });
+      if (rows is List && rows.isNotEmpty) {
+        return rows.first['state']?.toString();
+      }
+    } catch (_) {
+      // The post is what matters; an unreadable state falls back to the
+      // caller's own refresh.
+    }
+    return null;
   }
 
   /// Resets the invoice with [invoiceId] back to draft state.
@@ -245,3 +286,19 @@ class InvoiceDetailsService {
     });
   }
 }
+
+/// Odoo's Invoicing group — "Billing" on Odoo 17, "Invoicing" from 18.
+///
+/// `account.move._post` requires it on every release the app supports, over
+/// and above write access to the model, and raises an `AccessError` without
+/// it. The external id is unchanged across 17 to 20.
+const String kInvoicingGroup = 'account.group_account_invoice';
+
+/// What to tell a user who has write access but not [kInvoicingGroup].
+///
+/// Names the right by the label Odoo shows, so the administrator being asked
+/// can find it: Settings → Users → the user → Accounting.
+const String kInvoicingGroupMissingMessage =
+    'You do not have permission to confirm invoices. Ask your administrator '
+    'to give you the Invoicing access right in Odoo (called Billing on Odoo '
+    '17), under Settings → Users → Accounting.';

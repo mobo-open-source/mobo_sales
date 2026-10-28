@@ -149,7 +149,23 @@ class ProductService {
 
   /// Archives the product with template id [templateId], and its variants, and
   /// announces it. Not a deletion in Odoo, but gone from every list.
-  Future<void> archiveProduct(int templateId) async {
+  Future<void> archiveProduct(int templateId) =>
+      setProductActive(templateId, false);
+
+  /// Brings the archived product with template id [templateId] back, with its
+  /// variants.
+  Future<void> unarchiveProduct(int templateId) =>
+      setProductActive(templateId, true);
+
+  /// Writes `active` on the product template with id [templateId].
+  ///
+  /// Archiving a template archives its variants too, and unarchiving brings
+  /// back the ones that were active when it was archived — Odoo's own
+  /// behaviour, so neither direction needs the variants touched here.
+  ///
+  /// The change is announced either way: archiving takes the product out of
+  /// every list, unarchiving puts it back into the archived one.
+  Future<void> setProductActive(int templateId, bool active) async {
     final canWrite = await PermissionService.instance.canWrite(
       'product.template',
     );
@@ -161,14 +177,21 @@ class ProductService {
       'method': 'write',
       'args': [
         [templateId],
-        {'active': false},
+        {'active': active},
       ],
       'kwargs': {},
     });
     if (result != true) {
-      throw Exception('Failed to archive the product');
+      throw Exception(
+        active
+            ? 'Failed to unarchive the product'
+            : 'Failed to archive the product',
+      );
     }
-    _bus.productChanged(templateId, kind: DataChangeKind.deleted);
+    _bus.productChanged(
+      templateId,
+      kind: active ? DataChangeKind.updated : DataChangeKind.deleted,
+    );
   }
 
   /// Drops what must not be sent on a create or write: nulls, blank strings

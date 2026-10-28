@@ -29,6 +29,7 @@ import '../../widgets/custom_snackbar.dart';
 import '../../services/payment_status_synchronizer.dart';
 import '../../services/session_service.dart';
 import '../../services/payment_service.dart';
+import '../../services/invoice_details_service.dart';
 import '../../services/permission_service.dart';
 import '../../utils/odoo_version.dart';
 import '../invoices/create_invoice_screen.dart';
@@ -92,6 +93,10 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
   bool _isLoadingAdditionalInfo = false;
 
   bool _canWriteAccountMove = true;
+
+  /// Whether this user holds Odoo's Invoicing group, which posting needs on
+  /// top of write access to `account.move`.
+  bool _canPostInvoice = true;
   bool _canUnlinkAccountMove = true;
   bool _canCreatePaymentRegister = true;
 
@@ -229,11 +234,15 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
       final canWrite = await perm.canWrite('account.move');
       final canUnlink = await perm.canUnlink('account.move');
       final canCreatePayment = await perm.canCreate('account.payment.register');
+      // Posting needs the Invoicing group as well as write access; see
+      // [kInvoicingGroup].
+      final canPost = await perm.hasGroup(kInvoicingGroup);
       if (mounted) {
         setState(() {
           _canWriteAccountMove = canWrite;
           _canUnlinkAccountMove = canUnlink;
           _canCreatePaymentRegister = canCreatePayment;
+          _canPostInvoice = canPost;
         });
       }
     } catch (e) {}
@@ -1804,6 +1813,13 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                           CustomSnackbar.showError(
                             context,
                             'Permission Denied: You do not have permission to post invoices (account.move write). Please contact your administrator.',
+                          );
+                        }
+                      : !_canPostInvoice
+                      ? () {
+                          CustomSnackbar.showError(
+                            context,
+                            kInvoicingGroupMissingMessage,
                           );
                         }
                       : () async {
@@ -3404,6 +3420,18 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                             value == 'record_payment') {
                           try {
                             if (value == 'confirm_invoice') {
+                              // Same gate as the Confirm Invoice button: the
+                              // Invoicing group, which Odoo's `_post` needs on
+                              // top of write access.
+                              if (!_canPostInvoice) {
+                                if (mounted) {
+                                  CustomSnackbar.showError(
+                                    context,
+                                    kInvoicingGroupMissingMessage,
+                                  );
+                                }
+                                return;
+                              }
                               final ok = await provider.postInvoice(
                                 context,
                                 widget.invoiceId,

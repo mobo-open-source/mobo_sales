@@ -29,6 +29,7 @@ import '../../models/sale_order_compat.dart';
 import '../../services/field_validation_service.dart';
 import '../../services/odoo_error_handler.dart';
 import '../../services/odoo_session_manager.dart';
+import '../../utils/html_text.dart';
 import '../../utils/invoice_name.dart';
 import '../../utils/odoo_version.dart';
 import '../../utils/quotation_status.dart';
@@ -1096,7 +1097,6 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     }
   }
 
-  final TextEditingController _termsController = TextEditingController();
   final bool _isSavingTerms = false;
   final bool _editingTerms = false;
   Contact? _customerDetails;
@@ -1170,7 +1170,6 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _quotationProvider?.loadOrderLines(widget.quotation.id!);
-      _termsController.text = _safeString(widget.quotation.notes);
       _quotationProvider?.addListener(_fetchProductImagesForOrderLines);
 
       _loadInitialData();
@@ -1957,6 +1956,11 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         'signed_by',
         'signed_on',
         'signature',
+        saleOrderExpiryField,
+
+        // Read here rather than with every list row: terms can run to
+        // paragraphs, and this is the only screen that shows them.
+        'note',
       ];
 
       if (invalidFields != null) {
@@ -2443,7 +2447,10 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
 
                 if (exists > 0) {
                   if (mounted) {
-                    Navigator.push(
+                    // True means the delivery was confirmed there, which
+                    // changes this order's delivery status and the chip this
+                    // page shows for it.
+                    final changed = await Navigator.push<bool>(
                       context,
                       MaterialPageRoute(
                         builder: (context) => DeliveryDetailsScreen(
@@ -2451,6 +2458,9 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                         ),
                       ),
                     );
+                    if (changed == true && mounted) {
+                      await _fetchRelatedDeliveries(quiet: true);
+                    }
                   }
                 } else {
                   if (mounted) {
@@ -2558,7 +2568,6 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     _changeSub?.cancel();
     _animationController.dispose();
     _tabController.dispose();
-    _termsController.dispose();
     _quotationProvider?.removeListener(_fetchProductImagesForOrderLines);
 
     for (var controller in _headerFieldControllers.values) {
@@ -2793,31 +2802,6 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     }
   }
 
-  int _calculateDaysUntilExpiry(dynamic validityDate) {
-    if (validityDate == null) return 0;
-
-    String? dateString;
-    if (validityDate is String) {
-      dateString = validityDate;
-    } else {
-      dateString = validityDate.toString();
-    }
-
-    if (dateString.isEmpty ||
-        dateString.toLowerCase() == 'false' ||
-        dateString.toLowerCase() == 'true') {
-      return 0;
-    }
-
-    try {
-      final expiry = DateTime.parse(dateString);
-      final now = DateTime.now();
-      return expiry.difference(now).inDays;
-    } catch (e) {
-      return 0;
-    }
-  }
-
   bool _isExpired(Quote quotation) {
     if (quotation.validityDate == null) return false;
     return quotation.validityDate!.isBefore(DateTime.now());
@@ -2919,45 +2903,6 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     );
   }
 
-  Widget _buildDetailRow(
-    String label,
-    String value,
-    bool isDark, {
-    bool isImportant = false,
-  }) {
-    return Padding(
-      padding: EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 140,
-            child: Text(
-              label,
-              style: TextStyle(
-                color: isDark ? Colors.grey[400] : Colors.grey[600],
-                fontWeight: FontWeight.w500,
-                fontSize: 14,
-              ),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: TextStyle(
-                color: isImportant
-                    ? (isDark ? Colors.white : Colors.grey[900])
-                    : (isDark ? Colors.grey[200] : Colors.grey[800]),
-                fontSize: 14,
-                fontWeight: isImportant ? FontWeight.w600 : FontWeight.w400,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildStatusChip(
     String label,
     String value,
@@ -2982,110 +2927,6 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
           color: isDark ? Colors.white : Colors.grey[600],
         ),
       ),
-    );
-  }
-
-  Widget _buildInfoCard(
-    String title,
-    List<Widget> children,
-    bool isDark, {
-    IconData? icon,
-  }) {
-    _calculateDaysUntilExpiry(_localQuotation.validityDate?.toIso8601String());
-    final c = _customerDetails;
-    bool isReal(String? v) =>
-        v != null && v.trim().isNotEmpty && v.trim().toLowerCase() != 'false';
-    final companyName =
-        (c != null && c.isCompany == true && isReal(c.companyName))
-        ? c.companyName
-        : null;
-    final partnerName = getCustomerName([
-      _localQuotation.customerId,
-      _localQuotation.customerName,
-    ]);
-    final displayName =
-        companyName ??
-        (c != null && isReal(c.name) && c.name != 'Unnamed Contact'
-            ? c.name
-            : partnerName);
-    final addressParts = c != null
-        ? [
-            c.street,
-            c.street2,
-            c.city,
-            c.state,
-            c.zip,
-          ].where((part) => isReal(part)).toList()
-        : [];
-    final phone = c != null && isReal(c.phone)
-        ? c.phone
-        : (c != null && isReal(c.mobile) ? c.mobile : null);
-    final email = c != null && isReal(c.email) ? c.email : null;
-
-    return _buildProfessionalCard(
-      title: title,
-      icon: icon,
-      children: [
-        if (title == 'Quotation Summary') ...[
-          _buildDetailRow(
-            'Quotation No.',
-            _localQuotation.name,
-            isDark,
-            isImportant: true,
-          ),
-          _buildDetailRow(
-            'Date',
-            _formatDate(_localQuotation.dateOrder?.toIso8601String()),
-            isDark,
-          ),
-          _buildDetailRow(
-            'Expiry',
-            _formatDate(_localQuotation.validityDate?.toIso8601String()),
-            isDark,
-          ),
-          _buildDetailRow('Customer', displayName, isDark),
-          if (email != null) _buildDetailRow('Email', email, isDark),
-          if (phone != null) _buildDetailRow('Phone', phone, isDark),
-        ] else if (title == 'Order Lines') ...[
-          if (_quotationProvider == null ||
-              _quotationProvider!.orderLines.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Text(
-                'No order lines found.',
-                style: TextStyle(
-                  color: isDark ? Colors.grey[400] : Colors.grey[600],
-                  fontStyle: FontStyle.italic,
-                ),
-              ),
-            )
-          else
-            ...?_quotationProvider?.orderLines.map(
-              (line) => _buildOrderLineCard(line, isDark, _quotationProvider!),
-            ),
-        ] else if (title == 'Terms & Conditions') ...[
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4),
-            child: Text(
-              (_localQuotation.notes == null ||
-                      _localQuotation.notes!.trim().isEmpty ||
-                      _localQuotation.notes!.trim().toLowerCase() == 'false')
-                  ? 'No Terms & Conditions Provided'
-                  : _htmlToPlainText(_safeString(_localQuotation.notes)),
-              style: TextStyle(
-                color: isDark ? Colors.grey[300] : Colors.grey[800],
-                fontSize: 14,
-                fontStyle:
-                    (_localQuotation.notes == null ||
-                        _localQuotation.notes!.trim().isEmpty ||
-                        _localQuotation.notes!.trim().toLowerCase() == 'false')
-                    ? FontStyle.italic
-                    : FontStyle.normal,
-              ),
-            ),
-          ),
-        ],
-      ],
     );
   }
 
@@ -3240,300 +3081,6 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         ],
       ),
     );
-  }
-
-  Widget _buildOrderLineCard(
-    Map<String, dynamic> line,
-    bool isDark,
-    QuotationProvider provider,
-  ) {
-    String product;
-    if (line['product_id'] is List && (line['product_id'] as List).length > 1) {
-      product = (line['product_id'][1] ?? '').toString();
-    } else {
-      final rawName = line['name']?.toString().trim() ?? '';
-      if (rawName.isNotEmpty) {
-        String firstLine = rawName.split('\n').first;
-        if (firstLine.contains(' - ')) {
-          firstLine = firstLine.split(' - ').first;
-        }
-        product = firstLine.isNotEmpty ? firstLine : 'Custom Line';
-      } else {
-        product = 'Custom Line';
-      }
-    }
-    final productId =
-        line['product_id'] is List && line['product_id'].isNotEmpty
-        ? line['product_id'][0]
-        : null;
-    final quantity = (line['product_uom_qty'] as num?)?.toDouble() ?? 0.0;
-    final unitPrice = (line['price_unit'] as num?)?.toDouble() ?? 0.0;
-    final subtotal = (line['price_subtotal'] as num?)?.toDouble() ?? 0.0;
-
-    String description = line['name']?.toString() ?? '';
-    if (description.startsWith(product)) {
-      description = description.substring(product.length).trim();
-    }
-    final sku = line['default_code']?.toString();
-    final barcode = line['barcode']?.toString();
-    final currencyId = _localQuotation.currencyId;
-    final String? currencyCode = (currencyId != null && currencyId.length > 1)
-        ? currencyId[1].toString()
-        : null;
-    final imageBytes = (productId is int) ? _productImages[productId] : null;
-    final isLoadingImage = (productId is int)
-        ? _loadingProductImages.contains(productId)
-        : false;
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[850] : Colors.grey[50],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: isDark ? Colors.grey[700]! : Colors.grey[200]!,
-          width: 1,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: isLoadingImage
-                    ? Container(
-                        width: 50,
-                        height: 50,
-                        color: isDark ? Colors.grey[800] : Colors.grey[200],
-                        child: const Center(
-                          child: SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        ),
-                      )
-                    : (imageBytes != null)
-                    ? _FadeInMemoryImage(bytes: imageBytes)
-                    : Container(
-                        width: 50,
-                        height: 50,
-                        color: isDark ? Colors.grey[800] : Colors.grey[200],
-                        child: const Icon(
-                          HugeIcons.strokeRoundedImage03,
-                          color: Colors.grey,
-                          size: 30,
-                        ),
-                      ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      product,
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: isDark ? Colors.white : Colors.grey[900],
-                        height: 1.3,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-
-                    if (description.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        description,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: isDark ? Colors.grey[400] : Colors.grey[600],
-                          height: 1.4,
-                        ),
-                      ),
-                    ],
-
-                    if (sku != null && sku.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Row(
-                        children: [
-                          Text(
-                            'SKU:',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w400,
-                              color: isDark
-                                  ? Colors.grey[400]
-                                  : Colors.grey[600],
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          Text(
-                            ' $sku',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
-                              color: isDark
-                                  ? Colors.grey[400]
-                                  : Colors.grey[600],
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
-                      ),
-                    ],
-
-                    if (barcode != null && barcode.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Row(
-                        children: [
-                          Text(
-                            'Barcode:',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
-                              color: isDark
-                                  ? Colors.grey[400]
-                                  : Colors.grey[600],
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          Text(
-                            ' $barcode',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w400,
-                              color: isDark
-                                  ? Colors.grey[400]
-                                  : Colors.grey[600],
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'QUANTITY',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                        color: isDark ? Colors.grey[500] : Colors.grey[600],
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      quantity.toStringAsFixed(
-                        quantity.truncateToDouble() == quantity ? 0 : 1,
-                      ),
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: isDark ? Colors.white : Colors.grey[900],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'UNIT PRICE',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                        color: isDark ? Colors.grey[500] : Colors.grey[600],
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Consumer<CurrencyProvider>(
-                      builder: (context, currencyProvider, _) {
-                        return Text(
-                          currencyProvider.formatAmount(
-                            unitPrice,
-                            currency: currencyCode,
-                          ),
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: isDark ? Colors.white : Colors.grey[900],
-                          ),
-                        );
-                      },
-                    ),
-                  ],
-                ),
-              ),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      'SUBTOTAL',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                        color: isDark ? Colors.grey[500] : Colors.grey[600],
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Consumer<CurrencyProvider>(
-                      builder: (context, currencyProvider, _) {
-                        return Text(
-                          currencyProvider.formatAmount(
-                            subtotal,
-                            currency: currencyCode,
-                          ),
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: isDark ? Colors.white : Colors.grey[900],
-                          ),
-                        );
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _htmlToPlainText(String html) {
-    return html
-        .replaceAll(RegExp(r'<[^>]*>'), '')
-        .replaceAll('&nbsp;', ' ')
-        .replaceAll('&amp;', '&');
   }
 
   String _safeString(dynamic value) {
@@ -3936,6 +3483,10 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         ...?_localQuotation.extraData,
         ...fresh,
       });
+      // The state is half of whether a signature can still be given, so
+      // confirming an order can take the Signature tab away. Without this the
+      // controller keeps a tab the TabBarView no longer builds.
+      _syncTabs();
     });
   }
 
@@ -4209,6 +3760,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
 
                 if (_showSignatureTab)
                   SignatureWidget(
+                    canSign: _canSignQuotation,
                     // A new widget whenever the signature the server holds
                     // changes, so it shows that and not what it was opened with.
                     key: ValueKey(_signatureKey()),
@@ -4236,7 +3788,22 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
   /// signature fields and the order asks for a signature or already has one
   /// (see [saleOrderShowsSignature]). Not known until the "other info" read
   /// has answered, so until then there is no tab.
-  bool get _showSignatureTab => saleOrderShowsSignature(_additionalInfo);
+  bool get _showSignatureTab => saleOrderShowsSignature(_signatureRow);
+
+  /// The order as the signature rules read it: the "other info" fields plus
+  /// the state, which that read does not carry.
+  Map<String, dynamic> get _signatureRow => {
+    ..._additionalInfo,
+    'state': _localQuotation.status,
+  };
+
+  /// Whether Odoo would take a signature for this order right now.
+  ///
+  /// Odoo's own `_has_to_be_signed()` — same rule in 17, 18, 19 and 20 — read
+  /// from the "other info" fields plus the order's state. The tab can be
+  /// there without this being true: an order that has been signed, or
+  /// confirmed since, still shows what is on file.
+  bool get _canSignQuotation => saleOrderHasToBeSigned(_signatureRow);
 
   /// The tabs the page has: Order Lines, Quote Builder, Other Info, and the
   /// Signature one when [_showSignatureTab]. Called whenever the answer may
@@ -5067,8 +4634,65 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
             ('Source', _safeString(data['source_id'])),
             ('Medium', _safeString(data['medium_id'])),
           ]),
+          const SizedBox(height: 20),
+
+          _buildNotesSection(htmlToPlainText(data['note']), isDark),
         ],
       ),
+    );
+  }
+
+  /// The order's note, as a block rather than a labelled row.
+  ///
+  /// `sale.order.note` is an Odoo Html field running to paragraphs, so it gets
+  /// the width of the card instead of the value column every other field uses.
+  ///
+  /// Headed "Notes", not "Terms & Conditions". The field's technical label is
+  /// "Terms and conditions" on 17 through 20, but Odoo never shows it: the
+  /// form renders the field with `nolabel="1"` under the order lines, and the
+  /// printed quotation prints it as a bare span. "Notes" is also what this
+  /// app calls the same field everywhere it can be edited — the quotation and
+  /// invoice editors, the customer form, the delivery page — so the details
+  /// page now agrees with the screen that edits it.
+  Widget _buildNotesSection(String notes, bool isDark) {
+    final isEmpty = notes.trim().isEmpty;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'NOTES',
+          style: GoogleFonts.montserrat(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: isDark ? Colors.grey[400] : Colors.grey[600],
+            letterSpacing: 1.2,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: isDark ? Colors.grey[850] : Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isDark ? Colors.grey[700]! : Colors.grey[200]!,
+            ),
+          ),
+          child: SelectableText(
+            isEmpty ? 'Not specified' : notes,
+            style: TextStyle(
+              fontSize: 14,
+              height: 1.4,
+              color: isEmpty
+                  ? (isDark ? Colors.grey[500] : Colors.grey[500])
+                  : (isDark ? Colors.grey[200] : Colors.grey[800]),
+              fontStyle: isEmpty ? FontStyle.italic : FontStyle.normal,
+            ),
+          ),
+        ),
+      ],
     );
   }
 

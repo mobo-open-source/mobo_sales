@@ -63,6 +63,9 @@ void main() {
       MaterialApp(
         home: Scaffold(
           body: SignatureWidget(
+            // These tests are about what saving announces, so the order is
+            // one Odoo would still take a signature for.
+            canSign: true,
             quotation: signedQuote(),
             callKw: callKw,
             onSignatureUpdated: reported.add,

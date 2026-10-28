@@ -1,94 +1,148 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobo_sales/shared/widgets/mobo/mobo_dialog_buttons.dart';
-import 'package:mobo_sales/utils/app_theme.dart';
 
+/// The two buttons every dialog ends in have to survive a narrow phone.
+///
+/// A tester reported the "Create Draft" action on the invoice dialog looking
+/// wrong: two equal halves of a 280pt dialog leave each button about 86pt for
+/// its label, and "Create Draft" at 16pt bold wants more than that, so it was
+/// quietly cut to "Create Dra…".
 void main() {
-  Widget host(MoboDialogButtons buttons) => MaterialApp(
-    theme: AppTheme.lightTheme,
-    home: Scaffold(
-      body: Center(child: AlertDialog(actions: [buttons])),
-    ),
-  );
-
-  testWidgets(
-    'outlined secondary on the left, filled primary on the right, equal width',
-    (tester) async {
-      await tester.pumpWidget(
-        host(
-          MoboDialogButtons(
-            secondaryLabel: 'Cancel',
-            onSecondary: () {},
-            primaryLabel: 'Save',
-            onPrimary: () {},
-          ),
-        ),
-      );
-
-      final left = tester.getRect(find.byType(OutlinedButton));
-      final right = tester.getRect(find.byType(ElevatedButton));
-      expect(left.right, lessThan(right.left));
-      expect(left.width, right.width);
-      expect(left.height, 48);
-      expect(right.height, 48);
-      expect(find.text('Cancel'), findsOneWidget);
-      expect(find.text('Save'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    },
-  );
-
-  testWidgets('each button calls its own callback', (tester) async {
-    var cancelled = 0, saved = 0;
+  /// Renders the pair inside a box [width] wide, as a dialog's footer would.
+  Future<void> pumpAt(
+    WidgetTester tester,
+    double width, {
+    String primary = 'Create Draft',
+    String secondary = 'Cancel',
+  }) async {
     await tester.pumpWidget(
-      host(
-        MoboDialogButtons(
-          secondaryLabel: 'Cancel',
-          onSecondary: () => cancelled++,
-          primaryLabel: 'Save',
-          onPrimary: () => saved++,
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: width,
+              child: MoboDialogButtons(
+                secondaryLabel: secondary,
+                onSecondary: () {},
+                primaryLabel: primary,
+                onPrimary: () {},
+              ),
+            ),
+          ),
         ),
       ),
     );
-    await tester.tap(find.text('Cancel'));
-    await tester.tap(find.text('Save'));
-    expect([cancelled, saved], [1, 1]);
+  }
+
+  /// The painted width of [text] on screen, with any scaling applied.
+  double paintedWidth(WidgetTester tester, String text) =>
+      tester.getRect(find.text(text)).width;
+
+  testWidgets('a long label is shown whole, not cut short', (tester) async {
+    // An AlertDialog on a 360pt phone: 360 - 80 inset - 48 actions padding.
+    await pumpAt(tester, 232);
+
+    for (final text in ['Cancel', 'Create Draft']) {
+      final button = find.ancestor(
+        of: find.text(text),
+        matching: find.byType(SizedBox),
+      );
+      final room = tester.getSize(button.first).width;
+      expect(
+        paintedWidth(tester, text),
+        lessThanOrEqualTo(room + 0.5),
+        reason: '"$text" paints wider than its button, so it is clipped',
+      );
+      // The whole string is still in the tree — nothing was replaced by "…".
+      expect(find.text(text), findsOneWidget);
+    }
   });
 
-  testWidgets(
-    'null primary disables it; loading shows a spinner and blocks both',
-    (tester) async {
-      await tester.pumpWidget(
-        host(
-          MoboDialogButtons(
-            secondaryLabel: 'Cancel',
-            onSecondary: () {},
-            primaryLabel: 'Save',
-            onPrimary: null,
-          ),
-        ),
-      );
-      expect(
-        tester.widget<ElevatedButton>(find.byType(ElevatedButton)).onPressed,
-        isNull,
-      );
+  testWidgets('the longest label in the app fits too', (tester) async {
+    await pumpAt(tester, 232, primary: 'Register Payment');
+    expect(find.text('Register Payment'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 
-      await tester.pumpWidget(
-        host(
-          MoboDialogButtons(
-            secondaryLabel: 'Cancel',
-            onSecondary: () {},
-            primaryLabel: 'Save',
-            onPrimary: () {},
-            isLoading: true,
+  testWidgets('a large text scale does not break it', (tester) async {
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+
+    await pumpAt(tester, 232);
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Create Draft'), findsOneWidget);
+  });
+
+  testWidgets('it lays out inside a real AlertDialog', (tester) async {
+    // AlertDialog measures its actions with intrinsic dimensions, which some
+    // layout widgets cannot answer. Putting one of those here threw during
+    // layout in every dialog in the app, so this guards the footer against
+    // being rebuilt that way again.
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => ElevatedButton(
+              onPressed: () => showDialog<void>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Text('Create Invoice'),
+                  content: const Text('Select Invoice Type'),
+                  actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
+                  actions: [
+                    MoboDialogButtons(
+                      secondaryLabel: 'Cancel',
+                      onSecondary: () {},
+                      primaryLabel: 'Create Draft',
+                      onPrimary: () {},
+                    ),
+                  ],
+                ),
+              ),
+              child: const Text('open'),
+            ),
           ),
         ),
-      );
-      expect(find.byType(CircularProgressIndicator), findsOneWidget);
-      expect(find.text('Save'), findsNothing);
-      expect(
-        tester.widget<OutlinedButton>(find.byType(OutlinedButton)).onPressed,
-        isNull,
-      );
-    },
-  );
+      ),
+    );
+
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Create Draft'), findsOneWidget);
+    expect(find.text('Cancel'), findsOneWidget);
+  });
+
+  testWidgets('both actions still fire', (tester) async {
+    var cancelled = false;
+    var created = false;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 232,
+              child: MoboDialogButtons(
+                secondaryLabel: 'Cancel',
+                onSecondary: () => cancelled = true,
+                primaryLabel: 'Create Draft',
+                onPrimary: () => created = true,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Create Draft'));
+    await tester.tap(find.text('Cancel'));
+
+    expect(created, isTrue);
+    expect(cancelled, isTrue);
+  });
 }

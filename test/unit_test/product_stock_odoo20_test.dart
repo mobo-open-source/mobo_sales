@@ -14,7 +14,7 @@ void main() {
   group('productTypeFilterDomain', () {
     // Odoo 17 has type = consu | service | product. Odoo 18 folded consu and
     // product into one value, `consu`, plus the boolean `is_storable`.
-    List<List<dynamic>> chips(
+    List<dynamic> chips(
       int generation, {
       bool services = false,
       bool consumables = false,
@@ -61,6 +61,7 @@ void main() {
     test('Odoo 18 and 19 with stock: Storable is Goods that track stock', () {
       for (final generation in [18, 19]) {
         expect(chips(generation, storable: true, hasIsStorable: true), [
+          '&',
           ['type', '=', 'consu'],
           ['is_storable', '=', true],
         ]);
@@ -70,6 +71,7 @@ void main() {
     test('Odoo 18 and 19 with stock: Consumable is Goods that do not', () {
       for (final generation in [18, 19]) {
         expect(chips(generation, consumables: true, hasIsStorable: true), [
+          '&',
           ['type', '=', 'consu'],
           ['is_storable', '=', false],
         ]);
@@ -86,8 +88,12 @@ void main() {
           storable: true,
           hasIsStorable: false,
         );
-        expect(domain.where((leaf) => leaf[0] == 'is_storable'), isEmpty);
+        expect(
+          domain.where((token) => token is List && token[0] == 'is_storable'),
+          isEmpty,
+        );
         expect(domain, [
+          '|',
           ['type', '=', 'consu'],
           ['type', '=', 'product'],
         ]);
@@ -97,13 +103,84 @@ void main() {
     test('Odoo 20 always has is_storable, known or not', () {
       for (final hasIsStorable in [true, false]) {
         expect(chips(20, storable: true, hasIsStorable: hasIsStorable), [
+          '&',
           ['type', '=', 'consu'],
           ['is_storable', '=', true],
         ]);
         expect(chips(20, consumables: true, hasIsStorable: hasIsStorable), [
+          '&',
           ['type', '=', 'consu'],
           ['is_storable', '=', false],
         ]);
+      }
+    });
+
+    test('two chips are alternatives, not both at once', () {
+      // Reported as a loading problem with several product filters on: the
+      // leaves were ANDed, so "Services and Consumables" asked for a product
+      // that is both and the list came back empty.
+      expect(chips(17, services: true, consumables: true), [
+        '|',
+        ['type', '=', 'service'],
+        ['type', '=', 'consu'],
+      ]);
+    });
+
+    test('alternatives keep each chip whole on a goods-splitting server', () {
+      expect(
+        chips(20, services: true, storable: true),
+        [
+          '|',
+          ['type', '=', 'service'],
+          '&',
+          ['type', '=', 'consu'],
+          ['is_storable', '=', true],
+        ],
+        reason: 'the AND belongs to the Storable chip, not to the pair',
+      );
+    });
+
+    test('all three chips are one OR of three', () {
+      final domain = chips(
+        20,
+        services: true,
+        consumables: true,
+        storable: true,
+      );
+
+      // n alternatives, n-1 leading '|'.
+      expect(domain.takeWhile((token) => token == '|').length, 2);
+      expect(domain.whereType<List<dynamic>>().length, 5);
+      expect(domain, [
+        '|',
+        '|',
+        ['type', '=', 'service'],
+        '&',
+        ['type', '=', 'consu'],
+        ['is_storable', '=', false],
+        '&',
+        ['type', '=', 'consu'],
+        ['is_storable', '=', true],
+      ]);
+    });
+
+    test('a pair never contradicts itself on any version', () {
+      // The shape that made the list empty: the same field pinned to two
+      // values with nothing but an implicit AND between them.
+      for (final generation in [0, 17, 18, 19, 20]) {
+        for (final hasIsStorable in [true, false]) {
+          final domain = chips(
+            generation,
+            consumables: true,
+            storable: true,
+            hasIsStorable: hasIsStorable,
+          );
+          expect(
+            domain.first,
+            '|',
+            reason: 'generation $generation, is_storable $hasIsStorable',
+          );
+        }
       }
     });
 
@@ -302,6 +379,29 @@ void main() {
 
     test('an unknown version tries both move unit fields, older first', () {
       expect(stockMoveUomFields(0), ['product_uom', 'uom_id']);
+    });
+
+    test('only Odoo 20 is told to skip the zero-demand check', () {
+      // The check does not exist before 20, where the key is simply ignored —
+      // but sending it there would still be a claim this app cannot back up.
+      expect(confirmPickingContext(17), isEmpty);
+      expect(confirmPickingContext(18), isEmpty);
+      expect(confirmPickingContext(19), isEmpty);
+      expect(confirmPickingContext(20), {'skip_zero_demand_check': true});
+    });
+
+    test('an unknown version sends no picking context', () {
+      expect(confirmPickingContext(0), isEmpty);
+    });
+
+    test('a delivery can be validated from the states Odoo allows', () {
+      expect(kValidatableDeliveryStates, contains('assigned'));
+      expect(kValidatableDeliveryStates, contains('confirmed'));
+      expect(kValidatableDeliveryStates, contains('waiting'));
+      // Already finished, or never going to be.
+      expect(kValidatableDeliveryStates, isNot(contains('done')));
+      expect(kValidatableDeliveryStates, isNot(contains('cancel')));
+      expect(kValidatableDeliveryStates, isNot(contains('draft')));
     });
   });
 
@@ -636,6 +736,24 @@ void main() {
       );
     });
 
+    test('the normal list names no `active`, so Odoo hides archived', () async {
+      final domain = await domainSent(20, {});
+
+      expect(
+        domain.any((token) => token is List && token[0] == 'active'),
+        isFalse,
+        reason: 'naming the field would switch off Odoo\'s own hiding',
+      );
+    });
+
+    test('the Archived chip asks for exactly what is archived', () async {
+      // Without this leaf there is no way to see an archived product, and so
+      // no way to bring one back.
+      final domain = await domainSent(20, {'showArchivedOnly': true});
+
+      expect(domain, contains(equals(['active', '=', false])));
+    });
+
     test('the Available chip is unchanged: qty_available > 0', () async {
       final domain = await domainSent(20, {'showAvailableOnly': true});
 
@@ -651,6 +769,7 @@ void main() {
       );
 
       expect(provider.typeFilterLeaves(storable: true, generation: 20), [
+        '&',
         ['type', '=', 'consu'],
         ['is_storable', '=', true],
       ]);

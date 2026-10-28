@@ -104,6 +104,50 @@ void main() {
     },
   );
 
+  test('a web page where JSON was expected is explained, not quoted', () {
+    // Exactly what the dashboard greeting showed a tester: the raw
+    // FormatException from decoding a proxy/login page as JSON.
+    const raw = 'FormatException: Unexpected character (at character 1)\n'
+        '<html>\n^\n';
+    expect(say(raw), isNot(contains('character')));
+    expect(say(raw), isNot(contains('<html')));
+    expect(say(raw), OdooErrorHandler.notJsonResponseMessage);
+
+    expect(
+      say(const FormatException('Unexpected character', '<html>', 0)),
+      OdooErrorHandler.notJsonResponseMessage,
+    );
+  });
+
+  test('no raw Dart failure reaches the user', () {
+    for (final raw in [
+      "type 'Null' is not a subtype of type 'String'",
+      'Null check operator used on a null value',
+      "NoSuchMethodError: The getter 'length' was called on null",
+      '#0      _MyWidget.build (package:mobo_sales/x.dart:12:3)',
+      'Exception: Instance of \'Quote\'',
+    ]) {
+      final shown = say(Exception(raw));
+      expect(
+        shown,
+        'Something went wrong. Please try again.',
+        reason: 'leaked: $raw',
+      );
+    }
+  });
+
+  test('Odoo\'s own message survives its exception path prefix', () {
+    expect(
+      say(
+        Exception(
+          'Odoo Server Error: odoo.exceptions.UserError: You cannot delete a '
+          'confirmed order.',
+        ),
+      ),
+      'You cannot delete a confirmed order.',
+    );
+  });
+
   test(
     'nothing readable falls back to the caller\'s sentence or a generic one',
     () {

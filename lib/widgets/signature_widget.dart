@@ -1,8 +1,7 @@
 import 'dart:typed_data';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:signature/signature.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:hugeicons/hugeicons.dart';
 import 'package:intl/intl.dart';
 import '../models/quote.dart';
 import '../services/data_change_bus.dart';
@@ -13,10 +12,20 @@ import '../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import '../shared/widgets/mobo/mobo_field_label.dart';
 import '../utils/date_picker_utils.dart';
 import 'custom_snackbar.dart';
+import 'signature_capture_dialog.dart';
 
 class SignatureWidget extends StatefulWidget {
   final Quote quotation;
   final Function(Map<String, dynamic>) onSignatureUpdated;
+
+  /// Whether Odoo would accept a signature for this order right now
+  /// (`sale.order._has_to_be_signed()`, see [saleOrderHasToBeSigned]).
+  ///
+  /// False leaves the tab showing what is on file and nothing to draw with:
+  /// a confirmed, expired or already-signed order is not signable in Odoo,
+  /// and a salesperson never captures this in the backend at all — the
+  /// customer signs on the portal.
+  final bool canSign;
 
   /// Where the signature is written; the signed-in session when null. A test
   /// passes its own.
@@ -24,6 +33,7 @@ class SignatureWidget extends StatefulWidget {
   final Future<dynamic> Function(Map<String, dynamic> payload)? callKw;
 
   const SignatureWidget({
+    this.canSign = false,
     super.key,
     required this.quotation,
     required this.onSignatureUpdated,
@@ -35,18 +45,12 @@ class SignatureWidget extends StatefulWidget {
 }
 
 class _SignatureWidgetState extends State<SignatureWidget> {
-  final SignatureController _signatureController = SignatureController(
-    penStrokeWidth: 2,
-    penColor: Colors.black,
-    exportBackgroundColor: Colors.white,
-  );
 
   final TextEditingController _signedByController = TextEditingController();
   DateTime? _signedOnDate;
   Uint8List? _signatureImageBytes;
   bool _isLoading = false;
   bool _hasSignature = false;
-  bool _isSignatureFromUpload = false;
 
   @override
   void initState() {
@@ -80,163 +84,33 @@ class _SignatureWidgetState extends State<SignatureWidget> {
                 : signature,
           );
           _hasSignature = true;
-          _isSignatureFromUpload = true;
         } catch (e) {
           _hasSignature = false;
-          _isSignatureFromUpload = false;
         }
       }
     }
   }
 
+  /// Opens the capture dialog and keeps what comes back.
+  ///
+  /// The drawing used to happen inline, in whatever height the tab strip had
+  /// left; the dialog gives it a canvas regardless of how long the order is.
+  /// Nothing is sent to Odoo until Save Signature.
   Future<void> _captureSignature() async {
-    if (_hasSignature &&
-        _signatureImageBytes != null &&
-        _signatureController.isEmpty) {
-      CustomSnackbar.showInfo(
-        context,
-        'A signature image is already uploaded. Draw a new signature to replace it, or clear the existing one first.',
-      );
-      return;
-    }
+    final base64Png = await SignatureCaptureDialog.show(context);
+    if (base64Png == null || !mounted) return;
 
-    if (_hasSignature &&
-        _signatureImageBytes != null &&
-        _signatureController.isNotEmpty &&
-        _isSignatureFromUpload) {
-      final shouldReplace = await _showReplaceSignatureDialog(
-        contentText:
-            'A signature image was uploaded. Do you want to replace it with the drawn signature?',
-      );
-      if (!shouldReplace) return;
-    }
-
-    if (_signatureController.isEmpty) {
-      CustomSnackbar.showError(context, 'Please draw your signature first');
-      return;
-    }
-
-    try {
-      final signature = await _signatureController.toPngBytes();
-      if (signature != null) {
-        final wasExistingSignature =
-            _hasSignature && _signatureImageBytes != null;
-        setState(() {
-          _signatureImageBytes = signature;
-          _hasSignature = true;
-          _isSignatureFromUpload = false;
-        });
-        CustomSnackbar.showSuccess(
-          context,
-          wasExistingSignature
-              ? 'Signature updated successfully'
-              : 'Signature captured successfully',
-        );
-      }
-    } catch (e) {
-      CustomSnackbar.showError(
-        context,
-        OdooErrorHandler.toSnackbarMessage(
-          e,
-          fallback: 'Could not capture the signature. Please try again.',
-        ),
-      );
-    }
-  }
-
-  Future<void> _uploadSignatureImage() async {
-    if (_hasSignature && _signatureImageBytes != null) {
-      final shouldReplace = await _showReplaceSignatureDialog();
-      if (!shouldReplace) {
-        return;
-      }
-    }
-
-    final ImagePicker picker = ImagePicker();
-    final XFile? image = await picker.pickImage(source: ImageSource.gallery);
-
-    if (image != null) {
-      try {
-        final bytes = await image.readAsBytes();
-        final wasExistingSignature =
-            _hasSignature && _signatureImageBytes != null;
-
-        setState(() {
-          _signatureImageBytes = bytes;
-          _hasSignature = true;
-          _isSignatureFromUpload = true;
-
-          _signatureController.clear();
-        });
-
-        if (wasExistingSignature) {
-          CustomSnackbar.showSuccess(
-            context,
-            'Signature image replaced successfully',
-          );
-        } else {
-          CustomSnackbar.showSuccess(
-            context,
-            'Signature image uploaded successfully',
-          );
-        }
-      } catch (e) {
-        CustomSnackbar.showError(
-          context,
-          OdooErrorHandler.toSnackbarMessage(
-            e,
-            fallback: 'Could not upload the image. Please try again.',
-          ),
-        );
-      }
-    }
-  }
-
-  Future<bool> _showReplaceSignatureDialog({String? contentText}) async {
-    if (!mounted) return false;
-
-    return await showDialog<bool>(
-          context: context,
-          builder: (BuildContext context) {
-            final isDark = Theme.of(context).brightness == Brightness.dark;
-
-            return AlertDialog(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20),
-              ),
-              elevation: isDark ? 0 : 8,
-              backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-              title: Text(
-                'Replace Signature',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: isDark
-                      ? Colors.white
-                      : Theme.of(context).colorScheme.onSurface,
-                ),
-              ),
-              content: Text(
-                contentText ??
-                    'A signature already exists. Do you want to replace it with a new image?',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: isDark
-                      ? Colors.grey[300]
-                      : Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-              actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
-              actions: [
-                MoboDialogButtons(
-                  secondaryLabel: 'Cancel',
-                  onSecondary: () => Navigator.of(context).pop(false),
-                  primaryLabel: 'Replace',
-                  onPrimary: () => Navigator.of(context).pop(true),
-                ),
-              ],
-            );
-          },
-        ) ??
-        false;
+    final replaced = _hasSignature && _signatureImageBytes != null;
+    setState(() {
+      _signatureImageBytes = base64Decode(base64Png);
+      _hasSignature = true;
+    });
+    CustomSnackbar.showSuccess(
+      context,
+      replaced
+          ? 'Signature updated — tap Save Signature to send it'
+          : 'Signature captured — tap Save Signature to send it',
+    );
   }
 
   Future<void> _clearSignature() async {
@@ -252,10 +126,8 @@ class _SignatureWidgetState extends State<SignatureWidget> {
       await _clearSignatureImageFromBackend();
     } else {
       setState(() {
-        _signatureController.clear();
-        _signatureImageBytes = null;
+          _signatureImageBytes = null;
         _hasSignature = false;
-        _isSignatureFromUpload = false;
       });
       CustomSnackbar.showSuccess(context, 'Signature image cleared');
     }
@@ -325,10 +197,8 @@ class _SignatureWidgetState extends State<SignatureWidget> {
 
       if (!mounted) return;
       setState(() {
-        _signatureController.clear();
-        _signatureImageBytes = null;
+          _signatureImageBytes = null;
         _hasSignature = false;
-        _isSignatureFromUpload = false;
         // The next signature is signed when it is saved, not when the cleared
         // one was.
         _signedOnDate = null;
@@ -363,7 +233,7 @@ class _SignatureWidgetState extends State<SignatureWidget> {
       return;
     }
 
-    if (!_hasSignature && _signatureController.isEmpty) {
+    if (!_hasSignature) {
       CustomSnackbar.showError(context, 'Please provide a signature');
       return;
     }
@@ -373,11 +243,7 @@ class _SignatureWidgetState extends State<SignatureWidget> {
     });
 
     try {
-      Uint8List? signatureBytes = _signatureImageBytes;
-      if (signatureBytes == null && _signatureController.isNotEmpty) {
-        signatureBytes = await _signatureController.toPngBytes();
-      }
-
+      final Uint8List? signatureBytes = _signatureImageBytes;
       if (signatureBytes == null) {
         throw Exception('No signature data available');
       }
@@ -462,7 +328,6 @@ class _SignatureWidgetState extends State<SignatureWidget> {
 
   @override
   void dispose() {
-    _signatureController.dispose();
     _signedByController.dispose();
     super.dispose();
   }
@@ -493,7 +358,7 @@ class _SignatureWidgetState extends State<SignatureWidget> {
 
   Widget _buildSignedByField(bool isDark) {
     final bool isSignatureLocked =
-        _hasSignature && _signatureImageBytes != null;
+        !widget.canSign || (_hasSignature && _signatureImageBytes != null);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -573,7 +438,7 @@ class _SignatureWidgetState extends State<SignatureWidget> {
 
   Widget _buildSignedOnField(bool isDark) {
     final bool isSignatureLocked =
-        _hasSignature && _signatureImageBytes != null;
+        !widget.canSign || (_hasSignature && _signatureImageBytes != null);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -666,6 +531,8 @@ class _SignatureWidgetState extends State<SignatureWidget> {
   }
 
   Widget _buildSignatureField(bool isDark) {
+    final hasImage = _hasSignature && _signatureImageBytes != null;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -673,7 +540,7 @@ class _SignatureWidgetState extends State<SignatureWidget> {
           children: [
             MoboFieldLabel(
               'Signature',
-              isRequired: true,
+              isRequired: widget.canSign,
               style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
@@ -686,7 +553,7 @@ class _SignatureWidgetState extends State<SignatureWidget> {
 
         Container(
           width: double.infinity,
-          height: 200,
+          height: 160,
           decoration: BoxDecoration(
             border: Border.all(
               color: isDark ? Colors.grey[600]! : Colors.grey[300]!,
@@ -694,112 +561,127 @@ class _SignatureWidgetState extends State<SignatureWidget> {
             borderRadius: BorderRadius.circular(8),
             color: Colors.white,
           ),
-          child: _hasSignature && _signatureImageBytes != null
-              ? ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
+          clipBehavior: Clip.antiAlias,
+          child: hasImage
+              ? Padding(
+                  padding: const EdgeInsets.all(8),
                   child: Image.memory(
                     _signatureImageBytes!,
                     fit: BoxFit.contain,
                   ),
                 )
-              : Signature(
-                  controller: _signatureController,
-                  backgroundColor: Colors.white,
+              : Center(
+                  child: Text(
+                    'Not signed yet',
+                    style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                  ),
                 ),
         ),
-        const SizedBox(height: 12),
 
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            TextButton.icon(
-              onPressed: _uploadSignatureImage,
-              icon: Icon(
-                Icons.upload_file_outlined,
-                size: 18,
-                color: isDark ? Colors.white : Colors.black87,
-              ),
-              label: Text(
-                'Upload',
-                style: TextStyle(
+        // Drawing happens in a dialog, not here: inside the page's tab strip
+        // the canvas was a couple of dozen points tall, and `toImage` crops
+        // to the ink, so a stroke squeezed into that space came back cropped
+        // and stretched out of shape.
+        if (widget.canSign) ...[
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              TextButton.icon(
+                onPressed: _captureSignature,
+                icon: Icon(
+                  HugeIcons.strokeRoundedPenTool03,
+                  size: 18,
                   color: isDark ? Colors.white : Colors.black87,
-                  fontWeight: FontWeight.w500,
+                ),
+                label: Text(
+                  hasImage ? 'Sign again' : 'Sign',
+                  style: TextStyle(
+                    color: isDark ? Colors.white : Colors.black87,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  minimumSize: const Size(80, 36),
                 ),
               ),
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
+              if (hasImage) ...[
+                Container(
+                  height: 24,
+                  width: 1,
+                  color: isDark ? Colors.grey[600] : Colors.grey[300],
                 ),
-                minimumSize: const Size(80, 36),
-              ),
-            ),
-            Container(
-              height: 24,
-              width: 1,
-              color: isDark ? Colors.grey[600] : Colors.grey[300],
-            ),
-            TextButton.icon(
-              onPressed: _captureSignature,
-              icon: Icon(
-                Icons.check_circle_outline,
-                size: 18,
-                color: isDark ? Colors.white : Colors.black87,
-              ),
-              label: Text(
-                'Capture',
-                style: TextStyle(
-                  color: isDark ? Colors.white : Colors.black87,
-                  fontWeight: FontWeight.w500,
+                TextButton.icon(
+                  onPressed: _clearSignature,
+                  icon: const Icon(
+                    Icons.clear_outlined,
+                    size: 18,
+                    color: Colors.red,
+                  ),
+                  label: const Text(
+                    'Clear',
+                    style: TextStyle(
+                      color: Colors.red,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    minimumSize: const Size(80, 36),
+                  ),
                 ),
-              ),
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
-                ),
-                minimumSize: const Size(80, 36),
-              ),
-            ),
-            Container(
-              height: 24,
-              width: 1,
-              color: isDark ? Colors.grey[600] : Colors.grey[300],
-            ),
-            TextButton.icon(
-              onPressed: _clearSignature,
-              icon: const Icon(
-                Icons.clear_outlined,
-                size: 18,
-                color: Colors.red,
-              ),
-              label: const Text(
-                'Clear',
-                style: TextStyle(
-                  color: Colors.red,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
-                ),
-                minimumSize: const Size(80, 36),
-              ),
-            ),
-          ],
-        ),
+              ],
+            ],
+          ),
+        ],
       ],
     );
   }
 
+  /// Why Save Signature cannot be pressed, or null when it can.
+  ///
+  /// The button stays on screen and greyed rather than disappearing: a
+  /// control that vanishes leaves the user wondering what they did wrong,
+  /// where one that is plainly off and says why does not.
+  String? get _saveBlockedReason {
+    if (!widget.canSign) {
+      if (_hasSignature) {
+        return 'This order is already signed. Odoo does not take a second '
+            'signature for the same order.';
+      }
+      return 'This order cannot be signed. Odoo only accepts a signature on a '
+          'quotation that asks for one, has not expired and is not already '
+          'signed.';
+    }
+    if (!_hasSignature) {
+      return 'There is nothing to save yet. Tap Sign to capture a signature '
+          'first.';
+    }
+    return null;
+  }
+
   Widget _buildActionButtons(bool isDark) {
+    final blocked = _saveBlockedReason;
+    final enabled = blocked == null && !_isLoading;
+
     return Row(
       children: [
         Expanded(
           child: ElevatedButton.icon(
-            onPressed: _isLoading ? null : _saveSignature,
+            // Still tappable while blocked, so the tap can explain itself
+            // instead of doing nothing.
+            onPressed: _isLoading
+                ? null
+                : enabled
+                ? _saveSignature
+                : () => CustomSnackbar.showInfo(context, blocked!),
             icon: _isLoading
                 ? SizedBox(
                     width: 18,
@@ -811,11 +693,21 @@ class _SignatureWidgetState extends State<SignatureWidget> {
                       ),
                     ),
                   )
-                : const Icon(Icons.save, size: 18),
-            label: Text(_isLoading ? 'Saving...' : 'Save Signature'),
+                : Icon(
+                    Icons.save,
+                    size: 18,
+                    color: enabled ? Colors.white : Colors.white70,
+                  ),
+            label: Text(
+              _isLoading ? 'Saving...' : 'Save Signature',
+              style: TextStyle(color: enabled ? Colors.white : Colors.white70),
+            ),
             style: ElevatedButton.styleFrom(
-              backgroundColor: Theme.of(context).primaryColor,
+              backgroundColor: enabled
+                  ? Theme.of(context).primaryColor
+                  : (isDark ? Colors.grey[700] : Colors.grey[400]),
               foregroundColor: Colors.white,
+              elevation: 0,
               padding: const EdgeInsets.symmetric(vertical: 12),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(8),

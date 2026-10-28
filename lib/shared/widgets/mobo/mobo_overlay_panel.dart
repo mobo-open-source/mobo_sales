@@ -81,58 +81,88 @@ mixin MoboOverlayPanelMixin<T extends StatefulWidget> on State<T> {
     final box = context.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return;
 
-    final fieldSize = box.size;
-    final fieldTopLeft = box.localToGlobal(Offset.zero);
-    final media = MediaQuery.of(context);
-
-    final spaceBelow =
-        media.size.height -
-        media.padding.bottom -
-        (fieldTopLeft.dy + fieldSize.height);
-    final spaceAbove = fieldTopLeft.dy - media.padding.top;
-
-    final openUpward =
-        spaceBelow < _minPanelHeight + _gap && spaceAbove > spaceBelow;
-    final available = openUpward ? spaceAbove : spaceBelow;
-    final maxHeight = (available - _gap - 8).clamp(
-      _minPanelHeight,
-      _maxPanelHeight,
-    );
-
     _entry = OverlayEntry(
-      builder: (overlayContext) => Stack(
-        children: [
-          // Tapping anywhere off the panel dismisses it.
-          Positioned.fill(
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onTapUp: (details) {
-                if (onFieldTap?.call(details.globalPosition) ?? false) return;
-                dismiss();
-              },
+      builder: (overlayContext) {
+        final panel = _measurePanel(overlayContext);
+        if (panel == null) return const SizedBox.shrink();
+
+        return Stack(
+          children: [
+            // Tapping anywhere off the panel dismisses it.
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTapUp: (details) {
+                  if (onFieldTap?.call(details.globalPosition) ?? false) return;
+                  dismiss();
+                },
+              ),
             ),
-          ),
-          Positioned(
-            width: fieldSize.width,
-            child: CompositedTransformFollower(
-              link: layerLink,
-              showWhenUnlinked: false,
-              targetAnchor: openUpward
-                  ? Alignment.topLeft
-                  : Alignment.bottomLeft,
-              followerAnchor: openUpward
-                  ? Alignment.bottomLeft
-                  : Alignment.topLeft,
-              offset: Offset(0, openUpward ? -_gap : _gap),
-              child: builder(overlayContext, maxHeight),
+            Positioned(
+              width: panel.width,
+              child: CompositedTransformFollower(
+                link: layerLink,
+                showWhenUnlinked: false,
+                targetAnchor: panel.openUpward
+                    ? Alignment.topLeft
+                    : Alignment.bottomLeft,
+                followerAnchor: panel.openUpward
+                    ? Alignment.bottomLeft
+                    : Alignment.topLeft,
+                offset: Offset(0, panel.openUpward ? -_gap : _gap),
+                child: builder(overlayContext, panel.maxHeight),
+              ),
             ),
-          ),
-        ],
-      ),
+          ],
+        );
+      },
     );
 
     Overlay.of(context).insert(_entry!);
     if (mounted) setState(() {});
+  }
+
+  /// Where the panel may go and how tall it may be, measured against the
+  /// screen as it is right now.
+  ///
+  /// Measured on every build of the overlay rather than once when it opens,
+  /// for two reasons. A searchable panel is opened from a focus listener, so
+  /// the keyboard is only *starting* to come up and [MediaQueryData.viewInsets]
+  /// still reads zero; and the keyboard then animates, changing the space
+  /// available for several frames afterwards. Sizing the panel once, against
+  /// a screen the keyboard was about to cover, left its lower rows underneath
+  /// the keyboard — visible after a scroll, but never tappable, because the
+  /// keyboard takes the touch. The last option in a list was the one that
+  /// could not be chosen.
+  ({bool openUpward, double maxHeight, double width})? _measurePanel(
+    BuildContext overlayContext,
+  ) {
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize || !box.attached) return null;
+
+    final fieldSize = box.size;
+    final fieldTop = box.localToGlobal(Offset.zero).dy;
+    final media = MediaQuery.of(overlayContext);
+
+    // `viewInsets.bottom` is the keyboard. `padding.bottom` is what is left of
+    // the safe area beside it — Flutter already zeroes that while the keyboard
+    // covers it, so the two do not double-count.
+    final spaceBelow =
+        media.size.height -
+        media.viewInsets.bottom -
+        media.padding.bottom -
+        (fieldTop + fieldSize.height);
+    final spaceAbove = fieldTop - media.padding.top - media.viewInsets.top;
+
+    final openUpward =
+        spaceBelow < _minPanelHeight + _gap && spaceAbove > spaceBelow;
+    final available = openUpward ? spaceAbove : spaceBelow;
+
+    return (
+      openUpward: openUpward,
+      maxHeight: (available - _gap - 8).clamp(_minPanelHeight, _maxPanelHeight),
+      width: fieldSize.width,
+    );
   }
 
   void closePanel() {

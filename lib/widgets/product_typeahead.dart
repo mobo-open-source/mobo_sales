@@ -80,7 +80,11 @@ class _ProductTypeAheadState extends State<ProductTypeAhead> {
       final client = await OdooSessionManager.getClient();
       if (client == null) return [];
 
-      final limit = pattern.isEmpty ? 6 : 100;
+      // The same page size whether or not anything was typed. Opening the
+      // dropdown used to read six products, so there was nothing to scroll
+      // and most of the catalogue could only be reached by guessing at a
+      // search term.
+      const limit = 100;
       // Use safeCallKw (not the raw client) so the request carries the
       // active company context and refreshes an expired session, instead
       // of silently returning an empty list when the session has expired.
@@ -106,8 +110,11 @@ class _ProductTypeAheadState extends State<ProductTypeAhead> {
             'qty_available',
             'default_code',
             'barcode',
+            // The row draws a 36pt thumbnail, and `image_128` is a stored
+            // resize of `image_1920`, so it is set whenever the full image
+            // is. Asking for `image_1920` as well would pull a full-size
+            // base64 image for every product in the page.
             'image_128',
-            'image_1920',
             'product_variant_count',
             'uom_id',
             'taxes_id',

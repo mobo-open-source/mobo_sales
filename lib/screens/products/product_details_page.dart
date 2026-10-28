@@ -1367,6 +1367,13 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
     );
   }
 
+  /// Which way the archive action goes for the product on screen.
+  ///
+  /// An archived product is reachable through the list's "Archived" filter,
+  /// where archiving it again writes `active = false` over `active = false`
+  /// and nothing happens.
+  bool get _archiving => _product.active != false;
+
   Future<bool?> _showArchiveConfirmationDialog(BuildContext context) async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return await showDialog<bool>(
@@ -1377,7 +1384,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
         elevation: isDark ? 0 : 8,
         backgroundColor: isDark ? Colors.grey[900] : Colors.white,
         title: Text(
-          'Archive Product',
+          _archiving ? 'Archive Product' : 'Unarchive Product',
           style: Theme.of(context).textTheme.titleLarge?.copyWith(
             fontWeight: FontWeight.w700,
             color: isDark
@@ -1386,7 +1393,9 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
           ),
         ),
         content: Text(
-          'Are you sure you want to archive this product? This will deactivate the product but preserve its data.',
+          _archiving
+              ? 'Are you sure you want to archive this product? This will deactivate the product but preserve its data.'
+              : 'Bring this product back? It will appear in the product list again.',
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
             color: isDark
                 ? Colors.grey[300]
@@ -1398,7 +1407,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
           MoboDialogButtons(
             secondaryLabel: 'Cancel',
             onSecondary: () => Navigator.of(ctx).pop(false),
-            primaryLabel: 'Archive',
+            primaryLabel: _archiving ? 'Archive' : 'Unarchive',
             onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
@@ -1407,19 +1416,27 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
   }
 
   void _showArchiveProductDialog(BuildContext context) async {
+    final archiving = _archiving;
     final product = _product;
     final int productId = int.tryParse(product.id) ?? 0;
 
     final confirmed = await _showArchiveConfirmationDialog(context);
     if (confirmed == true && context.mounted) {
-      final success = await _archiveProduct(context, productId);
-      if (success && context.mounted) {
+      final success = await _archiveProduct(context, productId, archiving);
+      // Archiving takes the product out of every list, so the page it was
+      // opened from has nothing left to show. Unarchiving leaves it on
+      // screen, now active.
+      if (success && archiving && context.mounted) {
         Navigator.of(context).pop(true);
       }
     }
   }
 
-  Future<bool> _archiveProduct(BuildContext context, int productId) async {
+  Future<bool> _archiveProduct(
+    BuildContext context,
+    int productId,
+    bool archiving,
+  ) async {
     try {
       final client = await OdooSessionManager.getClient().timeout(
         kActionTimeout,
@@ -1430,7 +1447,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
       }
 
       final result = await Future.any([
-        _performArchiveOperation(client, productId),
+        _performArchiveOperation(client, productId, archiving),
         Future.delayed(
           const Duration(seconds: 30),
           () => throw Exception('Archive operation timed out after 30 seconds'),
@@ -1444,7 +1461,9 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
           context,
           OdooErrorHandler.toSnackbarMessage(
             e,
-            fallback: 'Could not archive the product. Please try again.',
+            fallback: archiving
+                ? 'Could not archive the product. Please try again.'
+                : 'Could not unarchive the product. Please try again.',
           ),
         );
       }
@@ -1452,7 +1471,11 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
     }
   }
 
-  Future<bool> _performArchiveOperation(dynamic client, int productId) async {
+  Future<bool> _performArchiveOperation(
+    dynamic client,
+    int productId,
+    bool archiving,
+  ) async {
     final productResult = await client
         .callKw({
           'model': 'product.product',
@@ -1471,11 +1494,16 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
     final templateId = (productResult[0]['product_tmpl_id'] as List?)?.first;
     if (templateId is! int) throw Exception('Product not found');
 
-    // Archiving the template archives its variants too; the service announces
-    // it, so every list drops the product.
-    await ProductService.instance.archiveProduct(templateId);
+    // The template carries its variants with it either way; the service
+    // announces the change, so every list follows.
+    await ProductService.instance.setProductActive(templateId, !archiving);
     if (context.mounted) {
-      CustomSnackbar.showSuccess(context, 'Product archived successfully');
+      CustomSnackbar.showSuccess(
+        context,
+        archiving
+            ? 'Product archived successfully'
+            : 'Product unarchived successfully',
+      );
     }
     return true;
   }
@@ -1753,7 +1781,9 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
                 child: Row(
                   children: [
                     Icon(
-                      HugeIcons.strokeRoundedArchive03,
+                      _product.active == false
+                          ? HugeIcons.strokeRoundedUnarchive03
+                          : HugeIcons.strokeRoundedArchive03,
                       color: Theme.of(context).brightness == Brightness.dark
                           ? Colors.grey[300]
                           : Colors.grey[800],
@@ -1761,7 +1791,9 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
                     ),
                     const SizedBox(width: 12),
                     Text(
-                      'Archive Product',
+                      _product.active == false
+                          ? 'Unarchive Product'
+                          : 'Archive Product',
                       style: TextStyle(
                         color: Theme.of(context).brightness == Brightness.dark
                             ? Colors.white

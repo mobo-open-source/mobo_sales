@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:mobo_sales/providers/invoice_details_provider_enterprise.dart';
+import 'package:mobo_sales/services/invoice_details_service.dart';
 import '../mocks/mock_services.dart';
 
 class FakeBuildContext extends Fake implements BuildContext {}
@@ -89,27 +90,80 @@ void main() {
       expect(provider.errorMessage, contains('Connection Error'));
     });
 
-    test('postInvoice success', () async {
-      provider.setInvoiceData({'state': 'draft'});
-      when(
-        () => mockPermissionService.canWrite('account.move'),
-      ).thenAnswer((_) async => true);
-      when(() => mockService.postInvoice(1)).thenAnswer((_) async {});
-
+    /// Stubs the reads that follow a post, which the provider always runs.
+    void stubRefreshAfterPost({String state = 'posted'}) {
       when(
         () => mockService.fetchInvoiceDetails(1),
-      ).thenAnswer((_) async => {'state': 'posted'});
+      ).thenAnswer((_) async => {'state': state});
       when(
         () => mockService.fetchPartnerDetails(any()),
       ).thenAnswer((_) async => {});
       when(
         () => mockService.fetchInvoiceLines(any()),
       ).thenAnswer((_) async => []);
+    }
+
+    /// Grants write access and, unless [inInvoicingGroup] says otherwise,
+    /// Odoo's Invoicing group — both of which posting needs.
+    void stubPostPermissions({bool inInvoicingGroup = true}) {
+      when(
+        () => mockPermissionService.canWrite('account.move'),
+      ).thenAnswer((_) async => true);
+      when(
+        () => mockPermissionService.hasGroup(kInvoicingGroup),
+      ).thenAnswer((_) async => inInvoicingGroup);
+    }
+
+    test('postInvoice success', () async {
+      provider.setInvoiceData({'state': 'draft'});
+      stubPostPermissions();
+      when(() => mockService.postInvoice(1)).thenAnswer((_) async => null);
+      stubRefreshAfterPost();
 
       final result = await provider.postInvoice(mockContext, '1');
 
       expect(result, true);
+      expect(provider.errorMessage, isEmpty);
       verify(() => mockService.postInvoice(1)).called(1);
+    });
+
+    test('postInvoice is refused without the Invoicing group', () async {
+      // Odoo's `_post` needs `account.group_account_invoice` as well as write
+      // access to the model, and raises an AccessError without it. The app
+      // used to call anyway and report a bare "Access Denied".
+      provider.setInvoiceData({'state': 'draft'});
+      stubPostPermissions(inInvoicingGroup: false);
+
+      final result = await provider.postInvoice(mockContext, '1');
+
+      expect(result, false);
+      expect(provider.errorMessage, kInvoicingGroupMissingMessage);
+      expect(provider.errorMessage, contains('Invoicing'));
+      verifyNever(() => mockService.postInvoice(any()));
+    });
+
+    test('a wizard Odoo returns is not reported as a confirmation', () async {
+      // `action_post` answers with a window action when it wants something
+      // confirmed first, and the invoice stays a draft. The app used to
+      // ignore the return value and announce success.
+      provider.setInvoiceData({'state': 'draft'});
+      stubPostPermissions();
+      when(
+        () => mockService.postInvoice(1),
+      ).thenAnswer((_) async => 'Confirm Entries');
+      stubRefreshAfterPost(state: 'draft');
+
+      final result = await provider.postInvoice(mockContext, '1');
+
+      expect(result, false);
+      expect(provider.errorMessage, contains('Confirm Entries'));
+      expect(provider.errorMessage, contains('in Odoo'));
+      verify(() => mockService.postInvoice(1)).called(1);
+      expect(
+        provider.invoiceState,
+        'draft',
+        reason: 'the page still shows what the invoice actually is',
+      );
     });
 
     test('postInvoice fails if not draft', () async {

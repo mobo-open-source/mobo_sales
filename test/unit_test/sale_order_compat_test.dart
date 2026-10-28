@@ -424,16 +424,21 @@ void main() {
   group('the signature tab', () {
     // The same four fields on Odoo 17, 18, 19 and 20 (sale/models/sale_order.py
     // in each tree), so the rule has no generation in it.
+    // A quotation that is still open, so "asks for a signature" is also
+    // "can still be given one". The tab needs one or the other.
     Map<String, dynamic> row({
       Object? require = false,
       Object? by = false,
       Object? on = false,
       Object? image = false,
+      String state = 'draft',
     }) => {
       'require_signature': require,
       'signed_by': by,
       'signed_on': on,
       'signature': image,
+      'state': state,
+      'is_expired': false,
     };
 
     test('is there when the order asks for an online signature', () {
@@ -471,8 +476,95 @@ void main() {
 
     test('is there when only some of the fields exist and one is set', () {
       // A server that lacks `signature` still answers for the others.
-      expect(saleOrderShowsSignature({'require_signature': true}), isTrue);
+      expect(
+        saleOrderShowsSignature({
+          'require_signature': true,
+          'state': 'draft',
+        }),
+        isTrue,
+      );
       expect(saleOrderShowsSignature({'require_signature': false}), isFalse);
+    });
+
+    test('is not there once the order can no longer be signed', () {
+      // What a tester hit on a confirmed order: a tab holding "Not signed
+      // yet" and nothing that could be pressed.
+      expect(saleOrderShowsSignature(row(require: true, state: 'sale')), isFalse);
+    });
+
+    test('is still there for a confirmed order that was signed', () {
+      expect(
+        saleOrderShowsSignature(row(require: true, state: 'sale', by: 'Ada')),
+        isTrue,
+        reason: 'the signature is worth showing even when it is settled',
+      );
+    });
+  });
+
+  group('whether Odoo would take a signature', () {
+    // `_has_to_be_signed()` reads the same in sale/models/sale_order.py on
+    // Odoo 17, 18, 19 and 20, so there is no generation in this either.
+    Map<String, dynamic> order({
+      String state = 'draft',
+      bool expired = false,
+      Object? require = true,
+      Object? signature = false,
+    }) => {
+      'state': state,
+      'is_expired': expired,
+      'require_signature': require,
+      'signature': signature,
+    };
+
+    test('yes for a draft or sent order that asks and is unsigned', () {
+      expect(saleOrderHasToBeSigned(order(state: 'draft')), isTrue);
+      expect(saleOrderHasToBeSigned(order(state: 'sent')), isTrue);
+    });
+
+    test('no once the order is confirmed', () {
+      // What a tester hit: a capture pad on a Sales Order, which Odoo would
+      // refuse — the portal only signs a quotation.
+      for (final state in ['sale', 'done', 'cancel']) {
+        expect(
+          saleOrderHasToBeSigned(order(state: state)),
+          isFalse,
+          reason: state,
+        );
+      }
+    });
+
+    test('no once it has expired', () {
+      expect(saleOrderHasToBeSigned(order(expired: true)), isFalse);
+    });
+
+    test('no when the order does not ask for one', () {
+      expect(saleOrderHasToBeSigned(order(require: false)), isFalse);
+      expect(saleOrderHasToBeSigned(order(require: null)), isFalse);
+    });
+
+    test('no once it is already signed', () {
+      expect(
+        saleOrderHasToBeSigned(order(signature: 'iVBORw0KGgo=')),
+        isFalse,
+      );
+      expect(
+        saleOrderHasToBeSigned(order(signature: {'content': 'iVBOR'})),
+        isFalse,
+      );
+    });
+
+    test('an empty signature is not a signature', () {
+      expect(saleOrderHasToBeSigned(order(signature: '  ')), isTrue);
+      expect(saleOrderHasToBeSigned(order(signature: false)), isTrue);
+    });
+
+    test('a server that would not give is_expired is treated as not', () {
+      final row = order()..remove('is_expired');
+      expect(saleOrderHasToBeSigned(row), isTrue);
+    });
+
+    test('nothing read yet is not an invitation to sign', () {
+      expect(saleOrderHasToBeSigned(const {}), isFalse);
     });
   });
 }

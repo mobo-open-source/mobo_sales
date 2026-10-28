@@ -759,15 +759,20 @@ class _DeliveryListScreenState extends State<DeliveryListScreen>
           style: TextStyle(
             fontWeight: FontWeight.w600,
             letterSpacing: 0.5,
-            color: isDark ? Colors.white : Theme.of(context).primaryColor,
+            // Matches the delivery details page this list opens, and every
+            // other titled page.
+            color: isDark ? Colors.white : Colors.black,
           ),
         ),
         leading: IconButton(
           onPressed: () => Navigator.pop(context),
-          icon: const Icon(HugeIcons.strokeRoundedArrowLeft01),
+          icon: Icon(
+            HugeIcons.strokeRoundedArrowLeft01,
+            color: isDark ? Colors.white : Colors.black,
+          ),
         ),
         backgroundColor: backgroundColor,
-        foregroundColor: isDark ? Colors.white : Theme.of(context).primaryColor,
+        foregroundColor: isDark ? Colors.white : Colors.black,
         elevation: 0,
       ),
       body: Column(
@@ -1187,8 +1192,11 @@ class _DeliveryListScreenState extends State<DeliveryListScreen>
       status: delivery.getStateLabel(),
       statusColor: stateColor,
       isDark: isDark,
-      onTap: () {
-        Navigator.push(
+      onTap: () async {
+        // The details page returns true when it changed the delivery —
+        // confirming it moves the row to a different state and, under a
+        // state filter, out of this list.
+        final changed = await Navigator.push<bool>(
           context,
 
           MaterialPageRoute(
@@ -1196,6 +1204,7 @@ class _DeliveryListScreenState extends State<DeliveryListScreen>
                 DeliveryDetailsScreen(deliveryId: delivery.id),
           ),
         );
+        if (changed == true && mounted) await _fetchDeliveries();
       },
       mainIcon: HugeIcons.strokeRoundedCalendar03,
       extraIcon: HugeIcons.strokeRoundedFileAttachment,

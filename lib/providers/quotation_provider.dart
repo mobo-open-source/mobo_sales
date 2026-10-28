@@ -70,6 +70,13 @@ class QuotationProvider with ChangeNotifier {
   List<String> _availableFields = ['invoice_status', 'delivery_status'];
   bool _isFieldsFetched = false;
 
+  /// The logged-in user, for the "My Quotations" filter.
+  ///
+  /// [_buildDomain] is synchronous — it is called from the middle of building
+  /// a request — so the id is read once, ahead of the fetch, rather than
+  /// awaited while the domain is assembled.
+  int? _sessionUserId;
+
   Set<String> _activeFilters = {};
 
   final Map<int, Map<String, dynamic>> _taxCache = {};
@@ -477,6 +484,8 @@ class QuotationProvider with ChangeNotifier {
       final client = await OdooSessionManager.getClient();
       if (client == null) return;
 
+      await _ensureServerFacts();
+
       List<dynamic> domain = _buildDomain();
 
       String groupByField = _selectedGroupBy!;
@@ -833,6 +842,8 @@ class QuotationProvider with ChangeNotifier {
     final client = await OdooSessionManager.getClient();
     if (client == null) return null;
 
+    await _ensureServerFacts();
+
     final List<dynamic> domain = _buildDomain()
       ..addAll(_buildGroupDomain(groupKey, _selectedGroupBy!));
 
@@ -1012,6 +1023,12 @@ class QuotationProvider with ChangeNotifier {
             domain.add(['state', '=', 'sale']);
             break;
           case 'user_quotations':
+            // The id is read before the page is fetched; without it this
+            // filter used to add no leaf at all and quietly showed everyone's
+            // quotations.
+            if (_sessionUserId != null) {
+              domain.add(['user_id', '=', _sessionUserId]);
+            }
             break;
           case 'invoiced':
             domain.add(['invoice_status', '=', 'invoiced']);
@@ -1021,7 +1038,12 @@ class QuotationProvider with ChangeNotifier {
             break;
           case 'delivered':
           case 'to_deliver':
-            domain.add(deliveryStatusLeaf(filter)!);
+            // `delivery_status` lives in `sale_stock` up to Odoo 19 (it moved
+            // into `sale` at 20), so a database without that module installed
+            // has no such field and the whole search would fail on it.
+            if (_availableFields.contains('delivery_status')) {
+              domain.add(deliveryStatusLeaf(filter)!);
+            }
             break;
           case 'expired':
             final now = DateTime.now();
@@ -1098,6 +1120,24 @@ class QuotationProvider with ChangeNotifier {
     if (_availableFields.contains('delivery_status')) 'delivery_status',
   ];
 
+  /// Reads the two things [_buildDomain] and [_listFields] need from the
+  /// server but cannot await: who is logged in, and which of the optional
+  /// fields this database actually has. Both are read once per session.
+  Future<void> _ensureServerFacts() async {
+    if (_sessionUserId == null) {
+      final session = await OdooSessionManager.getCurrentSession();
+      _sessionUserId = session?.userId;
+    }
+    if (!_isFieldsFetched) {
+      final fields = await _fetchAvailableFields();
+      // An empty list means the call failed, not that the model has no
+      // fields; keeping the optimistic default is better than dropping
+      // `invoice_status` from every row.
+      if (fields.isNotEmpty) _availableFields = fields;
+      _isFieldsFetched = true;
+    }
+  }
+
   Future<void> _fetchSpecificPage() async {
     if (_isLoadingMore) {
       return;
@@ -1124,6 +1164,8 @@ class QuotationProvider with ChangeNotifier {
         notifyListeners();
         return;
       }
+
+      await _ensureServerFacts();
 
       final page = await _readQuotes(
         offset: _currentPage * _pageSize,
@@ -1250,6 +1292,27 @@ class QuotationProvider with ChangeNotifier {
   ScrollController get scrollController => _scrollController;
 
   TextEditingController get searchController => _searchController;
+
+  /// Empties the search and resets paging, without triggering a fetch.
+  ///
+  /// Clearing the controller on its own arms the debounce installed in the
+  /// constructor, which reloads 500ms later. A page that also reloaded
+  /// straight away therefore fetched twice — and the immediate fetch still
+  /// carried the old query, so the first result was the search the user had
+  /// just cleared. Setting [_searchQuery] *before* clearing the field leaves
+  /// the listener nothing to react to, so the caller's own reload is the
+  /// only one.
+  void clearSearch() {
+    _debounce?.cancel();
+    _searchQuery = '';
+    _searchController.clear();
+    _currentPage = 0;
+    _hasMoreData = true;
+    _cachedQuotations.clear();
+    _cachedTotalCount = 0;
+    _lastFetchTime = null;
+  }
+
   List<Attachment> _attachments = [];
   bool _isLoadingAttachments = false;
 
@@ -1476,7 +1539,10 @@ class QuotationProvider with ChangeNotifier {
     bool clearGroupBy = false,
   }) async {
     if (filters != null) {
-      _activeFilters = filters;
+      // Copied, not held: the filter sheet keeps editing the set it passed in,
+      // which would otherwise change what this provider thinks is applied
+      // without anything reloading.
+      _activeFilters = Set<String>.from(filters);
 
       if (_activeFilters.isEmpty) {
         _cachedQuotations.clear();
@@ -1691,92 +1757,13 @@ class QuotationProvider with ChangeNotifier {
         return [];
       }
 
-      List<dynamic> domain = [
-        [
-          'state',
-          'in',
-          ['draft', 'sent', 'sale', 'done', 'cancel'],
-        ],
-      ];
+      await _ensureServerFacts();
 
-      if (_activeFilters.isNotEmpty) {
-        for (final filter in _activeFilters) {
-          switch (filter) {
-            case 'quotation':
-              domain.add([
-                'state',
-                'in',
-                ['draft', 'sent'],
-              ]);
-              break;
-            case 'sale':
-              domain.add(['state', '=', 'sale']);
-              break;
-            case 'user_quotations':
-              final session = await OdooSessionManager.getCurrentSession();
-              if (session != null) {
-                domain.add(['user_id', '=', session.userId]);
-              }
-              break;
-            case 'invoiced':
-              domain.add(['invoice_status', '=', 'invoiced']);
-              break;
-            case 'to_invoice':
-              domain.add(['invoice_status', '=', 'to invoice']);
-              break;
-            case 'delivered':
-            case 'to_deliver':
-              domain.add(deliveryStatusLeaf(filter)!);
-              break;
-            case 'expired':
-              final now = DateTime.now();
-              final todayStr =
-                  '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-              domain.addAll([
-                [
-                  'state',
-                  'in',
-                  ['draft', 'sent'],
-                ],
-                ['validity_date', '<', todayStr],
-              ]);
-              break;
-          }
-        }
-      } else {}
-
-      if (_customerFilterId != null) {
-        domain.add(['partner_id', '=', _customerFilterId]);
-      } else {}
-
-      if (_invoiceNameFilter != null && _invoiceNameFilter!.isNotEmpty) {
-        domain.add(['name', 'ilike', _invoiceNameFilter!.trim()]);
-      }
-
-      if (_startDate != null || _endDate != null) {
-        if (_startDate != null && _endDate != null) {
-          final startStr =
-              '${_startDate!.year}-${_startDate!.month.toString().padLeft(2, '0')}-${_startDate!.day.toString().padLeft(2, '0')} 00:00:00';
-          final endStr =
-              '${_endDate!.year}-${_endDate!.month.toString().padLeft(2, '0')}-${_endDate!.day.toString().padLeft(2, '0')} 23:59:59';
-          domain.add(['create_date', '>=', startStr]);
-          domain.add(['create_date', '<=', endStr]);
-        } else if (_startDate != null) {
-          final startStr =
-              '${_startDate!.year}-${_startDate!.month.toString().padLeft(2, '0')}-${_startDate!.day.toString().padLeft(2, '0')} 00:00:00';
-          domain.add(['create_date', '>=', startStr]);
-        } else if (_endDate != null) {
-          final endStr =
-              '${_endDate!.year}-${_endDate!.month.toString().padLeft(2, '0')}-${_endDate!.day.toString().padLeft(2, '0')} 23:59:59';
-          domain.add(['create_date', '<=', endStr]);
-        }
-      } else {}
-
-      if (_searchQuery.isNotEmpty) {
-        domain.add('|');
-        domain.add(['name', 'ilike', _searchQuery]);
-        domain.add(['partner_id.name', 'ilike', _searchQuery]);
-      }
+      // One domain builder, shared with the paged and grouped reads. The copy
+      // that used to live here drifted: it filtered by salesperson where
+      // [_buildDomain] did not, so "My Quotations" worked on whichever of the
+      // two happened to run.
+      final List<dynamic> domain = _buildDomain();
 
       List<String> fields = [
         'id',

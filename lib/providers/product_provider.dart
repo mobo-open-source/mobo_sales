@@ -63,6 +63,10 @@ class ProductProvider with ChangeNotifier {
 
   final Set<String> _activeFilters = {};
   bool _showActiveOnly = true;
+
+  /// Odoo's "Archived" facet: shows only what has been archived, which is
+  /// otherwise unreachable because the server hides it by default.
+  bool _showArchivedOnly = false;
   bool _showInStockOnly = false;
 
   bool _showServicesOnly = false;
@@ -90,6 +94,7 @@ class ProductProvider with ChangeNotifier {
 
   Set<String> get activeFilters => _activeFilters;
   bool get showActiveOnly => _showActiveOnly;
+  bool get showArchivedOnly => _showArchivedOnly;
   bool get showInStockOnly => _showInStockOnly;
 
   bool get showServicesOnly => _showServicesOnly;
@@ -330,10 +335,11 @@ class ProductProvider with ChangeNotifier {
   /// field list fetched for the group-by options says. Unknown until then.
   bool get _hasIsStorable => _availableFields.contains('is_storable');
 
-  /// The domain leaves for the Services / Consumables / Storable chips on the
-  /// connected server (see [productTypeFilterDomain]). [generation] defaults to
-  /// the one of the session already in memory.
-  List<List<dynamic>> typeFilterLeaves({
+  /// The domain for the Services / Consumables / Storable chips on the
+  /// connected server (see [productTypeFilterDomain]). Several chips are
+  /// alternatives, so this can contain `'|'` operators as well as leaves.
+  /// [generation] defaults to the one of the session already in memory.
+  List<dynamic> typeFilterLeaves({
     bool services = false,
     bool consumables = false,
     bool storable = false,
@@ -363,6 +369,12 @@ class ProductProvider with ChangeNotifier {
     }
 
     if (filters != null) {
+      // Odoo hides archived products on its own, so the normal list needs no
+      // `active` leaf; naming the field is what switches that off, which is
+      // how the Archived filter reaches them at all.
+      if (filters['showArchivedOnly'] == true) {
+        domain.add(['active', '=', false]);
+      }
       if (filters['showActiveOnly'] == true) {
         domain.add(['active', '=', true]);
       }
@@ -594,6 +606,7 @@ class ProductProvider with ChangeNotifier {
   /// Applies one or more filter values to the current state without fetching.
   void setFilterState({
     bool? showActiveOnly,
+    bool? showArchivedOnly,
     bool? showInStockOnly,
 
     bool? showServicesOnly,
@@ -608,6 +621,7 @@ class ProductProvider with ChangeNotifier {
     DateTime? endDate,
   }) {
     if (showActiveOnly != null) _showActiveOnly = showActiveOnly;
+    if (showArchivedOnly != null) _showArchivedOnly = showArchivedOnly;
     if (showInStockOnly != null) _showInStockOnly = showInStockOnly;
 
     if (showServicesOnly != null) _showServicesOnly = showServicesOnly;
@@ -627,6 +641,7 @@ class ProductProvider with ChangeNotifier {
   void clearFilters() {
     _activeFilters.clear();
     _showActiveOnly = true;
+    _showArchivedOnly = false;
     _showInStockOnly = false;
 
     _showServicesOnly = false;

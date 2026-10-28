@@ -1715,8 +1715,9 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
 
   Future<bool?> _showArchiveCustomerDialog(
     BuildContext context,
-    Contact customer,
-  ) async {
+    Contact customer, {
+    required bool archiving,
+  }) async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return await showDialog<bool>(
       context: context,
@@ -1726,7 +1727,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
         elevation: isDark ? 0 : 8,
         backgroundColor: isDark ? Colors.grey[900] : Colors.white,
         title: Text(
-          'Archive Customer',
+          archiving ? 'Archive Customer' : 'Unarchive Customer',
           style: Theme.of(context).textTheme.titleLarge?.copyWith(
             fontWeight: FontWeight.w700,
             color: isDark
@@ -1735,7 +1736,9 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
           ),
         ),
         content: Text(
-          'Are you sure you want to archive ${customer.name}? This will deactivate the customer but preserve their data.',
+          archiving
+              ? 'Are you sure you want to archive ${customer.name}? This will deactivate the customer but preserve their data.'
+              : 'Reactivate ${customer.name}? They will appear in the customer list again.',
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
             color: isDark
                 ? Colors.grey[300]
@@ -1747,7 +1750,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
           MoboDialogButtons(
             secondaryLabel: 'Cancel',
             onSecondary: () => Navigator.of(ctx).pop(false),
-            primaryLabel: 'Archive',
+            primaryLabel: archiving ? 'Archive' : 'Unarchive',
             onPrimary: () => Navigator.of(ctx).pop(true),
           ),
         ],
@@ -1755,25 +1758,44 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
     );
   }
 
-  Future<void> _archiveCustomer(BuildContext context, Contact customer) async {
+  /// Archives or unarchives [customer], whichever the record is not already.
+  ///
+  /// Both directions are one `active` write; the menu offers whichever applies
+  /// so an archived customer reached through the list's "Archived" filter can
+  /// be brought back, instead of only being archived again to no effect.
+  Future<void> _setCustomerArchived(
+    BuildContext context,
+    Contact customer,
+  ) async {
+    final archiving = customer.isActive != false;
+
     if (customer.id == 0) {
       CustomSnackbar.showError(
         context,
-        'Invalid customer ID. Cannot archive customer.',
+        'Invalid customer ID. Cannot '
+        '${archiving ? 'archive' : 'unarchive'} customer.',
       );
       return;
     }
 
-    final confirmArchive = await _showArchiveCustomerDialog(context, customer);
-    if (confirmArchive != true || !context.mounted) return;
+    final confirmed = await _showArchiveCustomerDialog(
+      context,
+      customer,
+      archiving: archiving,
+    );
+    if (confirmed != true || !context.mounted) return;
 
     final sessionService = Provider.of<SessionService>(context, listen: false);
 
-    final archived = await runGuardedAction<bool>(
+    final done = await runGuardedAction<bool>(
       context: context,
-      message: 'Archiving customer...',
-      successMessage: 'Customer archived successfully',
-      failurePrefix: 'Failed to archive customer',
+      message: archiving ? 'Archiving customer...' : 'Unarchiving customer...',
+      successMessage: archiving
+          ? 'Customer archived successfully'
+          : 'Customer reactivated successfully',
+      failurePrefix: archiving
+          ? 'Failed to archive customer'
+          : 'Failed to unarchive customer',
       action: () async {
         final client = await sessionService.client;
         if (client == null) {
@@ -1784,7 +1806,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
           'method': 'write',
           'args': [
             [customer.id],
-            {'active': false},
+            {'active': archiving ? false : true},
           ],
           'kwargs': {},
         });
@@ -1793,7 +1815,24 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
       },
     );
 
-    if (archived != true) return;
+    if (done != true) return;
+
+    if (!archiving) {
+      // Still a visible record, so this is an edit, not a removal: the lists
+      // refresh themselves and the page stays open on the now-active customer.
+      DataChangeBus.instance.publish(
+        DataEntity.customer,
+        DataChangeKind.updated,
+        id: customer.id,
+        origin: this,
+      );
+      if (!mounted) return;
+      setState(() {
+        _contact = _contact.copyWith(isActive: true);
+        _wasEdited = true;
+      });
+      return;
+    }
 
     // Announced even if this page is gone: the server has archived it, and the
     // lists must stop showing it.
@@ -1913,7 +1952,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
                     }
                     break;
                   case 'archive':
-                    _archiveCustomer(context, _contact);
+                    _setCustomerArchived(context, _contact);
                     break;
                   case 'delete':
                     _deleteCustomer(context, _contact);
@@ -1992,18 +2031,26 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
                       ],
                     ),
                   ),
+                  // An archived customer is reachable through the list's
+                  // "Archived" filter, where the only useful action is the
+                  // way back; archiving it again writes `active = false` over
+                  // `active = false`.
                   PopupMenuItem<String>(
                     value: 'archive',
                     child: Row(
                       children: [
                         Icon(
-                          HugeIcons.strokeRoundedArchive03,
+                          _contact.isActive == false
+                              ? HugeIcons.strokeRoundedUnarchive03
+                              : HugeIcons.strokeRoundedArchive03,
                           color: isDark ? Colors.grey[300] : Colors.grey[800],
                           size: 20,
                         ),
                         const SizedBox(width: 12),
                         Text(
-                          'Archive Customer',
+                          _contact.isActive == false
+                              ? 'Unarchive Customer'
+                              : 'Archive Customer',
                           style: TextStyle(
                             color: isDark ? Colors.white : Colors.black87,
                             fontWeight: FontWeight.w500,

@@ -256,4 +256,38 @@ class OdooCompat {
       rethrow;
     }
   }
+
+  /// Whether the signed-in user belongs to the group with external id
+  /// [groupXmlId] (for example `account.group_account_invoice`).
+  ///
+  /// Group membership is not access rights: Odoo gates some actions on a
+  /// group even when the model's ACL allows the write, so [hasAccess] can say
+  /// yes where the action still fails.
+  ///
+  /// The call shape differs by release. Up to Odoo 17 `has_group` is an
+  /// `@api.model` method taking only the external id; from 18 it is an
+  /// instance method that is handed the user id first. Sending the wrong
+  /// shape is a `TypeError`, not a "no".
+  ///
+  /// A failed call throws rather than answering false, so a caller can tell
+  /// "not in the group" from "could not ask".
+  static Future<bool> hasGroup({
+    required String groupXmlId,
+    required int userId,
+    OdooCallKw? callKw,
+    int? generation,
+  }) async {
+    final call = callKw ?? OdooSessionManager.safeCallKw;
+    final gen = generation ?? await OdooSessionManager.serverGeneration();
+
+    final result = await call({
+      'model': 'res.users',
+      'method': 'has_group',
+      // An unknown generation (0) takes the newer shape, which every release
+      // the app supports except 17 uses.
+      'args': gen == 0 || gen >= 18 ? [userId, groupXmlId] : [groupXmlId],
+      'kwargs': <String, dynamic>{},
+    });
+    return result == true;
+  }
 }

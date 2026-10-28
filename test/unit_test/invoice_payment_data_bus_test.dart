@@ -8,6 +8,7 @@ import 'package:mobo_sales/models/product.dart';
 import 'package:mobo_sales/models/quote.dart';
 import 'package:mobo_sales/providers/invoice_creation_provider.dart';
 import 'package:mobo_sales/providers/invoice_details_provider_enterprise.dart';
+import 'package:mobo_sales/services/invoice_details_service.dart';
 import 'package:mobo_sales/services/data_change_bus.dart';
 import 'package:mobo_sales/services/invoice_service.dart';
 import 'package:mobo_sales/services/payment_service.dart';
@@ -84,6 +85,11 @@ void main() {
       when(
         () => permissions.canUnlink('account.move'),
       ).thenAnswer((_) async => true);
+      // Posting also needs Odoo's Invoicing group; these tests are about the
+      // announcement, so the user has it.
+      when(
+        () => permissions.hasGroup(kInvoicingGroup),
+      ).thenAnswer((_) async => true);
       provider = InvoiceDetailsProvider(
         invoiceDetailsService: service,
         permissionService: permissions,
@@ -94,7 +100,8 @@ void main() {
     test('confirming announces the invoice, from the provider, once the server '
         'has posted it, and not before', () async {
       provider.setInvoiceData({'id': 1, 'state': 'draft'});
-      final posting = Completer<void>();
+      // Null is "posted"; a non-null value is the step Odoo stopped at.
+      final posting = Completer<String?>();
       when(() => service.postInvoice(1)).thenAnswer((_) => posting.future);
       stubReload({'id': 1, 'state': 'posted'});
 
@@ -102,7 +109,7 @@ void main() {
       await settle();
       expect(heard.changes, isEmpty, reason: 'the server has not answered');
 
-      posting.complete();
+      posting.complete(null);
       expect(await result, isTrue);
       await settle();
 

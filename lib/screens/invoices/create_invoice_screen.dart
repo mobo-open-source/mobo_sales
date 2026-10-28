@@ -4394,6 +4394,11 @@ class __InvoiceLineItemState extends State<_InvoiceLineItem> {
             ),
 
             const SizedBox(height: 12),
+            // Quantity and price share the row; the total has its own line
+            // underneath. All three sat in one row before, with the total the
+            // only child not inside an `Expanded` — so it was measured first
+            // at its natural width and a large amount ate the space the two
+            // fields were meant to divide, leaving their contents clipped.
             Row(
               children: [
                 Expanded(
@@ -4440,39 +4445,42 @@ class __InvoiceLineItemState extends State<_InvoiceLineItem> {
                     ],
                   ),
                 ),
-                const SizedBox(width: 16),
-
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      'Total',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: secondaryTextColor,
-                      ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  'Total',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: secondaryTextColor,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    widget.currencyProvider.formatAmount(
+                      subtotal,
+                      currency:
+                          widget.currencyProvider.companyCurrencyIdList !=
+                                  null &&
+                              widget
+                                      .currencyProvider
+                                      .companyCurrencyIdList!
+                                      .length >
+                                  1
+                          ? widget.currencyProvider.companyCurrencyIdList![1]
+                                .toString()
+                          : widget.currencyProvider.currency,
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      widget.currencyProvider.formatAmount(
-                        subtotal,
-                        currency:
-                            widget.currencyProvider.companyCurrencyIdList !=
-                                    null &&
-                                widget
-                                        .currencyProvider
-                                        .companyCurrencyIdList!
-                                        .length >
-                                    1
-                            ? widget.currencyProvider.companyCurrencyIdList![1]
-                                  .toString()
-                            : widget.currencyProvider.currency,
-                      ),
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: isDark ? Colors.white : theme.primaryColor,
-                      ),
+                    textAlign: TextAlign.right,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: isDark ? Colors.white : theme.primaryColor,
                     ),
-                  ],
+                  ),
                 ),
               ],
             ),
@@ -4500,9 +4508,18 @@ class __QuantityInputState extends State<_QuantityInput> {
   void initState() {
     super.initState();
     _controller = TextEditingController(
-      text: widget.initialValue.toStringAsFixed(0),
+      text: _formatQuantity(widget.initialValue),
     );
     _controller.addListener(_onQuantityChanged);
+  }
+
+  /// Renders whole numbers without decimals (e.g. `1`) while preserving
+  /// fractional quantities (e.g. `2.5`) so unit-of-measure decimals aren't
+  /// lost. `toStringAsFixed(0)` rounded them away on the way in.
+  String _formatQuantity(double value) {
+    return value == value.roundToDouble()
+        ? value.toStringAsFixed(0)
+        : value.toString();
   }
 
   @override
@@ -4513,8 +4530,11 @@ class __QuantityInputState extends State<_QuantityInput> {
   }
 
   void _onQuantityChanged() {
-    final value = double.tryParse(_controller.text) ?? 0.0;
-    widget.onChanged(value > 0 ? value : 1.0);
+    // An empty or half-typed field is not a quantity yet, so the line keeps
+    // the one it has; 0 is a real value and must reach the line.
+    final value = double.tryParse(_controller.text);
+    if (value == null || value < 0) return;
+    widget.onChanged(value);
   }
 
   @override
@@ -4538,8 +4558,12 @@ class __QuantityInputState extends State<_QuantityInput> {
               icon: const Icon(Icons.remove, size: 18),
               onPressed: () {
                 final currentValue = double.tryParse(_controller.text) ?? 1.0;
-                if (currentValue > 1) {
-                  _controller.text = (currentValue - 1).toInt().toString();
+                if (currentValue > 0) {
+                  // Not `toInt()`: truncating here turned a 2.5 into a 3 and
+                  // lost the unit-of-measure decimals.
+                  _controller.text = _formatQuantity(
+                    (currentValue - 1).clamp(0, double.infinity).toDouble(),
+                  );
                 }
               },
               padding: const EdgeInsets.all(4),
@@ -4574,7 +4598,7 @@ class __QuantityInputState extends State<_QuantityInput> {
               icon: const Icon(Icons.add, size: 18),
               onPressed: () {
                 final currentValue = double.tryParse(_controller.text) ?? 0.0;
-                _controller.text = (currentValue + 1).toInt().toString();
+                _controller.text = _formatQuantity(currentValue + 1);
               },
               padding: const EdgeInsets.all(4),
               constraints: const BoxConstraints(),

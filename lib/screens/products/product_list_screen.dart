@@ -212,6 +212,11 @@ class ProductListScreenState extends State<ProductListScreen>
   bool _showStorableOnly = false;
   bool _showAvailableOnly = false;
 
+  /// Odoo's "Archived" facet. Archived products are hidden by the server
+  /// unless the domain names `active`, so without this filter there is no way
+  /// to reach one — and so no way to bring it back.
+  bool _showArchivedOnly = false;
+
   String _lastSearchValue = '';
 
   bool _isCacheValid() {
@@ -387,6 +392,7 @@ class ProductListScreenState extends State<ProductListScreen>
         'showConsumablesOnly': _showConsumablesOnly,
         'showStorableOnly': _showStorableOnly,
         'showAvailableOnly': _showAvailableOnly,
+        'showArchivedOnly': _showArchivedOnly,
         'selectedGroupBy': productProvider.selectedGroupBy,
       };
 
@@ -542,6 +548,7 @@ class ProductListScreenState extends State<ProductListScreen>
                             tempState['showConsumablesOnly'] = false;
                             tempState['showStorableOnly'] = false;
                             tempState['showAvailableOnly'] = false;
+                            tempState['showArchivedOnly'] = false;
                             tempState['selectedGroupBy'] = null;
                           });
 
@@ -550,6 +557,7 @@ class ProductListScreenState extends State<ProductListScreen>
                             _showConsumablesOnly = false;
                             _showStorableOnly = false;
                             _showAvailableOnly = false;
+                            _showArchivedOnly = false;
 
                             _searchController.clear();
                             _currentPage = 0;
@@ -589,6 +597,8 @@ class ProductListScreenState extends State<ProductListScreen>
                                   tempState['showStorableOnly'] ?? false;
                               _showAvailableOnly =
                                   tempState['showAvailableOnly'] ?? false;
+                              _showArchivedOnly =
+                                  tempState['showArchivedOnly'] ?? false;
 
                               _currentPage = 0;
                               _isLoading = true;
@@ -611,6 +621,7 @@ class ProductListScreenState extends State<ProductListScreen>
                               showConsumablesOnly: _showConsumablesOnly,
                               showStorableOnly: _showStorableOnly,
                               showAvailableOnly: _showAvailableOnly,
+                              showArchivedOnly: _showArchivedOnly,
                             );
 
                             provider.setGroupBy(
@@ -695,7 +706,8 @@ class ProductListScreenState extends State<ProductListScreen>
           if (tempState['showServicesOnly'] == true ||
               tempState['showConsumablesOnly'] == true ||
               tempState['showStorableOnly'] == true ||
-              tempState['showAvailableOnly'] == true) ...[
+              tempState['showAvailableOnly'] == true ||
+              tempState['showArchivedOnly'] == true) ...[
             Text(
               'Active Filters',
               style: theme.textTheme.labelMedium?.copyWith(
@@ -762,6 +774,20 @@ class ProductListScreenState extends State<ProductListScreen>
                     deleteIcon: const Icon(Icons.close, size: 16),
                     onDeleted: () => setDialogState(
                       () => tempState['showAvailableOnly'] = false,
+                    ),
+                  ),
+                if (tempState['showArchivedOnly'] == true)
+                  Chip(
+                    label: const Text(
+                      'Archived',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                    backgroundColor: isDark
+                        ? Colors.white.withValues(alpha: 0.08)
+                        : theme.primaryColor.withValues(alpha: 0.08),
+                    deleteIcon: const Icon(Icons.close, size: 16),
+                    onDeleted: () => setDialogState(
+                      () => tempState['showArchivedOnly'] = false,
                     ),
                   ),
               ],
@@ -914,6 +940,36 @@ class ProductListScreenState extends State<ProductListScreen>
                 onSelected: (val) {
                   setDialogState(() {
                     tempState['showAvailableOnly'] = val;
+                  });
+                },
+              ),
+              ChoiceChip(
+                label: Text(
+                  'Archived',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: tempState['showArchivedOnly'] == true
+                        ? FontWeight.w600
+                        : FontWeight.w400,
+                    color: tempState['showArchivedOnly'] == true
+                        ? Colors.white
+                        : (isDark ? Colors.white : Colors.black87),
+                  ),
+                ),
+                selected: tempState['showArchivedOnly'] == true,
+                selectedColor: theme.primaryColor,
+                backgroundColor: isDark
+                    ? Colors.white.withValues(alpha: 0.08)
+                    : theme.primaryColor.withValues(alpha: 0.08),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  side: BorderSide(
+                    color: isDark ? Colors.grey[600]! : Colors.grey[300]!,
+                  ),
+                ),
+                onSelected: (val) {
+                  setDialogState(() {
+                    tempState['showArchivedOnly'] = val;
                   });
                 },
               ),
@@ -1233,6 +1289,7 @@ class ProductListScreenState extends State<ProductListScreen>
         'showConsumablesOnly': _showConsumablesOnly,
         'showStorableOnly': _showStorableOnly,
         'showAvailableOnly': _showAvailableOnly,
+        'showArchivedOnly': _showArchivedOnly,
       };
 
       if (isLoadMore) {
@@ -1721,6 +1778,7 @@ class ProductListScreenState extends State<ProductListScreen>
           _showConsumablesOnly ||
           _showStorableOnly ||
           _showAvailableOnly ||
+          _showArchivedOnly ||
           _searchController.text.isNotEmpty;
 
       if (productProvider.isServerUnreachable ||
@@ -1771,6 +1829,7 @@ class ProductListScreenState extends State<ProductListScreen>
                           _showConsumablesOnly = false;
                           _showStorableOnly = false;
                           _showAvailableOnly = false;
+                          _showArchivedOnly = false;
                           _searchController.clear();
                         });
 
@@ -2751,6 +2810,7 @@ class ProductListScreenState extends State<ProductListScreen>
       ];
 
       if (_showAvailableOnly) domain.add(['qty_available', '>', 0]);
+      if (_showArchivedOnly) domain.add(['active', '=', false]);
 
       if (_searchController.text.trim().isNotEmpty) {
         domain.addAll(
@@ -2886,6 +2946,7 @@ class ProductListScreenState extends State<ProductListScreen>
       ];
 
       if (_showAvailableOnly) domain.add(['qty_available', '>', 0]);
+      if (_showArchivedOnly) domain.add(['active', '=', false]);
 
       if (_searchController.text.trim().isNotEmpty) {
         final searchQuery = _searchController.text.trim();
@@ -4311,7 +4372,8 @@ class ProductListScreenState extends State<ProductListScreen>
         (_showServicesOnly ? 1 : 0) +
         (_showConsumablesOnly ? 1 : 0) +
         (_showStorableOnly ? 1 : 0) +
-        (_showAvailableOnly ? 1 : 0);
+        (_showAvailableOnly ? 1 : 0) +
+        (_showArchivedOnly ? 1 : 0);
 
     if (count == 0) {
       if (hasGroupBy) {
@@ -4385,7 +4447,8 @@ class ProductListScreenState extends State<ProductListScreen>
     return _showServicesOnly ||
         _showConsumablesOnly ||
         _showStorableOnly ||
-        _showAvailableOnly;
+        _showAvailableOnly ||
+        _showArchivedOnly;
   }
 
   String _getGroupByDisplayName(String? groupBy) {

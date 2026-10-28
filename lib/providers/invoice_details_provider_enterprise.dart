@@ -352,9 +352,39 @@ class InvoiceDetailsProvider extends ChangeNotifier {
         return false;
       }
 
-      await _invoiceDetailsService.postInvoice(parsedInvoiceId);
-      _announce(parsedInvoiceId);
+      // Write access to `account.move` is not enough: Odoo's `_post` also
+      // requires the Invoicing group, on 17 through 20 alike, and raises an
+      // AccessError without it. A salesperson commonly has the first and not
+      // the second, so checking only the ACL offered a button the server
+      // always refused — and the refusal arrived as a bare "Access Denied"
+      // that named nothing the user could act on.
+      final canPost = await _permissionService.hasGroup(kInvoicingGroup);
+      if (!canPost) {
+        _errorMessage = kInvoicingGroupMissingMessage;
+        notifyListeners();
+        _isProcessing = false;
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
 
+      final pendingStep = await _invoiceDetailsService.postInvoice(
+        parsedInvoiceId,
+      );
+
+      if (pendingStep != null) {
+        // Odoo answered with a wizard and the invoice is still a draft, so
+        // nothing changed for anyone else to hear about. Reporting success
+        // here left the user looking at a draft invoice they had just been
+        // told was confirmed.
+        await fetchInvoiceDetails(context, invoiceId);
+        _errorMessage =
+            'Odoo needs $pendingStep before this invoice can be '
+            'confirmed. Please complete it in Odoo.';
+        return false;
+      }
+
+      _announce(parsedInvoiceId);
       await fetchInvoiceDetails(context, invoiceId);
       return true;
     } catch (e) {

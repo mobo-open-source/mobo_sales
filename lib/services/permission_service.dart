@@ -10,6 +10,7 @@ class PermissionService {
 
   PermissionService._internal()
     : _callKwProvider = _liveCallKw,
+      _userIdProvider = _liveUserId,
       _generation = null,
       _clock = DateTime.now;
 
@@ -22,11 +23,14 @@ class PermissionService {
     required OdooCallKw callKw,
     int? generation,
     DateTime Function()? clock,
+    int? userId,
   }) : _callKwProvider = (() async => callKw),
+       _userIdProvider = (() async => userId ?? 2),
        _generation = generation,
        _clock = clock ?? DateTime.now;
 
   final Future<OdooCallKw?> Function() _callKwProvider;
+  final Future<int?> Function() _userIdProvider;
   final int? _generation;
   final DateTime Function() _clock;
 
@@ -37,6 +41,12 @@ class PermissionService {
   static Future<OdooCallKw?> _liveCallKw() async {
     final client = await OdooSessionManager.getClient();
     return client?.callKw;
+  }
+
+  /// The signed-in user's id, or null when there is no session.
+  static Future<int?> _liveUserId() async {
+    final session = await OdooSessionManager.getCurrentSession();
+    return session?.userId;
   }
 
   /// Whether the current user may do [op] (`read`, `create`, `write`,
@@ -63,6 +73,44 @@ class PermissionService {
       final value = await OdooCompat.hasAccess(
         model: model,
         operation: op,
+        callKw: callKw,
+        generation: _generation,
+      );
+      _cache[key] = _CachedPerm(value, now);
+      return value;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// Whether the current user belongs to the Odoo group [groupXmlId].
+  ///
+  /// Separate from [can] because Odoo gates some actions on a group rather
+  /// than on the model's ACL — posting an invoice needs
+  /// `account.group_account_invoice` on top of write access to
+  /// `account.move`, so asking [can] alone offers the user a button the
+  /// server will refuse.
+  ///
+  /// Remembered for five minutes, like [can]. A failure to ask answers false
+  /// and is not remembered.
+  Future<bool> hasGroup(String groupXmlId) async {
+    try {
+      final key = 'group:$groupXmlId';
+      final now = _clock();
+      final cached = _cache[key];
+      if (cached != null && now.difference(cached.at) < _ttl) {
+        return cached.value;
+      }
+
+      final callKw = await _callKwProvider();
+      if (callKw == null) return false;
+
+      final userId = await _userIdProvider();
+      if (userId == null) return false;
+
+      final value = await OdooCompat.hasGroup(
+        groupXmlId: groupXmlId,
+        userId: userId,
         callKw: callKw,
         generation: _generation,
       );

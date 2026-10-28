@@ -47,63 +47,80 @@ class MoboDialogButtons extends StatelessWidget {
       fontWeight: FontWeight.w700,
     );
 
+    final secondary = SizedBox(
+      height: height,
+      child: OutlinedButton(
+        onPressed: isLoading ? null : onSecondary,
+        style: OutlinedButton.styleFrom(
+          foregroundColor: colors.primary,
+          disabledForegroundColor: colors.primary.withValues(alpha: 0.5),
+          side: BorderSide(color: colors.primary, width: 1.5),
+          shape: shape,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          textStyle: label,
+        ),
+        child: _ScaledLabel(secondaryLabel),
+      ),
+    );
+
+    final primary = SizedBox(
+      height: height,
+      child: ElevatedButton(
+        onPressed: isLoading ? null : onPrimary,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: colors.primary,
+          foregroundColor: Colors.white,
+          disabledBackgroundColor: colors.primary.withValues(alpha: 0.5),
+          disabledForegroundColor: Colors.white70,
+          elevation: 0,
+          shape: shape,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          textStyle: label,
+        ),
+        child: isLoading
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
+            : _ScaledLabel(primaryLabel),
+      ),
+    );
+
     return Row(
       children: [
-        Expanded(
-          child: SizedBox(
-            height: height,
-            child: OutlinedButton(
-              onPressed: isLoading ? null : onSecondary,
-              style: OutlinedButton.styleFrom(
-                foregroundColor: colors.primary,
-                disabledForegroundColor: colors.primary.withValues(alpha: 0.5),
-                side: BorderSide(color: colors.primary, width: 1.5),
-                shape: shape,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                textStyle: label,
-              ),
-              child: Text(
-                secondaryLabel,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ),
-        ),
+        Expanded(child: secondary),
         const SizedBox(width: _gap),
-        Expanded(
-          child: SizedBox(
-            height: height,
-            child: ElevatedButton(
-              onPressed: isLoading ? null : onPrimary,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: colors.primary,
-                foregroundColor: Colors.white,
-                disabledBackgroundColor: colors.primary.withValues(alpha: 0.5),
-                disabledForegroundColor: Colors.white70,
-                elevation: 0,
-                shape: shape,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                textStyle: label,
-              ),
-              child: isLoading
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                  : Text(
-                      primaryLabel,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-            ),
-          ),
-        ),
+        Expanded(child: primary),
       ],
+    );
+  }
+}
+
+/// A button label that shrinks to fit rather than losing its end.
+///
+/// Two equal halves of a dialog leave each button about 86pt for its text on
+/// a 360pt-wide phone, which is less than a two-word action such as "Create
+/// Draft" needs at 16pt bold — so it used to ellipsize to "Create Dra…".
+/// Scaling keeps the whole label readable, and it costs nothing at the widths
+/// where the label already fits.
+///
+/// Deliberately not a `LayoutBuilder`: `AlertDialog` measures its actions
+/// with intrinsic dimensions, which a `LayoutBuilder` cannot answer, so one
+/// here throws during layout in every dialog in the app.
+class _ScaledLabel extends StatelessWidget {
+  const _ScaledLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Text(text, maxLines: 1, softWrap: false),
     );
   }
 }

@@ -85,19 +85,48 @@ class _QuotationListScreenState extends State<QuotationListScreen>
     'expired': 'Expired Quotes',
   };
 
+  /// Filters that cannot be on at the same time, because the domain ANDs
+  /// them: two members of one group describe states a single order cannot
+  /// both be in, so the pair always matches nothing rather than matching
+  /// more.
+  static const List<Set<String>> _exclusiveFilterGroups = [
+    {'quotation', 'sale', 'expired'},
+    {'invoiced', 'to_invoice'},
+    {'delivered', 'to_deliver'},
+  ];
+
+  /// Filters meaning "still a quotation" — `state in (draft, sent)`.
+  static const Set<String> _draftOnlyFilters = {'quotation', 'expired'};
+
+  /// Filters reading a status Odoo only computes once an order is confirmed.
+  /// Pairing one with a [_draftOnlyFilters] entry always matches nothing.
+  static const Set<String> _confirmedOnlyFilters = {
+    'invoiced',
+    'to_invoice',
+    'delivered',
+    'to_deliver',
+  };
+
   bool _isFilterDisabled(String filter, Set<String> selected) {
-    if (selected.contains('quotation')) {
-      return filter != 'quotation';
+    // Already on: it has to stay tappable, or it could never be turned off.
+    if (selected.contains(filter)) return false;
+
+    // Narrows by salesperson rather than by state, so it contradicts nothing.
+    if (filter == 'user_quotations') return false;
+
+    for (final group in _exclusiveFilterGroups) {
+      if (group.contains(filter) && selected.any(group.contains)) return true;
     }
-    if (selected.contains('sale')) {
-      return filter == 'quotation';
+
+    if (_confirmedOnlyFilters.contains(filter) &&
+        selected.any(_draftOnlyFilters.contains)) {
+      return true;
     }
-    if (selected.contains('invoiced') || selected.contains('to_invoice')) {
-      return filter == 'quotation';
+    if (_draftOnlyFilters.contains(filter) &&
+        selected.any(_confirmedOnlyFilters.contains)) {
+      return true;
     }
-    if (selected.contains('delivered') || selected.contains('to_deliver')) {
-      return filter == 'quotation';
-    }
+
     return false;
   }
 
@@ -106,7 +135,9 @@ class _QuotationListScreenState extends State<QuotationListScreen>
 
     final provider = Provider.of<QuotationProvider>(context, listen: false);
 
-    provider.searchController.clear();
+    // Resets the query and paging without arming the provider's debounce, so
+    // the reload below is the only one and it runs with the search empty.
+    provider.clearSearch();
 
     if (resetFilters) {
       setState(() {
@@ -1176,8 +1207,9 @@ class _QuotationListScreenState extends State<QuotationListScreen>
                     hasFilters: hasActiveFilters,
                     onClearFilters: hasActiveFilters
                         ? () {
-                            provider.searchController.clear();
-                            provider.loadQuotations(filters: {});
+                            setState(() => _activeFilters.clear());
+                            provider.clearSearch();
+                            provider.loadQuotations(filters: const {});
                           }
                         : null,
                     onRetry: () {
@@ -2148,7 +2180,6 @@ class _QuotationListScreenState extends State<QuotationListScreen>
 
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final backgroundColor = isDarkMode ? Colors.grey[900] : Colors.grey[50];
-    final primaryColor = Theme.of(context).primaryColor;
     final bool isFilteredByCustomer = widget.customerId != null;
     final bool isFilteredByInvoice = widget.invoiceName != null;
 
@@ -2176,7 +2207,10 @@ class _QuotationListScreenState extends State<QuotationListScreen>
                           fontWeight: FontWeight.w600,
                           fontSize: 18,
                           letterSpacing: 0.5,
-                          color: isDarkMode ? Colors.white : primaryColor,
+                          // Black, as every other titled page in the app:
+                          // the brand colour here made this one screen read
+                          // as though the title were a link.
+                          color: isDarkMode ? Colors.white : Colors.black,
                         ),
                       ),
                       if (isFilteredByInvoice)
@@ -2187,17 +2221,20 @@ class _QuotationListScreenState extends State<QuotationListScreen>
                             fontWeight: FontWeight.w400,
                             color: isDarkMode
                                 ? Colors.white.withOpacity(0.7)
-                                : primaryColor.withOpacity(0.7),
+                                : Colors.black.withOpacity(0.7),
                           ),
                         ),
                     ],
                   ),
                   leading: IconButton(
                     onPressed: () => Navigator.pop(context),
-                    icon: Icon(HugeIcons.strokeRoundedArrowLeft01),
+                    icon: Icon(
+                      HugeIcons.strokeRoundedArrowLeft01,
+                      color: isDarkMode ? Colors.white : Colors.black,
+                    ),
                   ),
                   backgroundColor: backgroundColor,
-                  foregroundColor: isDarkMode ? Colors.white : primaryColor,
+                  foregroundColor: isDarkMode ? Colors.white : Colors.black,
                   elevation: 0,
                 )
               : null,
@@ -2541,430 +2578,6 @@ class _QuotationListScreenState extends State<QuotationListScreen>
                     ),
                   ],
                 ),
-        );
-      },
-    );
-  }
-
-  void _showFilterDialog() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return Dialog(
-              backgroundColor: Colors.transparent,
-              child: Container(
-                constraints: const BoxConstraints(
-                  maxWidth: 400,
-                  maxHeight: 600,
-                ),
-                decoration: BoxDecoration(
-                  color: isDark ? Colors.grey[900] : Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
-                      blurRadius: 20,
-                      offset: const Offset(0, 10),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        color: isDark
-                            ? Colors.grey[850]
-                            : Theme.of(context).primaryColor.withOpacity(0.05),
-                        borderRadius: const BorderRadius.only(
-                          topLeft: Radius.circular(16),
-                          topRight: Radius.circular(16),
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            HugeIcons.strokeRoundedFilterHorizontal,
-                            color: Theme.of(context).primaryColor,
-                            size: 24,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              'Filter Quotations',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w600,
-                                color: isDark ? Colors.white : Colors.grey[800],
-                              ),
-                            ),
-                          ),
-                          IconButton(
-                            onPressed: () => Navigator.of(context).pop(),
-                            icon: Icon(
-                              Icons.close,
-                              color: isDark
-                                  ? Colors.grey[400]
-                                  : Colors.grey[600],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    Flexible(
-                      child: SingleChildScrollView(
-                        padding: const EdgeInsets.all(20),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Status',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                color: isDark ? Colors.white : Colors.grey[800],
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            Consumer<QuotationProvider>(
-                              builder: (context, provider, child) {
-                                Set<String> dialogFilters = Set.from(
-                                  provider.activeFilters,
-                                );
-
-                                return Wrap(
-                                  spacing: 8,
-                                  runSpacing: 8,
-                                  children: kQuotationFilters.entries.map((
-                                    entry,
-                                  ) {
-                                    final isSelected = dialogFilters.contains(
-                                      entry.key,
-                                    );
-                                    return FilterChip(
-                                      label: Text(entry.value),
-                                      selected: isSelected,
-                                      onSelected: (selected) {
-                                        setDialogState(() {
-                                          if (selected) {
-                                            dialogFilters.add(entry.key);
-                                          } else {
-                                            dialogFilters.remove(entry.key);
-                                          }
-                                        });
-                                      },
-                                      backgroundColor: isDark
-                                          ? Colors.grey[800]
-                                          : Colors.grey[100],
-                                      selectedColor: Theme.of(
-                                        context,
-                                      ).primaryColor.withOpacity(0.2),
-                                      checkmarkColor: Theme.of(
-                                        context,
-                                      ).primaryColor,
-                                      labelStyle: TextStyle(
-                                        color: isSelected
-                                            ? Theme.of(context).primaryColor
-                                            : (isDark
-                                                  ? Colors.grey[300]
-                                                  : Colors.grey[700]),
-                                        fontWeight: isSelected
-                                            ? FontWeight.w600
-                                            : FontWeight.normal,
-                                      ),
-                                    );
-                                  }).toList(),
-                                );
-                              },
-                            ),
-                            const SizedBox(height: 20),
-                            Text(
-                              'Date Range (Creation Date)',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                color: isDark ? Colors.white : Colors.grey[800],
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            Consumer<QuotationProvider>(
-                              builder: (context, provider, child) {
-                                return Row(
-                                  children: [
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            'Start Date',
-                                            style: TextStyle(
-                                              fontSize: 14,
-                                              color: isDark
-                                                  ? Colors.grey[300]
-                                                  : Colors.grey[600],
-                                            ),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          InkWell(
-                                            onTap: () async {
-                                              final picked =
-                                                  await showDatePicker(
-                                                    context: context,
-                                                    initialDate:
-                                                        provider.startDate ??
-                                                        DateTime.now(),
-                                                    firstDate: DateTime(2000),
-                                                    lastDate: DateTime.now()
-                                                        .add(
-                                                          const Duration(
-                                                            days: 365,
-                                                          ),
-                                                        ),
-                                                  );
-                                              if (picked != null) {
-                                                provider.setDateRange(
-                                                  picked,
-                                                  provider.endDate,
-                                                );
-                                              }
-                                            },
-                                            child: Container(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 12,
-                                                    vertical: 12,
-                                                  ),
-                                              decoration: BoxDecoration(
-                                                border: Border.all(
-                                                  color: isDark
-                                                      ? Colors.grey[600]!
-                                                      : Colors.grey[400]!,
-                                                ),
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
-                                              ),
-                                              child: Row(
-                                                children: [
-                                                  Icon(
-                                                    Icons.calendar_today,
-                                                    size: 16,
-                                                    color: isDark
-                                                        ? Colors.grey[400]
-                                                        : Colors.grey[600],
-                                                  ),
-                                                  const SizedBox(width: 8),
-                                                  Expanded(
-                                                    child: Text(
-                                                      provider.startDate != null
-                                                          ? DateFormat(
-                                                              'MMM dd, yyyy',
-                                                            ).format(
-                                                              provider
-                                                                  .startDate!,
-                                                            )
-                                                          : 'Select start date',
-                                                      style: TextStyle(
-                                                        color:
-                                                            provider.startDate !=
-                                                                null
-                                                            ? (isDark
-                                                                  ? Colors.white
-                                                                  : Colors
-                                                                        .black87)
-                                                            : (isDark
-                                                                  ? Colors
-                                                                        .grey[500]
-                                                                  : Colors
-                                                                        .grey[500]),
-                                                        fontSize: 14,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            'End Date',
-                                            style: TextStyle(
-                                              fontSize: 14,
-                                              color: isDark
-                                                  ? Colors.grey[300]
-                                                  : Colors.grey[600],
-                                            ),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          InkWell(
-                                            onTap: () async {
-                                              final picked =
-                                                  await showDatePicker(
-                                                    context: context,
-                                                    initialDate:
-                                                        provider.endDate ??
-                                                        DateTime.now(),
-                                                    firstDate: DateTime(2000),
-                                                    lastDate: DateTime.now()
-                                                        .add(
-                                                          const Duration(
-                                                            days: 365,
-                                                          ),
-                                                        ),
-                                                  );
-                                              if (picked != null) {
-                                                provider.setDateRange(
-                                                  provider.startDate,
-                                                  picked,
-                                                );
-                                              }
-                                            },
-                                            child: Container(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 12,
-                                                    vertical: 12,
-                                                  ),
-                                              decoration: BoxDecoration(
-                                                border: Border.all(
-                                                  color: isDark
-                                                      ? Colors.grey[600]!
-                                                      : Colors.grey[400]!,
-                                                ),
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
-                                              ),
-                                              child: Row(
-                                                children: [
-                                                  Icon(
-                                                    Icons.calendar_today,
-                                                    size: 16,
-                                                    color: isDark
-                                                        ? Colors.grey[400]
-                                                        : Colors.grey[600],
-                                                  ),
-                                                  const SizedBox(width: 8),
-                                                  Expanded(
-                                                    child: Text(
-                                                      provider.endDate != null
-                                                          ? DateFormat(
-                                                              'MMM dd, yyyy',
-                                                            ).format(
-                                                              provider.endDate!,
-                                                            )
-                                                          : 'Select end date',
-                                                      style: TextStyle(
-                                                        color:
-                                                            provider.endDate !=
-                                                                null
-                                                            ? (isDark
-                                                                  ? Colors.white
-                                                                  : Colors
-                                                                        .black87)
-                                                            : (isDark
-                                                                  ? Colors
-                                                                        .grey[500]
-                                                                  : Colors
-                                                                        .grey[500]),
-                                                        fontSize: 14,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                );
-                              },
-                            ),
-                            const SizedBox(height: 8),
-                            Consumer<QuotationProvider>(
-                              builder: (context, provider, child) {
-                                if (provider.startDate != null ||
-                                    provider.endDate != null) {
-                                  return TextButton.icon(
-                                    onPressed: () {
-                                      provider.setDateRange(null, null);
-                                    },
-                                    icon: Icon(
-                                      Icons.clear,
-                                      size: 16,
-                                      color: Colors.grey[600],
-                                    ),
-                                    label: Text(
-                                      'Clear date range',
-                                      style: TextStyle(
-                                        color: Colors.grey[600],
-                                        fontSize: 12,
-                                      ),
-                                    ),
-                                    style: TextButton.styleFrom(
-                                      padding: EdgeInsets.zero,
-                                      minimumSize: Size.zero,
-                                      tapTargetSize:
-                                          MaterialTapTargetSize.shrinkWrap,
-                                    ),
-                                  );
-                                }
-                                return const SizedBox.shrink();
-                              },
-                            ),
-
-                            Container(
-                              padding: const EdgeInsets.all(20),
-                              decoration: BoxDecoration(
-                                color: isDark
-                                    ? Colors.grey[850]
-                                    : Colors.grey[50],
-                                borderRadius: const BorderRadius.only(
-                                  bottomLeft: Radius.circular(16),
-                                  bottomRight: Radius.circular(16),
-                                ),
-                              ),
-                              child: Consumer<QuotationProvider>(
-                                builder: (context, provider, child) {
-                                  return MoboDialogButtons(
-                                    secondaryLabel: 'Clear All',
-                                    onSecondary: () {
-                                      provider.loadQuotations(filters: {});
-                                      Navigator.of(context).pop();
-                                    },
-                                    primaryLabel: 'Apply Filters',
-                                    onPrimary: () {
-                                      Navigator.of(context).pop();
-                                      _loadQuotations();
-                                    },
-                                  );
-                                },
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
         );
       },
     );

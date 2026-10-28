@@ -90,4 +90,48 @@ void main() {
       }
     });
   });
+
+  group("Odoo's own default terms on a sale order", () {
+    // Exactly what `sale.order.note` holds on a database with the "Default
+    // Terms & Conditions" setting on, and what a tester saw spelled out in
+    // the edit form's notes box.
+    const stored =
+        '<p>Terms &amp; Conditions: '
+        '<a href="https://mobo.easyinstance.com/terms" target="_blank" '
+        'rel="noreferrer noopener">https://mobo.easyinstance.com/terms</a></p>';
+
+    test('reads as a sentence, with no markup left in it', () {
+      final shown = htmlToPlainText(stored);
+
+      expect(
+        shown,
+        'Terms & Conditions: https://mobo.easyinstance.com/terms',
+      );
+      expect(shown, isNot(contains('<')));
+      expect(shown, isNot(contains('&amp;')));
+      expect(shown, isNot(contains('href')));
+    });
+
+    test('saving it back does not re-escape the ampersand each time', () {
+      // The loop that mattered: show, save, show, save. Writing the plain
+      // text straight back turned "&" into "&amp;" and then "&amp;amp;",
+      // and the link into literal angle brackets.
+      var current = stored;
+      for (var save = 0; save < 3; save++) {
+        final shown = htmlToPlainText(current);
+        expect(
+          shown,
+          'Terms & Conditions: https://mobo.easyinstance.com/terms',
+          reason: 'after $save save(s)',
+        );
+        current = plainTextToHtml(shown)!;
+      }
+    });
+
+    test('an emptied note becomes Odoo\'s "no value"', () {
+      expect(plainTextToHtml('   '), isNull);
+      expect(htmlToPlainText(false), '');
+      expect(htmlToPlainText(null), '');
+    });
+  });
 }

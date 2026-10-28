@@ -233,4 +233,134 @@ void main() {
       );
     });
   });
+
+  group('PermissionService.hasGroup', () {
+    /// A server that answers `has_group` for whichever call shape the
+    /// release uses, and records what it was sent.
+    ({OdooCallKw callKw, List<Map<String, dynamic>> calls}) groupServer({
+      required Set<String> memberOf,
+      required int expectUserIdArgument,
+    }) {
+      final calls = <Map<String, dynamic>>[];
+      Future<dynamic> callKw(Map<String, dynamic> payload) async {
+        calls.add(payload);
+        final args = payload['args'] as List;
+        // Odoo 17 takes only the external id; 18+ take the user id first.
+        // Sending the wrong shape is a TypeError on the server, not a "no".
+        if (expectUserIdArgument == 1) {
+          if (args.length != 2 || args[0] is! int) {
+            throw Exception('TypeError: has_group() missing the user');
+          }
+          return memberOf.contains(args[1]);
+        }
+        if (args.length != 1 || args[0] is! String) {
+          throw Exception('TypeError: has_group() takes 2 positional args');
+        }
+        return memberOf.contains(args[0]);
+      }
+
+      return (callKw: callKw, calls: calls);
+    }
+
+    test('Odoo 17 is asked without a user id', () async {
+      final server = groupServer(
+        memberOf: {'account.group_account_invoice'},
+        expectUserIdArgument: 0,
+      );
+      final service = PermissionService.forTesting(
+        callKw: server.callKw,
+        generation: 17,
+        userId: 7,
+      );
+
+      expect(await service.hasGroup('account.group_account_invoice'), isTrue);
+      expect(server.calls.single['model'], 'res.users');
+      expect(server.calls.single['method'], 'has_group');
+      expect(server.calls.single['args'], ['account.group_account_invoice']);
+    });
+
+    test('Odoo 18, 19 and 20 are handed the user id first', () async {
+      for (final generation in [18, 19, 20]) {
+        final server = groupServer(
+          memberOf: {'account.group_account_invoice'},
+          expectUserIdArgument: 1,
+        );
+        final service = PermissionService.forTesting(
+          callKw: server.callKw,
+          generation: generation,
+          userId: 7,
+        );
+
+        expect(
+          await service.hasGroup('account.group_account_invoice'),
+          isTrue,
+          reason: 'generation $generation',
+        );
+        expect(server.calls.single['args'], [
+          7,
+          'account.group_account_invoice',
+        ]);
+      }
+    });
+
+    test('an unknown version takes the shape all but 17 use', () async {
+      final server = groupServer(memberOf: {}, expectUserIdArgument: 1);
+      final service = PermissionService.forTesting(
+        callKw: server.callKw,
+        generation: 0,
+        userId: 7,
+      );
+
+      expect(await service.hasGroup('account.group_account_invoice'), isFalse);
+      expect(server.calls.single['args'], [7, 'account.group_account_invoice']);
+    });
+
+    test('a user outside the group is not a member', () async {
+      final server = groupServer(
+        memberOf: {'sales_team.group_sale_salesman'},
+        expectUserIdArgument: 1,
+      );
+      final service = PermissionService.forTesting(
+        callKw: server.callKw,
+        generation: 18,
+        userId: 7,
+      );
+
+      expect(await service.hasGroup('account.group_account_invoice'), isFalse);
+    });
+
+    test('a call that fails answers false and is not remembered', () async {
+      var attempts = 0;
+      Future<dynamic> callKw(Map<String, dynamic> payload) async {
+        attempts++;
+        throw Exception('connection reset');
+      }
+
+      final service = PermissionService.forTesting(
+        callKw: callKw,
+        generation: 18,
+        userId: 7,
+      );
+
+      expect(await service.hasGroup('account.group_account_invoice'), isFalse);
+      expect(await service.hasGroup('account.group_account_invoice'), isFalse);
+      expect(attempts, 2, reason: 'a failure must not be cached as a "no"');
+    });
+
+    test('an answer is remembered, so the button does not re-ask', () async {
+      final server = groupServer(
+        memberOf: {'account.group_account_invoice'},
+        expectUserIdArgument: 1,
+      );
+      final service = PermissionService.forTesting(
+        callKw: server.callKw,
+        generation: 18,
+        userId: 7,
+      );
+
+      await service.hasGroup('account.group_account_invoice');
+      await service.hasGroup('account.group_account_invoice');
+      expect(server.calls.length, 1);
+    });
+  });
 }

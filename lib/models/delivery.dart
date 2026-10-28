@@ -127,3 +127,26 @@ List<String> stockMoveUomFields(int generation) {
   if (generation == 0) return const ['product_uom', 'uom_id'];
   return const ['product_uom'];
 }
+
+/// The context a picking must be confirmed or reserved with, for an Odoo
+/// [generation].
+///
+/// Odoo 20 added a zero-demand check to `stock.picking.action_confirm`: a
+/// picking holding a move with no demand opens a wizard instead of
+/// confirming, and over RPC that wizard comes back as a window action rather
+/// than an error. `skip_zero_demand_check` is the key Odoo's own
+/// `action_assign` passes to suppress it. Releases before 20 have no such
+/// check and ignore the key, so an unknown generation (0) sends nothing.
+Map<String, dynamic> confirmPickingContext(int generation) =>
+    generation >= 20 ? const {'skip_zero_demand_check': true} : const {};
+
+/// The `stock.picking` states a delivery can still be validated from.
+///
+/// `draft` is absent on purpose: Odoo's own `button_validate` confirms a
+/// draft picking first, but a sales delivery is created already confirmed, so
+/// a draft one here means something unusual that is better handled in Odoo.
+const Set<String> kValidatableDeliveryStates = {
+  'confirmed',
+  'waiting',
+  'assigned',
+};

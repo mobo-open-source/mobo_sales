@@ -48,6 +48,9 @@ class OdooErrorHandler {
         lower.contains('sessionexpired')) {
       return 'Your session has expired. Please log in again.';
     }
+    if (isNotJsonResponse(e)) {
+      return notJsonResponseMessage;
+    }
     if (OdooErrorClassifier.isServerUnreachable(e) ||
         lower.contains('connection error')) {
       return 'Could not reach the server. Please check your internet '
@@ -75,13 +78,59 @@ class OdooErrorHandler {
 
     var text = _serverSentence(raw);
     text = _tidy(text);
-    if (text.isEmpty ||
-        text.startsWith('{') ||
-        text.contains('Instance of ') ||
-        text.contains('Traceback')) {
+    // The last gate before a person reads this. Anything still carrying a
+    // stack frame, a parser's complaint or a Dart type name is the app's
+    // internals leaking into the UI, and a generic sentence is better than
+    // showing it.
+    if (text.isEmpty || _looksTechnical(text)) {
       return generic;
     }
     return '${text[0].toUpperCase()}${text.substring(1)}';
+  }
+
+  /// What the user is told when the server answered with something other than
+  /// the JSON the app asked for.
+  static const String notJsonResponseMessage =
+      'The server sent an unexpected response. Please check the server '
+      'address in Settings, or log in again.';
+
+  /// Whether [error] is the app failing to parse the server's reply.
+  ///
+  /// Odoo answers JSON-RPC with JSON. A web page instead — a proxy error page,
+  /// a maintenance notice, or the login form after a session expired — fails
+  /// in `jsonDecode` as "FormatException: Unexpected character (at character
+  /// 1)" followed by `<html>`, which is meaningless to the person holding
+  /// the phone.
+  static bool isNotJsonResponse(dynamic error) {
+    if (error is FormatException) return true;
+    final s = error.toString().toLowerCase();
+    return s.contains('unexpected character (at character') ||
+        s.contains('server returned html instead of json') ||
+        s.contains('<!doctype html') ||
+        s.contains('<html');
+  }
+
+  /// Whether [text] still reads like machinery rather than a sentence.
+  ///
+  /// Deliberately specific: a blanket "contains exception" would also throw
+  /// away Odoo's own messages, which routinely name `odoo.exceptions.UserError`
+  /// before saying something the user needs to read. [_tidy] strips that
+  /// prefix first; what this catches is what survives it.
+  static bool _looksTechnical(String text) {
+    final t = text.toLowerCase();
+    return t.contains('instance of ') ||
+        t.contains('traceback') ||
+        t.contains('at character') ||
+        t.contains('formatexception') ||
+        t.contains('<!doctype') ||
+        t.contains('<html') ||
+        t.contains('is not a subtype of') ||
+        t.contains('null check operator') ||
+        t.contains('nosuchmethoderror') ||
+        t.contains('stack trace') ||
+        text.startsWith('{') ||
+        text.startsWith('[') ||
+        RegExp(r'^#\d+\s').hasMatch(text);
   }
 
   /// The part of [raw] the server wrote: the `data.message` of an odoo_rpc
@@ -128,6 +177,10 @@ class OdooErrorHandler {
 
     final wrappers = [
       RegExp(r'^(?:[A-Za-z]*Exception|Error|StateError)\s*:\s*'),
+      // A Python exception named by its full path, which Odoo puts in front
+      // of the sentence it actually wants read:
+      // `odoo.exceptions.UserError: ...`, `psycopg2.errors.X: ...`.
+      RegExp(r'^(?:[a-zA-Z_]\w*\.)+[A-Za-z_]\w*(?:Error|Exception|Warning)\s*:\s*'),
       RegExp(r'^Failed to [^:\n]{3,80}:\s+'),
       RegExp(r'^Odoo Server Error\s*:\s*'),
     ];
@@ -168,6 +221,13 @@ class OdooErrorHandler {
   static String toUserMessage(dynamic e, {String? defaultMessage}) {
     final errorString = e.toString();
     final s = errorString.toLowerCase();
+
+    // Checked before anything else: the reply never got as far as being an
+    // Odoo error, so none of the patterns below can read it, and its raw text
+    // is a parser's complaint about a web page.
+    if (isNotJsonResponse(e)) {
+      return '🌐 Unexpected Server Response\n\n$notJsonResponseMessage';
+    }
 
     if (s.contains('no journal could be found') ||
         s.contains('no journal of type')) {

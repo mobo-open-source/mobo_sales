@@ -26,6 +26,7 @@ import '../../widgets/custom_date_picker.dart';
 import '../../utils/date_picker_utils.dart';
 import '../../utils/form_change_tracker.dart';
 import '../../widgets/customer_typeahead.dart';
+import '../../utils/html_text.dart';
 import '../../widgets/product_typeahead.dart';
 import '../../shared/widgets/mobo/mobo_bottom_action_bar.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
@@ -404,9 +405,10 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
         }
       }
 
-      if (quotation['note'] != null && quotation['note'] != false) {
-        _notesController.text = quotation['note'].toString();
-      }
+      // `sale.order.note` is an Odoo Html field, so a note typed as "Pay in
+      // 30 days" comes back as `<p>Pay in 30 days</p>`. Put the readable text
+      // in the box, the same way the invoice editor does with `narration`.
+      _notesController.text = htmlToPlainText(quotation['note']);
 
       if (quotation['validity_date'] != null &&
           quotation['validity_date'] != false) {
@@ -1439,9 +1441,10 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
           if (!locked) 'partner_id': _selectedCustomer!.id,
           if (!locked)
             'validity_date': _validityDate?.toIso8601String().split('T')[0],
-          'note': _notesController.text.trim().isEmpty
-              ? false
-              : _notesController.text.trim(),
+          // Back to HTML, or Odoo stores the typed text as markup: the
+          // angle brackets and ampersands of an existing Terms & Conditions
+          // block would be re-interpreted a little further on every save.
+          'note': plainTextToHtml(_notesController.text) ?? false,
         };
 
         if (_selectedPaymentTerm != null) {
@@ -1672,9 +1675,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
           'partner_id': _selectedCustomer!.id,
           if (company.id != null) 'company_id': company.id,
           'validity_date': _validityDate?.toIso8601String().split('T')[0],
-          'note': _notesController.text.trim().isEmpty
-              ? null
-              : _notesController.text.trim(),
+          'note': plainTextToHtml(_notesController.text) ?? false,
           'order_line': orderLines,
           'state': 'draft',
         };
@@ -3641,6 +3642,12 @@ class _QuoteLineItemState extends State<_QuoteLineItem> {
               ),
 
               const SizedBox(height: 12),
+              // Quantity and price share the row; the total has its own line
+              // underneath. All three sat in one row before, with the total
+              // the only child not inside an `Expanded` — so it was measured
+              // first at its natural width and a large amount ate the space
+              // the two fields were meant to divide, leaving their contents
+              // clipped (and overflowing the row once the total grew enough).
               Row(
                 children: [
                   Expanded(
@@ -3687,45 +3694,46 @@ class _QuoteLineItemState extends State<_QuoteLineItem> {
                       ],
                     ),
                   ),
-                  const SizedBox(width: 16),
-
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        'Total',
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: secondaryTextColor,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Consumer<CurrencyProvider>(
-                        builder: (context, currencyProvider, _) {
-                          final code =
-                              (currencyProvider.companyCurrencyIdList != null &&
-                                  currencyProvider
-                                          .companyCurrencyIdList!
-                                          .length >
-                                      1)
-                              ? currencyProvider.companyCurrencyIdList![1]
-                                    .toString()
-                              : currencyProvider.currency;
-                          final formatted = currencyProvider.formatAmount(
-                            subtotal,
-                            currency: code,
-                          );
-                          return Text(
-                            formatted,
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              color: widget.isDark
-                                  ? Colors.white
-                                  : theme.primaryColor,
-                            ),
-                          );
-                        },
-                      ),
-                    ],
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    'Total',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: secondaryTextColor,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Consumer<CurrencyProvider>(
+                      builder: (context, currencyProvider, _) {
+                        final code =
+                            (currencyProvider.companyCurrencyIdList != null &&
+                                currencyProvider.companyCurrencyIdList!.length >
+                                    1)
+                            ? currencyProvider.companyCurrencyIdList![1]
+                                  .toString()
+                            : currencyProvider.currency;
+                        final formatted = currencyProvider.formatAmount(
+                          subtotal,
+                          currency: code,
+                        );
+                        return Text(
+                          formatted,
+                          textAlign: TextAlign.right,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: widget.isDark
+                                ? Colors.white
+                                : theme.primaryColor,
+                          ),
+                        );
+                      },
+                    ),
                   ),
                 ],
               ),
@@ -3778,8 +3786,12 @@ class _QuoteQuantityInputState extends State<_QuoteQuantityInput> {
   }
 
   void _onQuantityChanged() {
-    final value = double.tryParse(_controller.text) ?? 0.0;
-    widget.onChanged(value > 0 ? value : 1.0);
+    // An empty or half-typed field is not a quantity yet, so the line keeps
+    // the one it has; 0 is a real value, though — it is how Odoo wants a line
+    // of a confirmed order removed, which this screen tells the user to do.
+    final value = double.tryParse(_controller.text);
+    if (value == null || value < 0) return;
+    widget.onChanged(value);
   }
 
   @override
@@ -3803,8 +3815,12 @@ class _QuoteQuantityInputState extends State<_QuoteQuantityInput> {
               icon: const Icon(Icons.remove, size: 18),
               onPressed: () {
                 final currentValue = double.tryParse(_controller.text) ?? 1.0;
-                if (currentValue > 1) {
-                  _controller.text = (currentValue - 1).toInt().toString();
+                if (currentValue > 0) {
+                  // `_formatQuantity`, not `toInt()`: truncating here turned
+                  // a 2.5 into a 3 and lost the unit-of-measure decimals.
+                  _controller.text = _formatQuantity(
+                    (currentValue - 1).clamp(0, double.infinity).toDouble(),
+                  );
                 }
               },
               padding: const EdgeInsets.all(4),
@@ -3841,7 +3857,7 @@ class _QuoteQuantityInputState extends State<_QuoteQuantityInput> {
               icon: const Icon(Icons.add, size: 18),
               onPressed: () {
                 final currentValue = double.tryParse(_controller.text) ?? 0.0;
-                _controller.text = (currentValue + 1).toInt().toString();
+                _controller.text = _formatQuantity(currentValue + 1);
               },
               padding: const EdgeInsets.all(4),
               constraints: const BoxConstraints(),

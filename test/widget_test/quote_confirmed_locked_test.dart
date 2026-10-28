@@ -347,7 +347,10 @@ void main() {
           .toList();
       expect(writes, isNotEmpty, reason: 'it saved');
       final values = writes.first['args'][1] as Map;
-      expect(values['note'], 'Deliver on Friday');
+      // `sale.order.note` is an Html field, so what was typed goes back as
+      // HTML. Sending the raw text instead let Odoo re-read its angle
+      // brackets and ampersands as markup on the next save.
+      expect(values['note'], '<p>Deliver on Friday</p>');
       expect(values.containsKey('partner_id'), isFalse);
       expect(values.containsKey('pricelist_id'), isFalse);
       expect(values.containsKey('validity_date'), isFalse);

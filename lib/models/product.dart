@@ -459,7 +459,7 @@ class Tax {
 /// products to find, so it keeps the plain `type` filters. An unknown
 /// generation (0) takes the 17 filters, which is what the app asked before it
 /// knew about versions.
-List<List<dynamic>> productTypeFilterDomain({
+List<dynamic> productTypeFilterDomain({
   required int generation,
   bool services = false,
   bool consumables = false,
@@ -467,25 +467,56 @@ List<List<dynamic>> productTypeFilterDomain({
   bool hasIsStorable = false,
 }) {
   final splitsGoods = generation >= 18 && (generation >= 20 || hasIsStorable);
-  final leaves = <List<dynamic>>[];
 
-  if (services) leaves.add(['type', '=', 'service']);
+  // One complete domain per chip. They are alternatives, not extra
+  // restrictions: a product is a service *or* a consumable, never both, so
+  // ANDing two of them — which is what returning bare leaves did — described
+  // a product that cannot exist and the list came back empty however long it
+  // was left to load.
+  final conditions = <List<dynamic>>[];
+
+  if (services) {
+    conditions.add([
+      ['type', '=', 'service'],
+    ]);
+  }
 
   if (consumables) {
-    leaves.add(['type', '=', 'consu']);
-    if (splitsGoods) leaves.add(['is_storable', '=', false]);
+    conditions.add(
+      splitsGoods
+          ? [
+              '&',
+              ['type', '=', 'consu'],
+              ['is_storable', '=', false],
+            ]
+          : [
+              ['type', '=', 'consu'],
+            ],
+    );
   }
 
   if (storable) {
-    if (splitsGoods) {
-      leaves.add(['type', '=', 'consu']);
-      leaves.add(['is_storable', '=', true]);
-    } else {
-      leaves.add(['type', '=', 'product']);
-    }
+    conditions.add(
+      splitsGoods
+          ? [
+              '&',
+              ['type', '=', 'consu'],
+              ['is_storable', '=', true],
+            ]
+          : [
+              ['type', '=', 'product'],
+            ],
+    );
   }
 
-  return leaves;
+  if (conditions.isEmpty) return const [];
+  if (conditions.length == 1) return conditions.single;
+
+  // Odoo domains are prefix notation: n alternatives take n-1 leading '|'.
+  return [
+    for (var i = 0; i < conditions.length - 1; i++) '|',
+    for (final condition in conditions) ...condition,
+  ];
 }
 
 /// A prefix-notation domain matching the text [query] against a

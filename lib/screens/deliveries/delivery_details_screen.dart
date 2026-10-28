@@ -3,7 +3,14 @@ import 'package:hugeicons/hugeicons.dart';
 import 'package:intl/intl.dart';
 import 'package:shimmer/shimmer.dart';
 import '../../models/delivery.dart';
+import '../../services/data_change_bus.dart';
+import '../../services/delivery_service.dart';
 import '../../services/odoo_session_manager.dart';
+import '../../services/permission_service.dart';
+import '../../shared/widgets/mobo/mobo_bottom_action_bar.dart';
+import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../../utils/guarded_action.dart';
+import '../../widgets/custom_snackbar.dart';
 
 class DeliveryDetailsScreen extends StatefulWidget {
   final int deliveryId;
@@ -20,10 +27,111 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
   bool _isLoading = true;
   String? _errorMessage;
 
+  /// Write access to `stock.picking`, read once. Null until it is known, so
+  /// the Validate button does not flicker in disabled and then enable.
+  bool? _canValidate;
+
+  /// True while the page was left in a state the list should re-read.
+  bool _didChange = false;
+
   @override
   void initState() {
     super.initState();
     _fetchDeliveryDetails();
+    _checkValidatePermission();
+  }
+
+  Future<void> _checkValidatePermission() async {
+    final can = await PermissionService.instance.canWrite('stock.picking');
+    if (!mounted) return;
+    setState(() => _canValidate = can);
+  }
+
+  String get _state => _deliveryData?['state']?.toString() ?? '';
+
+  bool get _canShowValidate =>
+      _deliveryData != null && kValidatableDeliveryStates.contains(_state);
+
+  Future<void> _validateDelivery() async {
+    final name = _safeString(_deliveryData?['name'], 'this delivery');
+
+    final confirmed = await _showValidateDialog(name);
+    if (confirmed != true || !mounted) return;
+
+    final result = await runGuardedAction<DeliveryValidationResult>(
+      context: context,
+      message: 'Confirming delivery...',
+      subtitle: 'Validating the transfer in Odoo',
+      failurePrefix: 'Failed to confirm delivery',
+      action: () => DeliveryService.instance.validateDelivery(widget.deliveryId),
+    );
+
+    if (result == null || !mounted) return;
+
+    _didChange = true;
+    // A delivered order changes its sale order's delivery status, which the
+    // quotation list and details both show.
+    DataChangeBus.instance.publish(
+      DataEntity.quotation,
+      DataChangeKind.updated,
+      origin: this,
+    );
+
+    if (result.isValidated) {
+      CustomSnackbar.showSuccess(context, '$name confirmed');
+    } else {
+      // Odoo stopped to ask something it can only ask in its own UI — a
+      // backorder, a quality check. Saying so beats reporting a success the
+      // picking did not have.
+      final step = result.step;
+      CustomSnackbar.showInfo(
+        context,
+        'Odoo needs another confirmation to finish $name'
+        '${step != null && step.isNotEmpty ? ' ($step)' : ''}. '
+        'Please complete it in Odoo.',
+      );
+    }
+
+    await _fetchDeliveryDetails();
+  }
+
+  Future<bool?> _showValidateDialog(String name) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: isDark ? 0 : 8,
+        backgroundColor: isDark ? Colors.grey[900] : Colors.white,
+        title: Text(
+          'Confirm Delivery',
+          style: Theme.of(ctx).textTheme.titleLarge?.copyWith(
+            fontWeight: FontWeight.w700,
+            color: isDark ? Colors.white : Theme.of(ctx).colorScheme.onSurface,
+          ),
+        ),
+        content: Text(
+          'Validate $name? The reserved quantities will be delivered and '
+          'stock updated. Anything not reserved stays behind for Odoo to '
+          'handle as a backorder.',
+          style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
+            color: isDark
+                ? Colors.grey[300]
+                : Theme.of(ctx).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
+        actions: [
+          MoboDialogButtons(
+            secondaryLabel: 'Cancel',
+            onSecondary: () => Navigator.of(ctx).pop(false),
+            primaryLabel: 'Validate',
+            onPrimary: () => Navigator.of(ctx).pop(true),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _fetchDeliveryDetails() async {
@@ -235,35 +343,96 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final backgroundColor = Theme.of(context).scaffoldBackgroundColor;
 
-    return Scaffold(
-      backgroundColor: backgroundColor,
-      appBar: AppBar(
-        title: Text(
-          'Delivery Details',
-          style: TextStyle(
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.5,
-            color: isDark ? Colors.white : Colors.black,
-          ),
-        ),
-        leading: IconButton(
-          onPressed: () => Navigator.pop(context),
-          icon: Icon(
-            HugeIcons.strokeRoundedArrowLeft01,
-            color: isDark ? Colors.white : Colors.black,
-          ),
-        ),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        Navigator.pop(context, _didChange);
+      },
+      child: Scaffold(
         backgroundColor: backgroundColor,
-        foregroundColor: isDark ? Colors.white : Theme.of(context).primaryColor,
-        elevation: 0,
+        appBar: AppBar(
+          title: Text(
+            'Delivery Details',
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.5,
+              color: isDark ? Colors.white : Colors.black,
+            ),
+          ),
+          leading: IconButton(
+            onPressed: () => Navigator.pop(context, _didChange),
+            icon: Icon(
+              HugeIcons.strokeRoundedArrowLeft01,
+              color: isDark ? Colors.white : Colors.black,
+            ),
+          ),
+          backgroundColor: backgroundColor,
+          foregroundColor: isDark
+              ? Colors.white
+              : Theme.of(context).primaryColor,
+          elevation: 0,
+        ),
+        body: _isLoading
+            ? _buildShimmerLoading(isDark)
+            : _errorMessage != null
+            ? _buildErrorState(isDark)
+            : _deliveryData != null
+            ? _buildDeliveryDetails(isDark)
+            : const SizedBox.shrink(),
+        bottomNavigationBar: _isLoading || !_canShowValidate
+            ? null
+            : MoboBottomActionBar(child: _buildValidateButton(isDark)),
       ),
-      body: _isLoading
-          ? _buildShimmerLoading(isDark)
-          : _errorMessage != null
-          ? _buildErrorState(isDark)
-          : _deliveryData != null
-          ? _buildDeliveryDetails(isDark)
-          : const SizedBox.shrink(),
+    );
+  }
+
+  Widget _buildValidateButton(bool isDark) {
+    final primaryColor = Theme.of(context).primaryColor;
+    // Null means the check has not come back yet; the button waits rather
+    // than offering an action that would be refused.
+    final enabled = _canValidate == true;
+
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton.icon(
+        onPressed: _canValidate == null
+            ? null
+            : enabled
+            ? _validateDelivery
+            : () => CustomSnackbar.showError(
+                context,
+                'Permission Denied: You do not have permission to validate '
+                'deliveries (stock.picking write). Please contact your '
+                'administrator.',
+              ),
+        icon: const Icon(
+          HugeIcons.strokeRoundedCheckmarkCircle02,
+          color: Colors.white,
+          size: 20,
+        ),
+        label: const Text(
+          'Confirm Delivery',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            color: Colors.white,
+          ),
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: primaryColor,
+          foregroundColor: Colors.white,
+          elevation: 0,
+          shadowColor: Colors.transparent,
+          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          disabledBackgroundColor: isDark
+              ? Colors.grey[700]!
+              : Colors.grey[400]!,
+        ),
+      ),
     );
   }
 

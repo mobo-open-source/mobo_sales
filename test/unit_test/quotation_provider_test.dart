@@ -48,4 +48,43 @@ void main() {
       provider.setInvoiceNameFilter('INV001');
     });
   });
+
+  group('clearSearch', () {
+    test('empties the field', () {
+      provider.searchController.text = 'S00042';
+      provider.clearSearch();
+
+      expect(provider.searchController.text, isEmpty);
+    });
+
+    test('leaves no debounced reload behind', () async {
+      // The bug: clearing the controller armed the 500ms debounce installed
+      // in the constructor, so the page reloaded a second time after the one
+      // it had already asked for — and the first of the two still carried the
+      // query that had just been cleared.
+      provider.searchController.text = 'S00042';
+      provider.clearSearch();
+
+      var notifications = 0;
+      provider.addListener(() => notifications++);
+
+      // Well past the debounce window.
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+
+      expect(notifications, 0);
+      expect(provider.searchController.text, isEmpty);
+    });
+
+    test('typing still reloads, so the debounce is only cancelled', () async {
+      provider.clearSearch();
+
+      var notifications = 0;
+      provider.addListener(() => notifications++);
+
+      provider.searchController.text = 'S00042';
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+
+      expect(notifications, greaterThan(0));
+    });
+  });
 }
