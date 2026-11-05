@@ -386,7 +386,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         }
       } else if (invoiceProvider.errorMessage.isNotEmpty) {
         if (mounted) {
-          CustomSnackbar.showError(
+          CustomSnackbar.showReason(
             context,
             OdooErrorHandler.toSnackbarMessage(invoiceProvider.errorMessage),
           );

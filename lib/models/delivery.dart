@@ -142,11 +142,44 @@ Map<String, dynamic> confirmPickingContext(int generation) =>
 
 /// The `stock.picking` states a delivery can still be validated from.
 ///
-/// `draft` is absent on purpose: Odoo's own `button_validate` confirms a
-/// draft picking first, but a sales delivery is created already confirmed, so
-/// a draft one here means something unusual that is better handled in Odoo.
+/// Mirrors the Validate buttons on Odoo's own transfer form, which show in
+/// every state except `done` and `cancel`. `button_validate` confirms a draft
+/// picking first, so `draft` is included.
 const Set<String> kValidatableDeliveryStates = {
+  'draft',
   'confirmed',
   'waiting',
   'assigned',
 };
+
+/// Whether a delivery in [state] can be validated.
+///
+/// Odoo only offers a working Validate once stock is reserved: the picking is
+/// `assigned`. In `confirmed` or `waiting` the quantity is not available, so
+/// the button is shown but disabled until Check Availability reserves it.
+bool isDeliveryReady(String state) => state == 'assigned';
+
+/// Whether Odoo's Validate would go through for a delivery in [state] with
+/// [totalQuantity] on its lines.
+///
+/// A draft delivery always can: `button_validate` confirms it and fills each
+/// empty line with its demand. Any other delivery needs a quantity somewhere,
+/// whether Check Availability reserved it or someone typed it on the line, and
+/// refuses with "you cannot validate a transfer if no quantities are
+/// reserved" when there is none.
+bool canValidateDelivery(String state, double totalQuantity) =>
+    state == 'draft' || totalQuantity > 0;
+
+/// States Odoo's Check Availability button (`action_assign`) shows in.
+const Set<String> kCheckAvailabilityStates = {'confirmed', 'waiting'};
+
+/// States Odoo's Cancel button (`action_cancel`) shows in.
+const Set<String> kCancellableDeliveryStates = {
+  'draft',
+  'confirmed',
+  'waiting',
+  'assigned',
+};
+
+/// States Odoo's Unreserve button (`do_unreserve`) shows in.
+const Set<String> kUnreservableDeliveryStates = {'assigned'};

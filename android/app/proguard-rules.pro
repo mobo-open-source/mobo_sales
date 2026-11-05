@@ -64,3 +64,7 @@
 -keepclasseswithmembernames class * {
     native <methods>;
 }
+
+# Voice search (speech_to_text): the plugin is called by name from Dart, so
+# R8 must not rename or strip it in the release build.
+-keep class com.csdcorp.speech_to_text.** { *; }

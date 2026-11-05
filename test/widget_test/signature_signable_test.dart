@@ -71,11 +71,7 @@ void main() {
   });
 
   testWidgets('an order Odoo would refuse offers none', (tester) async {
-    await pump(
-      tester,
-      canSign: false,
-      order: quote(state: 'sale'),
-    );
+    await pump(tester, canSign: false, order: quote(state: 'sale'));
 
     expect(find.text('Sign'), findsNothing);
     expect(find.text('Sign again'), findsNothing);

@@ -22,6 +22,9 @@ import '../../models/contact.dart';
 import '../../providers/currency_provider.dart';
 import '../../providers/invoice_creation_provider.dart';
 import '../../widgets/confetti_dialogs.dart';
+import '../../utils/quantity_format.dart';
+import '../../widgets/quantity_stepper.dart';
+import '../../widgets/unit_price_field.dart';
 import '../../utils/data_loss_warning_mixin.dart';
 import '../../utils/form_change_tracker.dart';
 import '../../providers/contact_provider.dart';
@@ -1546,12 +1549,21 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
               color: isDark ? Colors.grey[300] : Colors.grey[700],
             ),
           ),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: isBold ? 18 : 14,
-              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
-              color: isDark ? Colors.white : Colors.black87,
+          Flexible(
+            child: Padding(
+              padding: const EdgeInsets.only(left: 12),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Text(
+                  value,
+                  style: TextStyle(
+                    fontSize: isBold ? 18 : 14,
+                    fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
+                    color: isDark ? Colors.white : Colors.black87,
+                  ),
+                ),
+              ),
             ),
           ),
         ],
@@ -1578,12 +1590,21 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
             fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
           ),
         ),
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: isTotal ? 18 : 14,
-            fontWeight: isBold ? FontWeight.bold : FontWeight.w500,
-            color: color ?? (isDark ? Colors.white : Colors.black87),
+        Flexible(
+          child: Padding(
+            padding: const EdgeInsets.only(left: 12),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerRight,
+              child: Text(
+                value,
+                style: TextStyle(
+                  fontSize: isTotal ? 18 : 14,
+                  fontWeight: isBold ? FontWeight.bold : FontWeight.w500,
+                  color: color ?? (isDark ? Colors.white : Colors.black87),
+                ),
+              ),
+            ),
           ),
         ),
       ],
@@ -2557,7 +2578,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
 
           if (errorMsg.isNotEmpty) {
             // Only the reason, in a snackbar.
-            CustomSnackbar.showError(
+            CustomSnackbar.showReason(
               context,
               OdooErrorHandler.toSnackbarMessage(
                 errorMsg,
@@ -4412,7 +4433,7 @@ class __InvoiceLineItemState extends State<_InvoiceLineItem> {
                         ),
                       ),
                       const SizedBox(height: 4),
-                      _QuantityInput(
+                      QuantityStepper(
                         initialValue: quantity,
                         onChanged: (value) {
                           setState(() => quantity = value);
@@ -4435,7 +4456,12 @@ class __InvoiceLineItemState extends State<_InvoiceLineItem> {
                         ),
                       ),
                       const SizedBox(height: 4),
-                      _PriceInput(
+                      UnitPriceField(
+                        fillInDark: true,
+                        currencyLabel: (currency) =>
+                            currency.currencyFormat.currencySymbol.isNotEmpty
+                            ? currency.currencyFormat.currencySymbol
+                            : currency.currency,
                         initialValue: unitPrice,
                         onChanged: (value) {
                           setState(() => unitPrice = value);
@@ -4460,25 +4486,29 @@ class __InvoiceLineItemState extends State<_InvoiceLineItem> {
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Text(
-                    widget.currencyProvider.formatAmount(
-                      subtotal,
-                      currency:
-                          widget.currencyProvider.companyCurrencyIdList !=
-                                  null &&
-                              widget
-                                      .currencyProvider
-                                      .companyCurrencyIdList!
-                                      .length >
-                                  1
-                          ? widget.currencyProvider.companyCurrencyIdList![1]
-                                .toString()
-                          : widget.currencyProvider.currency,
-                    ),
-                    textAlign: TextAlign.right,
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: isDark ? Colors.white : theme.primaryColor,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      widget.currencyProvider.formatAmount(
+                        subtotal,
+                        currency:
+                            widget.currencyProvider.companyCurrencyIdList !=
+                                    null &&
+                                widget
+                                        .currencyProvider
+                                        .companyCurrencyIdList!
+                                        .length >
+                                    1
+                            ? widget.currencyProvider.companyCurrencyIdList![1]
+                                  .toString()
+                            : widget.currencyProvider.currency,
+                      ),
+                      textAlign: TextAlign.right,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: isDark ? Colors.white : theme.primaryColor,
+                      ),
                     ),
                   ),
                 ),
@@ -4486,251 +4516,6 @@ class __InvoiceLineItemState extends State<_InvoiceLineItem> {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _QuantityInput extends StatefulWidget {
-  final double initialValue;
-  final Function(double) onChanged;
-
-  const _QuantityInput({required this.initialValue, required this.onChanged});
-
-  @override
-  __QuantityInputState createState() => __QuantityInputState();
-}
-
-class __QuantityInputState extends State<_QuantityInput> {
-  late TextEditingController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TextEditingController(
-      text: _formatQuantity(widget.initialValue),
-    );
-    _controller.addListener(_onQuantityChanged);
-  }
-
-  /// Renders whole numbers without decimals (e.g. `1`) while preserving
-  /// fractional quantities (e.g. `2.5`) so unit-of-measure decimals aren't
-  /// lost. `toStringAsFixed(0)` rounded them away on the way in.
-  String _formatQuantity(double value) {
-    return value == value.roundToDouble()
-        ? value.toStringAsFixed(0)
-        : value.toString();
-  }
-
-  @override
-  void dispose() {
-    _controller.removeListener(_onQuantityChanged);
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _onQuantityChanged() {
-    // An empty or half-typed field is not a quantity yet, so the line keeps
-    // the one it has; 0 is a real value and must reach the line.
-    final value = double.tryParse(_controller.text);
-    if (value == null || value < 0) return;
-    widget.onChanged(value);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-
-    return SizedBox(
-      height: 40,
-      child: Container(
-        decoration: BoxDecoration(
-          color: isDark ? Colors.grey[800] : Colors.white,
-          border: Border.all(
-            color: isDark ? Colors.grey[600]! : theme.dividerColor,
-          ),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          children: [
-            IconButton(
-              icon: const Icon(Icons.remove, size: 18),
-              onPressed: () {
-                final currentValue = double.tryParse(_controller.text) ?? 1.0;
-                if (currentValue > 0) {
-                  // Not `toInt()`: truncating here turned a 2.5 into a 3 and
-                  // lost the unit-of-measure decimals.
-                  _controller.text = _formatQuantity(
-                    (currentValue - 1).clamp(0, double.infinity).toDouble(),
-                  );
-                }
-              },
-              padding: const EdgeInsets.all(4),
-              constraints: const BoxConstraints(),
-              style: IconButton.styleFrom(
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                shape: const RoundedRectangleBorder(
-                  borderRadius: BorderRadius.horizontal(
-                    left: Radius.circular(6),
-                  ),
-                ),
-              ),
-            ),
-            Expanded(
-              child: TextField(
-                controller: _controller,
-                textAlign: TextAlign.center,
-                keyboardType: TextInputType.number,
-                style: theme.textTheme.bodyMedium,
-                decoration: const InputDecoration(
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(
-                    vertical: 8,
-                    horizontal: 4,
-                  ),
-                  isDense: true,
-                  counterText: '',
-                ),
-              ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.add, size: 18),
-              onPressed: () {
-                final currentValue = double.tryParse(_controller.text) ?? 0.0;
-                _controller.text = _formatQuantity(currentValue + 1);
-              },
-              padding: const EdgeInsets.all(4),
-              constraints: const BoxConstraints(),
-              style: IconButton.styleFrom(
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                shape: const RoundedRectangleBorder(
-                  borderRadius: BorderRadius.horizontal(
-                    right: Radius.circular(6),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _PriceInput extends StatefulWidget {
-  final double initialValue;
-  final Function(double) onChanged;
-
-  const _PriceInput({required this.initialValue, required this.onChanged});
-
-  @override
-  __PriceInputState createState() => __PriceInputState();
-}
-
-class __PriceInputState extends State<_PriceInput> {
-  late TextEditingController _controller;
-  final _focusNode = FocusNode();
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TextEditingController(
-      text: widget.initialValue.toStringAsFixed(2),
-    );
-    _controller.addListener(_onPriceChanged);
-  }
-
-  @override
-  void dispose() {
-    _controller.removeListener(_onPriceChanged);
-    _controller.dispose();
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  void _onPriceChanged() {
-    final cleanText = _controller.text.replaceAll(RegExp(r'[^\d.]'), '');
-    final value = double.tryParse(cleanText) ?? 0.0;
-    widget.onChanged(value);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-
-    return SizedBox(
-      height: 40,
-      child: TextField(
-        controller: _controller,
-        focusNode: _focusNode,
-        textAlign: TextAlign.right,
-        keyboardType: TextInputType.numberWithOptions(decimal: true),
-        style: theme.textTheme.bodyMedium?.copyWith(
-          color: isDark ? Colors.white : null,
-        ),
-        decoration: InputDecoration(
-          filled: isDark,
-          fillColor: isDark ? Colors.grey[800] : null,
-          prefixIcon: Padding(
-            padding: const EdgeInsets.only(
-              left: 12,
-              right: 8,
-              top: 12,
-              bottom: 12,
-            ),
-            child: Text(
-              (Provider.of<CurrencyProvider>(
-                    context,
-                    listen: false,
-                  ).currencyFormat.currencySymbol).isNotEmpty
-                  ? Provider.of<CurrencyProvider>(
-                      context,
-                      listen: false,
-                    ).currencyFormat.currencySymbol
-                  : Provider.of<CurrencyProvider>(
-                      context,
-                      listen: false,
-                    ).currency,
-              style: TextStyle(color: isDark ? Colors.grey[400] : Colors.grey),
-            ),
-          ),
-          prefixIconConstraints: const BoxConstraints(
-            minWidth: 0,
-            minHeight: 0,
-          ),
-          contentPadding: const EdgeInsets.symmetric(
-            vertical: 8,
-            horizontal: 12,
-          ),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(
-              color: isDark ? Colors.grey[600]! : theme.dividerColor,
-            ),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(
-              color: isDark ? Colors.grey[600]! : theme.dividerColor,
-            ),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(
-              color: isDark ? Colors.blue[300]! : theme.primaryColor,
-              width: 1.5,
-            ),
-          ),
-          isDense: true,
-        ),
-        onTap: () {
-          _controller.selection = TextSelection(
-            baseOffset: 0,
-            extentOffset: _controller.text.length,
-          );
-        },
       ),
     );
   }
@@ -4876,6 +4661,7 @@ class _QuantityDialogState extends State<QuantityDialog> {
                         decimal: true,
                         signed: false,
                       ),
+                      inputFormatters: [QuantityInputFormatter()],
                       validator: (value) {
                         if (value?.isEmpty ?? true) {
                           return 'Required';

@@ -16,6 +16,20 @@ class CompanyProvider extends ChangeNotifier {
   bool _switching = false;
   String? _error;
 
+  // initialize() requested while one is in flight: run it again afterwards
+  // instead of dropping it.
+  bool _rerunQueued = false;
+  // Backoff retries after a failed load (a cold start often happens before the
+  // network / server is usable).
+  Timer? _retryTimer;
+  int _retryAttempt = 0;
+  static const _retryDelays = [
+    Duration(seconds: 2),
+    Duration(seconds: 5),
+    Duration(seconds: 10),
+    Duration(seconds: 20),
+  ];
+
   List<Map<String, dynamic>> get companies => _companies;
   int? get selectedCompanyId => _selectedCompanyId;
   List<int> get selectedAllowedCompanyIds => _selectedAllowedCompanyIds;
@@ -68,10 +82,33 @@ class CompanyProvider extends ChangeNotifier {
   }
 
   /// Loads companies and resolves the active company from Odoo and local cache.
+  /// Manual retry (tapping the "No companies" pill).
+  Future<void> retry() {
+    _retryAttempt = 0;
+    return initialize();
+  }
+
+  void _scheduleRetry() {
+    _retryTimer?.cancel();
+    if (_retryAttempt >= _retryDelays.length) return;
+    final delay = _retryDelays[_retryAttempt++];
+    _retryTimer = Timer(delay, () {
+      if (!_loading) initialize();
+    });
+  }
+
+  @override
+  void dispose() {
+    _retryTimer?.cancel();
+    super.dispose();
+  }
+
   Future<void> initialize() async {
     if (_loading) {
+      _rerunQueued = true;
       return;
     }
+    _retryTimer?.cancel();
     _loading = true;
     _error = null;
     notifyListeners();
@@ -128,6 +165,17 @@ class CompanyProvider extends ChangeNotifier {
           notifyListeners();
         }
 
+        // Show the last known companies straight away (cold start / offline);
+        // the server call below replaces them when it succeeds.
+        if (_companies.isEmpty) {
+          final cached = await local.getAllCompanies(userId: uid, database: db);
+          if (cached.isNotEmpty) {
+            _companies = cached;
+            _selectedCompanyId ??= cached.first['id'] as int?;
+            notifyListeners();
+          }
+        }
+
         final userRes = await OdooSessionManager.safeCallKwWithoutCompany({
           'model': 'res.users',
           'method': 'read',
@@ -155,8 +203,13 @@ class CompanyProvider extends ChangeNotifier {
         }
 
         if (companyIds.isEmpty) {
-          _companies = await local.getAllCompanies(userId: uid, database: db);
+          // Usually a failed/partial reply, not "no companies": keep the
+          // cached list and try again shortly.
+          if (_companies.isEmpty) {
+            _companies = await local.getAllCompanies(userId: uid, database: db);
+          }
           _selectedCompanyId = restoredId ?? currentCompanyId;
+          _scheduleRetry();
           _loading = false;
           notifyListeners();
           return;
@@ -183,6 +236,7 @@ class CompanyProvider extends ChangeNotifier {
         if (serverCompanies.isNotEmpty) {
           _companies = serverCompanies;
           await local.putAllCompanies(_companies, userId: uid, database: db);
+          _retryAttempt = 0;
         } else {
           _companies = await local.getAllCompanies(userId: uid, database: db);
         }
@@ -283,9 +337,14 @@ class CompanyProvider extends ChangeNotifier {
       } catch (_) {
         _error = e.toString();
       }
+      _scheduleRetry();
     } finally {
       _loading = false;
       notifyListeners();
+      if (_rerunQueued) {
+        _rerunQueued = false;
+        unawaited(initialize());
+      }
     }
   }
 

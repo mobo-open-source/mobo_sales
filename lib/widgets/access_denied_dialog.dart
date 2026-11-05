@@ -32,8 +32,8 @@ class AccessDeniedDialog extends StatelessWidget {
 
   static const String moduleMissingTitle = 'Module Missing';
   static const String moduleMissingMessage =
-      'The required "Sales" module is not installed on this server. '
-      'Please contact your administrator to enable it.';
+      'The "Sales" app is not installed on this server. '
+      'Please contact your administrator to install it.';
 
   static const String portalTitle = 'Portal Access Not Allowed';
   static const String portalMessage =

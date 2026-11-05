@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:hugeicons/hugeicons.dart';
 import 'package:intl/intl.dart';
+import '../utils/quantity_format.dart';
 import '../models/contact.dart';
 
 class OrderDetailsTopSection extends StatelessWidget {
@@ -566,7 +567,9 @@ class OrderLinesTable extends StatelessWidget {
                   Expanded(
                     flex: 1,
                     child: Text(
-                      (line['product_uom_qty'] ?? 0).toString(),
+                      formatQuantity(
+                        ((line['product_uom_qty'] ?? 0) as num).toDouble(),
+                      ),
                       style: GoogleFonts.inter(
                         fontSize: 14,
                         fontWeight: FontWeight.w500,

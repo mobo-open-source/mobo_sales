@@ -6,6 +6,8 @@ import 'package:provider/provider.dart';
 import 'package:mobo_sales/widgets/custom_snackbar.dart';
 import 'package:mobo_sales/widgets/order_like_list_tile.dart';
 import '../../services/data_change_bus.dart';
+import '../../utils/invoice_group.dart';
+import '../../utils/invoice_filter_domain.dart';
 import '../../utils/app_theme.dart';
 import 'create_invoice_screen.dart';
 import '../../providers/currency_provider.dart';
@@ -25,6 +27,7 @@ import '../../widgets/list_search_bar.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import '../../services/odoo_error_handler.dart';
 import '../../widgets/create_action_gate.dart';
+import '../../utils/group_labels.dart';
 
 class InvoiceListScreen extends StatefulWidget {
   final int? customerId;
@@ -523,117 +526,16 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
   /// The domain for the invoices on this screen: the move types it lists, the
   /// customer / sale order / overdue / unpaid scope it was opened for, the
   /// status filters, the date range and the search text.
-  List<dynamic> _buildDomain() {
-    List<dynamic> domain = [
-      [
-        'move_type',
-        'in',
-        ['out_invoice', 'out_refund'],
-      ],
-    ];
-
-    if (widget.customerId != null) {
-      domain.add(['partner_id', '=', widget.customerId]);
-    }
-
-    if (widget.saleOrderName != null && widget.saleOrderName!.isNotEmpty) {
-      domain.add(['invoice_origin', 'ilike', widget.saleOrderName!.trim()]);
-    }
-
-    if (widget.overdueOnly) {
-      final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
-      domain.addAll([
-        ['state', '=', 'posted'],
-        [
-          'payment_state',
-          'in',
-          ['not_paid', 'partial'],
-        ],
-        ['invoice_date_due', '<', todayStr],
-      ]);
-    }
-
-    if (widget.unpaidOnly) {
-      domain.addAll([
-        ['state', '=', 'posted'],
-        [
-          'payment_state',
-          'in',
-          ['not_paid', 'partial'],
-        ],
-      ]);
-    }
-
-    if (_activeFilters.isNotEmpty) {
-      List<dynamic> statusConditions = [];
-
-      for (String filter in _activeFilters) {
-        switch (filter) {
-          case 'draft':
-            statusConditions.add(['state', '=', 'draft']);
-            break;
-          case 'posted':
-            statusConditions.add('&');
-            statusConditions.add(['state', '=', 'posted']);
-            statusConditions.add(['payment_state', '=', 'not_paid']);
-            break;
-          case 'paid':
-            statusConditions.add(['payment_state', '=', 'paid']);
-            break;
-          case 'partial':
-            statusConditions.add(['payment_state', '=', 'partial']);
-            break;
-          case 'not_paid':
-            statusConditions.add('&');
-            statusConditions.add(['state', '=', 'posted']);
-            statusConditions.add(['payment_state', '=', 'not_paid']);
-            break;
-          case 'in_payment':
-            statusConditions.add(['payment_state', '=', 'in_payment']);
-            break;
-          case 'reversed':
-            statusConditions.add(['payment_state', '=', 'reversed']);
-            break;
-          case 'blocked':
-            statusConditions.add(['payment_state', '=', 'blocked']);
-            break;
-          case 'cancelled':
-            statusConditions.add(['state', '=', 'cancel']);
-            break;
-        }
-      }
-
-      if (statusConditions.isNotEmpty) {
-        if (statusConditions.length > 1) {
-          List<dynamic> orConditions = [];
-          for (int i = 0; i < statusConditions.length - 1; i++) {
-            orConditions.add('|');
-          }
-          orConditions.addAll(statusConditions);
-          domain.addAll(orConditions);
-        } else {
-          domain.addAll(statusConditions);
-        }
-      }
-    }
-
-    if (_startDate != null) {
-      final startDateStr = DateFormat('yyyy-MM-dd').format(_startDate!);
-      domain.add(['invoice_date', '>=', startDateStr]);
-    }
-
-    if (_endDate != null) {
-      final endDateStr = DateFormat('yyyy-MM-dd').format(_endDate!);
-      domain.add(['invoice_date', '<=', endDateStr]);
-    }
-
-    if (_searchQuery.isNotEmpty) {
-      domain.add('|');
-      domain.add(['name', 'ilike', _searchQuery]);
-      domain.add(['partner_id.name', 'ilike', _searchQuery]);
-    }
-    return domain;
-  }
+  List<dynamic> _buildDomain() => invoiceListDomain(
+    customerId: widget.customerId,
+    saleOrderName: widget.saleOrderName,
+    overdueOnly: widget.overdueOnly,
+    unpaidOnly: widget.unpaidOnly,
+    statusFilters: _activeFilters,
+    startDate: _startDate,
+    endDate: _endDate,
+    searchQuery: _searchQuery,
+  );
 
   /// Loads invoices from the server into the list.
   ///
@@ -778,7 +680,8 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
             _searchQuery.isEmpty &&
             widget.customerId == null &&
             !widget.overdueOnly &&
-            !widget.unpaidOnly;
+            !widget.unpaidOnly &&
+            widget.saleOrderName == null;
         if (isDefaultViewAfterFetch) {
           _cachedInvoices = List.from(_invoices ?? []);
           _cachedTotalCount = totalCount;
@@ -920,11 +823,14 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
               final isDark = theme.brightness == Brightness.dark;
 
               final Map<String, String> invoiceGroupByOptions = {
-                'state': 'Status',
-                'invoice_user_id': 'Salesperson',
-                'partner_id': 'Partner',
-                'team_id': 'Sales Team',
-                'company_id': 'Company',
+                for (final field in const [
+                  'state',
+                  'invoice_user_id',
+                  'partner_id',
+                  'team_id',
+                  'company_id',
+                ])
+                  field: _getGroupByDisplayName(field),
               };
 
               return Container(
@@ -1624,21 +1530,7 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
 
         if (_totalInvoices > totalGroupedCount) {
           final missingCount = _totalInvoices - totalGroupedCount;
-          String undefinedLabel;
-
-          if (_selectedGroupBy == 'invoice_user_id') {
-            undefinedLabel = 'Unassigned';
-          } else if (_selectedGroupBy == 'partner_id') {
-            undefinedLabel = 'Unknown Partner';
-          } else if (_selectedGroupBy == 'team_id') {
-            undefinedLabel = 'No Team';
-          } else if (_selectedGroupBy == 'company_id') {
-            undefinedLabel = 'Unknown Company';
-          } else {
-            undefinedLabel = 'Undefined';
-          }
-
-          _groupSummary[undefinedLabel] = missingCount;
+          _groupSummary[kEmptyGroupLabel] = missingCount;
         }
 
         _cachedGroupSummary = Map.from(_groupSummary);
@@ -1655,31 +1547,7 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
   String _getGroupKeyFromReadGroup(
     Map<dynamic, dynamic> group,
     String groupByField,
-  ) {
-    try {
-      final value = group[groupByField];
-
-      final Map<String, dynamic> tempData = {};
-
-      if (groupByField == 'state') {
-        tempData['state'] = value;
-        tempData['payment_state'] = '';
-      } else if (groupByField == 'partner_id') {
-        tempData['partner_id'] = value;
-      } else if (groupByField == 'payment_state') {
-        tempData['payment_state'] = value;
-      } else if (groupByField == 'currency_id') {
-        tempData['currency_id'] = value;
-      } else if (groupByField == 'invoice_date' ||
-          groupByField == 'invoice_date_due') {
-        tempData[groupByField] = value;
-      }
-
-      return _groupKeyForInvoiceData(tempData, groupByField);
-    } catch (e) {
-      return 'Unknown';
-    }
-  }
+  ) => invoiceGroupKeyFromReadGroup(group, groupByField);
 
   List<dynamic> _buildGroupDomain(String groupKey, String groupByField) {
     try {
@@ -1696,7 +1564,7 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
             ['state', '=', stateValue],
           ];
         case 'invoice_user_id':
-          if (groupKey == 'Unassigned') {
+          if (groupKey == kEmptyGroupLabel) {
             return [
               '|',
               ['invoice_user_id', '=', false],
@@ -1707,7 +1575,7 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
             ['invoice_user_id.name', '=', groupKey],
           ];
         case 'partner_id':
-          if (groupKey == 'Unknown Partner') {
+          if (groupKey == kEmptyGroupLabel) {
             return [
               '|',
               ['partner_id', '=', false],
@@ -1718,7 +1586,7 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
             ['partner_id.name', '=', groupKey],
           ];
         case 'team_id':
-          if (groupKey == 'No Team') {
+          if (groupKey == kEmptyGroupLabel) {
             return [
               '|',
               ['team_id', '=', false],
@@ -1729,7 +1597,7 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
             ['team_id.name', '=', groupKey],
           ];
         case 'company_id':
-          if (groupKey == 'Unknown Company') {
+          if (groupKey == kEmptyGroupLabel) {
             return [
               '|',
               ['company_id', '=', false],
@@ -1740,7 +1608,7 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
             ['company_id.name', '=', groupKey],
           ];
         default:
-          if (groupKey == 'Unknown') {
+          if (groupKey == kEmptyGroupLabel) {
             return [
               [groupByField, '=', false],
             ];
@@ -1808,66 +1676,6 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
         }
       }
     } catch (e) {}
-  }
-
-  String _groupKeyForInvoiceData(
-    Map<String, dynamic> data,
-    String groupByField,
-  ) {
-    switch (groupByField) {
-      case 'state':
-        final state = data['state']?.toString().toLowerCase() ?? '';
-        switch (state) {
-          case 'draft':
-            return 'Draft';
-          case 'cancel':
-            return 'Cancelled';
-          case 'sent':
-            return 'Sent';
-          case 'posted':
-            final paymentState =
-                data['payment_state']?.toString().toLowerCase() ?? '';
-            switch (paymentState) {
-              case 'paid':
-                return 'Paid';
-              case 'partial':
-                return 'Partially Paid';
-              case 'reversed':
-                return 'Reversed';
-              case 'in_payment':
-                return 'In Payment';
-              case 'blocked':
-                return 'Blocked';
-              default:
-                return 'Posted';
-            }
-          default:
-            return state.isNotEmpty ? state : 'Unknown';
-        }
-      case 'invoice_user_id':
-        if (data['invoice_user_id'] is List &&
-            data['invoice_user_id'].length >= 2) {
-          return data['invoice_user_id'][1].toString();
-        }
-        return 'Unassigned';
-      case 'partner_id':
-        if (data['partner_id'] is List && data['partner_id'].length >= 2) {
-          return data['partner_id'][1].toString();
-        }
-        return 'Unknown Partner';
-      case 'team_id':
-        if (data['team_id'] is List && data['team_id'].length >= 2) {
-          return data['team_id'][1].toString();
-        }
-        return 'No Team';
-      case 'company_id':
-        if (data['company_id'] is List && data['company_id'].length >= 2) {
-          return data['company_id'][1].toString();
-        }
-        return 'Unknown Company';
-      default:
-        return 'Unknown';
-    }
   }
 
   String _getAmountRange(double amount, {String? currencyCode}) {
@@ -2926,17 +2734,6 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
     return _activeFilters.isNotEmpty || hasDateFilter;
   }
 
-  String _getGroupByDisplayName(String? groupBy) {
-    if (groupBy == null) return '';
-
-    const groupByOptions = {
-      'status': 'Status',
-      'partner_id': 'Customer',
-      'invoice_date': 'Invoice Date',
-      'due_date': 'Due Date',
-      'amount_total': 'Amount',
-    };
-
-    return groupByOptions[groupBy] ?? groupBy;
-  }
+  String _getGroupByDisplayName(String? groupBy) =>
+      invoiceGroupByLabel(groupBy);
 }

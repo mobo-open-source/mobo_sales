@@ -1785,8 +1785,6 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
     );
     if (confirmed != true || !context.mounted) return;
 
-    final sessionService = Provider.of<SessionService>(context, listen: false);
-
     final done = await runGuardedAction<bool>(
       context: context,
       message: archiving ? 'Archiving customer...' : 'Unarchiving customer...',
@@ -1797,20 +1795,12 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
           ? 'Failed to archive customer'
           : 'Failed to unarchive customer',
       action: () async {
-        final client = await sessionService.client;
-        if (client == null) {
-          throw Exception('Session expired. Please log in again.');
-        }
-        final result = await client.callKw({
-          'model': 'res.partner',
-          'method': 'write',
-          'args': [
-            [customer.id],
-            {'active': archiving ? false : true},
-          ],
-          'kwargs': {},
-        });
-        if (result != true) throw Exception('The server rejected the change');
+        // The service checks the permission, writes `active` and announces
+        // the change on the bus, so every list follows by itself.
+        await CustomerService.instance.setCustomerActive(
+          customer.id,
+          !archiving,
+        );
         return true;
       },
     );
@@ -1820,12 +1810,6 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
     if (!archiving) {
       // Still a visible record, so this is an edit, not a removal: the lists
       // refresh themselves and the page stays open on the now-active customer.
-      DataChangeBus.instance.publish(
-        DataEntity.customer,
-        DataChangeKind.updated,
-        id: customer.id,
-        origin: this,
-      );
       if (!mounted) return;
       setState(() {
         _contact = _contact.copyWith(isActive: true);
@@ -1834,14 +1818,6 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
       return;
     }
 
-    // Announced even if this page is gone: the server has archived it, and the
-    // lists must stop showing it.
-    DataChangeBus.instance.publish(
-      DataEntity.customer,
-      DataChangeKind.deleted,
-      id: customer.id,
-      origin: this,
-    );
     if (!context.mounted) return;
 
     Provider.of<ContactProvider>(

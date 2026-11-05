@@ -11,6 +11,7 @@ import '../services/customer_service.dart';
 import '../services/field_validation_service.dart';
 import '../services/odoo_error_classifier.dart';
 import '../utils/quiet_reload_gate.dart';
+import '../utils/group_labels.dart';
 
 /// Manages the customer/contact list with pagination, filtering, grouping, and search.
 class ContactProvider with ChangeNotifier {
@@ -217,6 +218,22 @@ class ContactProvider with ChangeNotifier {
     return "$pageStart-$pageEnd/$_totalContacts";
   }
 
+  /// The total to show in the pager, never contradicting the rows read.
+  ///
+  /// A short page (fewer rows than a full page) is the end of the list, so the
+  /// total is exactly the rows before it plus the rows on it, whatever a late,
+  /// failed or stale count said. A full page trusts the server count, but
+  /// never lets it fall below what has already been shown.
+  int _reconciledTotal({
+    required int? serverTotal,
+    required int rowsOnPage,
+    required int page,
+  }) {
+    final shown = page * _pageSize + rowsOnPage;
+    if (rowsOnPage < _pageSize) return shown;
+    return (serverTotal != null && serverTotal > shown) ? serverTotal : shown;
+  }
+
   /// Jumps to the given page index and fetches the corresponding contacts.
   Future<void> goToPage(int page) async {
     if (page < 0 || page == _currentPage) return;
@@ -262,12 +279,18 @@ class ContactProvider with ChangeNotifier {
         generation,
       );
 
+      final countFuture = _customerService
+          .getContactCount(domain)
+          .then<int?>((v) => v)
+          .catchError((_) => null);
+
       final result = await _readContacts(
         domain: domain,
         generation: generation,
         limit: _pageSize,
         offset: _currentPage * _pageSize,
       );
+      final serverTotal = await countFuture;
 
       final fetchedContacts = result
           .map((contactData) {
@@ -285,11 +308,12 @@ class ContactProvider with ChangeNotifier {
       _loadedQuery = _currentSearchQuery;
       _loadedFilters = _currentFilters;
 
-      if (_totalContacts > 0) {
-        _hasMoreData = (_currentPage + 1) * _pageSize < _totalContacts;
-      } else {
-        _hasMoreData = fetchedContacts.length == _pageSize;
-      }
+      _totalContacts = _reconciledTotal(
+        serverTotal: serverTotal,
+        rowsOnPage: result.length,
+        page: _currentPage,
+      );
+      _hasMoreData = (_currentPage + 1) * _pageSize < _totalContacts;
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -383,6 +407,18 @@ class ContactProvider with ChangeNotifier {
       ),
     );
   }
+
+  /// The partners the credit-breach filter keeps, set directly in tests.
+  @visibleForTesting
+  set creditBreachIdsForTest(List<int>? ids) => _creditBreachIds = ids;
+
+  /// The domain the list reads, for tests.
+  @visibleForTesting
+  List<dynamic> domainFor(
+    String searchQuery,
+    Map<String, dynamic>? filters,
+    int generation,
+  ) => _buildDomain(searchQuery, filters, generation);
 
   List<dynamic> _buildDomain(
     String searchQuery,
@@ -542,6 +578,7 @@ class ContactProvider with ChangeNotifier {
     _currentPage = 0;
     _hasMoreData = true;
     _contacts = [];
+    _totalContacts = 0;
 
     try {
       final generation = await _serverGeneration();
@@ -560,17 +597,14 @@ class ContactProvider with ChangeNotifier {
         offset: _currentPage * _pageSize,
       );
 
-      (() async {
-        try {
-          final total = await _customerService.getContactCount(domain);
-          if (requestId != _fetchSequence) return;
-          _totalContacts = total;
-          _hasMoreData = _contacts.length < _totalContacts;
-          notifyListeners();
-        } catch (_) {}
-      })();
+      final countFuture = _customerService
+          .getContactCount(domain)
+          .then<int?>((v) => v)
+          .catchError((_) => null);
 
       final result = await listFuture;
+      final serverTotal = await countFuture;
+      if (requestId != _fetchSequence) return;
 
       final fetchedContacts = result
           .map((contactData) {
@@ -588,19 +622,17 @@ class ContactProvider with ChangeNotifier {
       _loadedQuery = _currentSearchQuery;
       _loadedFilters = _currentFilters;
 
-      if (_totalContacts > 0) {
-        _hasMoreData = (_currentPage + 1) * _pageSize < _totalContacts;
-      } else {
-        _hasMoreData = _contacts.length == _pageSize;
-      }
+      _totalContacts = _reconciledTotal(
+        serverTotal: serverTotal,
+        rowsOnPage: result.length,
+        page: _currentPage,
+      );
+      _hasMoreData = (_currentPage + 1) * _pageSize < _totalContacts;
       _lastFetchTime = DateTime.now();
       _hasInitiallyLoaded = true;
       _error = null;
       _isServerUnreachable = false;
       _accessErrorMessage = null;
-      if (_totalContacts > 0) {
-        _hasMoreData = _contacts.length < _totalContacts;
-      }
     } catch (e) {
       if (_isServerUnreachableError(e)) {
         _isServerUnreachable = true;
@@ -710,12 +742,12 @@ class ContactProvider with ChangeNotifier {
 
       _contacts = _contactsFrom(rows);
       _currentPage = shownPage;
-      if (total != null) _totalContacts = total;
-      if (_totalContacts > 0) {
-        _hasMoreData = (_currentPage + 1) * _pageSize < _totalContacts;
-      } else {
-        _hasMoreData = _contacts.length == _pageSize;
-      }
+      _totalContacts = _reconciledTotal(
+        serverTotal: total,
+        rowsOnPage: rows.length,
+        page: _currentPage,
+      );
+      _hasMoreData = (_currentPage + 1) * _pageSize < _totalContacts;
       _lastFetchTime = DateTime.now();
       notifyListeners();
     } catch (_) {
@@ -832,22 +864,7 @@ class ContactProvider with ChangeNotifier {
 
       if (_totalContacts > totalGroupedCount) {
         final missingCount = _totalContacts - totalGroupedCount;
-        String undefinedLabel;
-
-        if (_selectedGroupBy == 'user_id') {
-          undefinedLabel = 'Unassigned';
-        } else if (_selectedGroupBy == 'country_id') {
-          undefinedLabel = 'Unknown Country';
-        } else if (_selectedGroupBy == 'state_id') {
-          undefinedLabel = 'Unknown State';
-        } else if (_selectedGroupBy == 'parent_id' ||
-            _selectedGroupBy == 'company_id') {
-          undefinedLabel = 'None';
-        } else {
-          undefinedLabel = 'Undefined';
-        }
-
-        _groupSummary[undefinedLabel] = missingCount;
+        _groupSummary[kEmptyGroupLabel] = missingCount;
       }
 
       notifyListeners();
@@ -990,7 +1007,7 @@ class ContactProvider with ChangeNotifier {
           try {
             final ids = contact.categoryIds ?? const <int>[];
             if (ids.isEmpty) {
-              groups.putIfAbsent('No Tags', () => []).add(contact);
+              groups.putIfAbsent(kEmptyGroupLabel, () => []).add(contact);
               continue;
             }
             for (final id in ids) {
@@ -1002,7 +1019,7 @@ class ContactProvider with ChangeNotifier {
               groups.putIfAbsent(key, () => []).add(contact);
             }
           } catch (e) {
-            groups.putIfAbsent('No Tags', () => []).add(contact);
+            groups.putIfAbsent(kEmptyGroupLabel, () => []).add(contact);
           }
         }
 
@@ -1018,10 +1035,10 @@ class ContactProvider with ChangeNotifier {
             if (groupKey.isNotEmpty) {
               groups.putIfAbsent(groupKey, () => []).add(contact);
             } else {
-              groups.putIfAbsent('Unknown', () => []).add(contact);
+              groups.putIfAbsent(kEmptyGroupLabel, () => []).add(contact);
             }
           } catch (e) {
-            groups.putIfAbsent('Unknown', () => []).add(contact);
+            groups.putIfAbsent(kEmptyGroupLabel, () => []).add(contact);
           }
         }
       }
@@ -1066,7 +1083,7 @@ class ContactProvider with ChangeNotifier {
           if (country == null ||
               country.trim().isEmpty ||
               country.toLowerCase() == 'false') {
-            return 'Unknown Country';
+            return kEmptyGroupLabel;
           }
           return country.trim();
         case 'state_id':
@@ -1074,7 +1091,7 @@ class ContactProvider with ChangeNotifier {
           if (state == null ||
               state.trim().isEmpty ||
               state.toLowerCase() == 'false') {
-            return 'Unknown State';
+            return kEmptyGroupLabel;
           }
           return state.trim();
         case 'city':
@@ -1092,7 +1109,7 @@ class ContactProvider with ChangeNotifier {
           if (companyName == null ||
               companyName.trim().isEmpty ||
               companyName.toLowerCase() == 'false') {
-            return 'No Company';
+            return kEmptyGroupLabel;
           }
           return companyName.trim();
         case 'parent_id':
@@ -1100,12 +1117,12 @@ class ContactProvider with ChangeNotifier {
           if (parentCompany == null ||
               parentCompany.trim().isEmpty ||
               parentCompany.toLowerCase() == 'false') {
-            return 'None';
+            return kEmptyGroupLabel;
           }
           return parentCompany.trim();
         case 'category_id':
           final ids = contact.categoryIds ?? const <int>[];
-          if (ids.isEmpty) return 'No Tags';
+          if (ids.isEmpty) return kEmptyGroupLabel;
           final id = ids.first;
           final name = _categoryNameCache[id];
           return (name == null || name.trim().isEmpty)
@@ -1116,7 +1133,7 @@ class ContactProvider with ChangeNotifier {
           if (salesperson == null ||
               salesperson.trim().isEmpty ||
               salesperson.toLowerCase() == 'false') {
-            return 'Unassigned';
+            return kEmptyGroupLabel;
           }
           return salesperson.trim();
         case 'create_date':
@@ -1138,14 +1155,14 @@ class ContactProvider with ChangeNotifier {
             ];
             return '${monthNames[date.month - 1]} ${date.year}';
           }
-          return 'Unknown Date';
+          return kEmptyGroupLabel;
         case 'active':
           return contact.isActive == true ? 'Active' : 'Inactive';
         default:
           return 'Other';
       }
     } catch (e) {
-      return 'Unknown';
+      return kEmptyGroupLabel;
     }
   }
 
@@ -1236,23 +1253,22 @@ class ContactProvider with ChangeNotifier {
   String _getGroupKeyFromReadGroup(Map group, String groupByField) {
     final value = group[groupByField];
     if (value == null || value == false) {
-      return 'Undefined';
+      return kEmptyGroupLabel;
     }
 
     if (value is List && value.length >= 2) {
       final name = value[1].toString();
 
-      return name.isEmpty || name.toLowerCase() == 'false' ? 'Undefined' : name;
+      return name.isEmpty || name.toLowerCase() == 'false'
+          ? kEmptyGroupLabel
+          : name;
     }
 
     return value.toString();
   }
 
   List<dynamic> _buildGroupDomain(String groupKey, String groupByField) {
-    if (groupKey == 'Undefined' ||
-        groupKey == 'No Company' ||
-        groupKey == 'None' ||
-        groupKey == 'Unassigned') {
+    if (groupKey == kEmptyGroupLabel) {
       return [
         '|',
         [groupByField, '=', false],

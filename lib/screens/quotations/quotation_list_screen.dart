@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../../utils/group_labels.dart';
 
 import 'package:hugeicons/hugeicons.dart';
 import 'package:mobo_sales/utils/app_theme.dart';
@@ -150,10 +151,10 @@ class _QuotationListScreenState extends State<QuotationListScreen>
       provider.setDateRange(null, null);
       await provider.loadQuotations(filters: const {}, clearGroupBy: true);
     } else {
-      await provider.loadQuotations(
-        filters: _activeFilters,
-        groupBy: _selectedGroupBy,
-      );
+      // The filters and grouping the provider holds are the ones in force;
+      // this screen's own copies are only filled in when the sheet is opened,
+      // so reloading with them could quietly drop what the user had applied.
+      await provider.loadQuotations(filters: provider.activeFilters);
     }
 
     if (mounted) setState(() {});
@@ -468,47 +469,56 @@ class _QuotationListScreenState extends State<QuotationListScreen>
           Wrap(
             spacing: 6,
             runSpacing: 6,
-            children: kQuotationFilters.entries.map((entry) {
-              final selected = _activeFilters.contains(entry.key);
-              final disabled = _isFilterDisabled(entry.key, _activeFilters);
-              return ChoiceChip(
-                label: Text(
-                  entry.value,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                    color: disabled
-                        ? (isDark ? Colors.grey[700] : Colors.grey[400])
-                        : (selected
-                              ? Colors.white
-                              : (isDark ? Colors.white : Colors.black87)),
-                  ),
-                ),
-                selected: selected,
-                selectedColor: theme.primaryColor,
-                disabledColor: isDark ? Colors.grey[800] : Colors.grey[200],
-                backgroundColor: isDark
-                    ? Colors.white.withOpacity(.08)
-                    : theme.primaryColor.withOpacity(0.08),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  side: BorderSide(
-                    color: isDark ? Colors.grey[600]! : Colors.grey[300]!,
-                  ),
-                ),
-                onSelected: disabled
-                    ? null
-                    : (isSelected) {
-                        setDialogState(() {
-                          if (isSelected) {
-                            _activeFilters.add(entry.key);
-                          } else {
-                            _activeFilters.remove(entry.key);
-                          }
-                        });
-                      },
-              );
-            }).toList(),
+            children: kQuotationFilters.entries
+                .where(
+                  (e) =>
+                      provider.supportsDeliveryFilters ||
+                      (e.key != 'delivered' && e.key != 'to_deliver'),
+                )
+                .map((entry) {
+                  final selected = _activeFilters.contains(entry.key);
+                  final disabled = _isFilterDisabled(entry.key, _activeFilters);
+                  return ChoiceChip(
+                    label: Text(
+                      entry.value,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w400,
+                        color: disabled
+                            ? (isDark ? Colors.grey[700] : Colors.grey[400])
+                            : (selected
+                                  ? Colors.white
+                                  : (isDark ? Colors.white : Colors.black87)),
+                      ),
+                    ),
+                    selected: selected,
+                    selectedColor: theme.primaryColor,
+                    disabledColor: isDark ? Colors.grey[800] : Colors.grey[200],
+                    backgroundColor: isDark
+                        ? Colors.white.withOpacity(.08)
+                        : theme.primaryColor.withOpacity(0.08),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      side: BorderSide(
+                        color: isDark ? Colors.grey[600]! : Colors.grey[300]!,
+                      ),
+                    ),
+                    onSelected: disabled
+                        ? null
+                        : (isSelected) {
+                            setDialogState(() {
+                              if (isSelected) {
+                                _activeFilters.add(entry.key);
+                              } else {
+                                _activeFilters.remove(entry.key);
+                              }
+                            });
+                          },
+                  );
+                })
+                .toList(),
           ),
           const SizedBox(height: 20),
 
@@ -875,7 +885,12 @@ class _QuotationListScreenState extends State<QuotationListScreen>
         provider.setInvoiceNameFilter(null);
       }
 
+      // Opened with filters (the dashboard's "expired quotations"): the list
+      // is read again with them, even when the provider already holds
+      // quotations. Showing those under a filter chip they were never read
+      // with listed only the matching rows of their first page.
       if (isContextual ||
+          _opensFiltered ||
           (provider.allQuotations.isEmpty && !provider.isLoading)) {
         _loadQuotations();
       } else {
@@ -918,6 +933,7 @@ class _QuotationListScreenState extends State<QuotationListScreen>
       if (provider.accessErrorMessage == null &&
           ((widget.customerId != null) ||
               (widget.invoiceName != null && widget.invoiceName!.isNotEmpty) ||
+              _opensFiltered ||
               (provider.allQuotations.isEmpty && !provider.isLoading))) {
         _hasLoaded = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -945,7 +961,27 @@ class _QuotationListScreenState extends State<QuotationListScreen>
     });
   }
 
+  bool _screenLoadRunning = false;
+
+  /// This screen was opened with filters of its own, so what the provider
+  /// already holds is not what it should show.
+  bool get _opensFiltered =>
+      widget.initialFilters != null && widget.initialFilters!.isNotEmpty;
+
   Future<void> _loadQuotations() async {
+    if (!mounted) return;
+    // The first frame asks twice (initState and didChangeDependencies both
+    // find an empty list); the second ask must not read it all again.
+    if (_screenLoadRunning) return;
+    _screenLoadRunning = true;
+    try {
+      await _loadQuotationsOnce();
+    } finally {
+      _screenLoadRunning = false;
+    }
+  }
+
+  Future<void> _loadQuotationsOnce() async {
     if (!mounted) return;
 
     _quotationProvider ??= Provider.of<QuotationProvider>(
@@ -996,7 +1032,10 @@ class _QuotationListScreenState extends State<QuotationListScreen>
       return _buildAccessErrorWidget(provider, isDarkMode);
     }
 
-    if (provider.allQuotations.isNotEmpty) {
+    // Until the first filtered read lands, what the provider holds is the
+    // unfiltered list left by another screen.
+    if (provider.allQuotations.isNotEmpty &&
+        !(_isInitialLoad && _opensFiltered)) {
       return _buildQuotationsList();
     }
 
@@ -1115,18 +1154,6 @@ class _QuotationListScreenState extends State<QuotationListScreen>
         final activeFilters = provider.activeFilters;
         final hasDateFilter =
             provider.startDate != null || provider.endDate != null;
-
-        if (widget.initialFilters?.contains('expired') == true) {
-          final today = DateTime.now();
-          final todayDateOnly = DateTime(today.year, today.month, today.day);
-          quotations = quotations.whereType<Quote>().where((q) {
-            if (q.status != 'draft' && q.status != 'sent') return false;
-            final v = q.validityDate;
-            if (v == null) return false;
-            final d = DateTime(v.year, v.month, v.day);
-            return d.isBefore(todayDateOnly);
-          }).toList();
-        }
 
         if (widget.expiringSoonOnly) {
           final now = DateTime.now();
@@ -2748,7 +2775,7 @@ class _QuotationListScreenState extends State<QuotationListScreen>
       'date_order': 'Order Date',
     };
 
-    return groupByOptions[groupBy] ?? groupBy;
+    return groupByDisplayLabel(groupBy, groupByOptions);
   }
 
   Widget _buildTopPaginationBar(QuotationProvider provider, bool isDark) {

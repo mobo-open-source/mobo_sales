@@ -43,7 +43,8 @@ void main() {
     // Odoo flags it in an alert banner whose wording matches no phrase list,
     // so the banner's class is what has to be read.
     final server = await _fakeOdoo(
-      postBody: '<!DOCTYPE html><html><body>'
+      postBody:
+          '<!DOCTYPE html><html><body>'
           '<p class="alert alert-danger" role="alert">'
           'Connection refused by smtp.gmail.com'
           '</p></body></html>',
@@ -59,7 +60,8 @@ void main() {
 
   test('an unknown login surfaces Odoo\'s own wording', () async {
     final server = await _fakeOdoo(
-      postBody: '<!DOCTYPE html><html><body>'
+      postBody:
+          '<!DOCTYPE html><html><body>'
           '<p class="alert alert-danger" role="alert">'
           'No account found for this login'
           '</p></body></html>',
@@ -75,7 +77,8 @@ void main() {
 
   test('a success banner is a success', () async {
     final server = await _fakeOdoo(
-      postBody: '<!DOCTYPE html><html><body>'
+      postBody:
+          '<!DOCTYPE html><html><body>'
           '<p class="alert alert-success" role="alert">'
           'An email has been sent with instructions'
           '</p></body></html>',

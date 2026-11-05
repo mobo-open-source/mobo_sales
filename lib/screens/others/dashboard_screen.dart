@@ -51,6 +51,9 @@ class DashboardScreen extends StatefulWidget {
     _DashboardScreenState._clearStaticCaches();
   }
 
+  /// Bumped by the home shell each time the Dashboard tab is shown again.
+  static final ValueNotifier<int> shown = ValueNotifier<int>(0);
+
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
@@ -226,6 +229,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       where: (change) => change.affectsDashboard,
       onChange: _onDashboardDataChanged,
     );
+    DashboardScreen.shown.addListener(_refreshIfStale);
 
     // The user's own name and photo were edited on the profile screens: the
     // greeting and the avatar follow at once, not when the dashboard is next
@@ -360,6 +364,31 @@ class _DashboardScreenState extends State<DashboardScreen>
     _refreshQuietly();
   }
 
+  /// How old the counts may be before coming back to the dashboard (or to the
+  /// app) reads them again. The cache window itself is longer; this is what
+  /// keeps a customer added in Odoo, or a quotation that has since expired,
+  /// from sitting wrong on the cards for the rest of it.
+  static const Duration _shownRefreshAge = Duration(seconds: 30);
+
+  /// Reads the figures again, quietly, when they are older than
+  /// [_shownRefreshAge]. Called when the Dashboard tab is shown again and when
+  /// the app comes back to the foreground.
+  void _refreshIfStale() {
+    if (!_canQuietRefresh) return;
+    if (_isForceRefreshing || _isCheckingConnectivity) return;
+
+    final last = _lastCacheTimes['counts_${_getCurrentAccountKey()}'];
+    if (last != null && DateTime.now().difference(last) < _shownRefreshAge) {
+      return;
+    }
+
+    if (_isQuietRefreshing) {
+      _quietRefreshPending = true;
+      return;
+    }
+    _refreshQuietly();
+  }
+
   /// Drops this account's cached counts, sales metrics and continue-working
   /// timestamp, so nothing reads the old figures back and the next fetch is
   /// not short-circuited by a cache that has not expired. Other accounts'
@@ -416,6 +445,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (state == AppLifecycleState.resumed) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _refreshContinueWorkingItems();
+        _refreshIfStale();
       });
     }
   }
@@ -437,6 +467,7 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   @override
   void dispose() {
+    DashboardScreen.shown.removeListener(_refreshIfStale);
     _dataChangeSubscription?.cancel();
     _dataChangeSubscription = null;
     _profileChangeSubscription?.cancel();

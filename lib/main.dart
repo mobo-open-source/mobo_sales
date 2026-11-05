@@ -15,6 +15,7 @@ import 'screens/others/webview_screen.dart';
 import 'screens/others/get_started_screen.dart';
 import 'services/connectivity_service.dart';
 import 'services/database_expiry_guard.dart';
+import 'services/sales_access_guard.dart';
 import 'services/session_service.dart';
 import 'package:provider/provider.dart';
 import 'providers/theme_provider.dart';
@@ -40,6 +41,8 @@ void main() {
   // On every return to the app: a database that expired meanwhile signs the
   // account out.
   DatabaseExpiryGuard.instance.start();
+  // ... and the Sales app or the user's Sales access removed meanwhile does too.
+  SalesAccessGuard.instance.start();
   runApp(
     MultiProvider(
       providers: [

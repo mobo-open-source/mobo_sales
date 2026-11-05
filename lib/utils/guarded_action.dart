@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../services/odoo_error_handler.dart';
 import '../widgets/custom_snackbar.dart';
 import '../widgets/loading_dialog.dart';
 
@@ -73,5 +74,5 @@ String describeActionFailure(Object error, String fallbackPrefix) {
       message.contains('session invalid')) {
     return 'Session expired. Please log in again.';
   }
-  return '$fallbackPrefix: $error';
+  return '$fallbackPrefix: ${OdooErrorHandler.toSnackbarMessage(error)}';
 }

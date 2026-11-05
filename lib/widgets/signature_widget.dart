@@ -45,7 +45,6 @@ class SignatureWidget extends StatefulWidget {
 }
 
 class _SignatureWidgetState extends State<SignatureWidget> {
-
   final TextEditingController _signedByController = TextEditingController();
   DateTime? _signedOnDate;
   Uint8List? _signatureImageBytes;
@@ -126,7 +125,7 @@ class _SignatureWidgetState extends State<SignatureWidget> {
       await _clearSignatureImageFromBackend();
     } else {
       setState(() {
-          _signatureImageBytes = null;
+        _signatureImageBytes = null;
         _hasSignature = false;
       });
       CustomSnackbar.showSuccess(context, 'Signature image cleared');
@@ -197,7 +196,7 @@ class _SignatureWidgetState extends State<SignatureWidget> {
 
       if (!mounted) return;
       setState(() {
-          _signatureImageBytes = null;
+        _signatureImageBytes = null;
         _hasSignature = false;
         // The next signature is signed when it is saved, not when the cleared
         // one was.

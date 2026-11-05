@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../services/odoo_error_handler.dart';
+
 import '../main.dart' show navigatorKey;
 
 enum SnackbarType { info, success, warning, error }
@@ -172,6 +174,16 @@ class CustomSnackbar {
       message: message,
       type: SnackbarType.info,
     );
+  }
+
+  /// Shows [message] for an action that did not go through: as a warning when
+  /// it is only that there is nothing to invoice yet, as an error otherwise.
+  static void showReason(BuildContext context, String message) {
+    if (OdooErrorHandler.isNothingToInvoice(message)) {
+      showWarning(context, message);
+    } else {
+      showError(context, message);
+    }
   }
 
   static void showWarning(BuildContext context, String message) {

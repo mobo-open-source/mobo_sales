@@ -58,7 +58,12 @@ class MoboFieldShell extends StatelessWidget {
       child: child,
     );
 
+    // Its own height, whatever the parent allows. A default (max) Column fills
+    // every bounded height it is given, and a dropdown panel is placed against
+    // the field's box: stretched over the screen, the panel opened below the
+    // bottom edge, out of reach.
     return Column(
+      mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (label != null) ...[

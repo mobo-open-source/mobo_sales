@@ -1,4 +1,4 @@
-/// What the app needs from the server before a user may in: the Sales module,
+/// What the app needs from the server before a user may in: the Sales app,
 /// and the user's Sales access.
 ///
 /// In Odoo's user form the second is the "Sales" line under Application
@@ -8,9 +8,13 @@
 /// group is the question. A user who is not in it — a portal user, or an
 /// internal user with only Invoicing or Inventory — is not let in.
 ///
-/// The module is the other half: a database without it has no quotations at
-/// all, and the app has nothing to show for any user. (`sales_team` alone is not
-/// enough — CRM installs it — so the probe is for `sale` itself.)
+/// The app is the other half. Odoo splits Sales in two: `sale_management` is
+/// the Sales app (the tile in the Apps screen) and `sale` is the plumbing it
+/// depends on. Uninstalling the app removes `sale_management` but leaves `sale`
+/// behind, still holding `sale.order` and the Sales groups, so a probe of `sale`
+/// would call an uninstalled Sales app "installed". The probe is therefore for
+/// `sale_management` itself. (`sales_team` alone is not enough either — CRM
+/// installs it.)
 enum SalesAccessStatus {
   /// The module is installed and the user is in the group.
   granted,
@@ -18,7 +22,7 @@ enum SalesAccessStatus {
   /// The module is installed and the user is not in the group.
   denied,
 
-  /// The database has no Sales module.
+  /// The database does not have the Sales app installed.
   moduleMissing,
 
   /// The user is a portal (or public) user, not an internal one. Portal users
@@ -50,9 +54,17 @@ class SalesAccess {
   /// portal user in `base.group_portal`, but still keeps them out of this one.
   static const internalGroupXmlId = 'base.group_user';
 
-  /// An external id only the `sale` module creates, and which exists, under the
-  /// same name, on Odoo 17 to 20: the Sales app's root menu.
-  static const moduleProbe = ['sale', 'sale_menu_root'];
+  /// An external id only the `sale_management` module (the Sales app) creates,
+  /// and which exists, under the same name, on Odoo 17 to 20: its quotation
+  /// template form view. It is deleted when the app is uninstalled.
+  ///
+  /// Not `sale.sale_menu_root`, the id this used to ask for: that one belongs
+  /// to `sale`, which stays installed after the Sales app is removed, so the
+  /// check passed for a database that no longer had the app.
+  static const moduleProbe = [
+    'sale_management',
+    'sale_order_template_view_form',
+  ];
 
   /// Looks the module and the group up together and says what they add up to.
   ///
@@ -163,7 +175,7 @@ class SalesAccessException implements Exception {
   const SalesAccessException.moduleMissing()
     : this._(
         SalesAccessStatus.moduleMissing,
-        "The Sales module isn't installed on this database.",
+        "The Sales app isn't installed on this database.",
       );
 
   const SalesAccessException.unverified()

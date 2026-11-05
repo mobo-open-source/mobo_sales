@@ -17,6 +17,7 @@ import 'package:mobo_sales/utils/navigation_helper.dart';
 import 'package:mobo_sales/widgets/pdf_widget.dart';
 import 'package:mobo_sales/models/quote.dart';
 import 'package:shimmer/shimmer.dart';
+import '../../utils/quantity_format.dart';
 import '../../services/data_change_bus.dart';
 import '../../services/odoo_error_handler.dart';
 import '../../services/odoo_session_manager.dart';
@@ -31,6 +32,7 @@ import '../../services/session_service.dart';
 import '../../services/payment_service.dart';
 import '../../services/invoice_details_service.dart';
 import '../../services/permission_service.dart';
+import '../../utils/invoice_payment_rules.dart';
 import '../../utils/odoo_version.dart';
 import '../invoices/create_invoice_screen.dart';
 import '../quotations/quotation_details_screen.dart';
@@ -99,6 +101,26 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
   bool _canPostInvoice = true;
   bool _canUnlinkAccountMove = true;
   bool _canCreatePaymentRegister = true;
+
+  /// Odoo generation of the server (17 to 20), or 0 until it is read. Odoo 17
+  /// does not offer Register Payment on an invoice that is `in_payment`; later
+  /// versions do (see [canRegisterPayment]).
+  int _serverGeneration = 0;
+
+  /// Whether a payment can be registered on the invoice on screen, by Odoo's
+  /// own rule: posted, not paid, reversed or blocked, a payable kind of
+  /// document, and something left to pay.
+  bool _canRegisterPaymentOn(InvoiceDetailsProvider provider) {
+    final invoice = provider.invoice;
+    if (invoice == null) return false;
+    return canRegisterPayment(
+      state: provider.invoiceState,
+      paymentState: provider.paymentState,
+      amountResidual: invoice.amountResidual,
+      moveType: invoice.moveType,
+      majorVersion: _serverGeneration,
+    );
+  }
 
   /// Hears about changes to this invoice made anywhere else in the app (a
   /// payment registered, the invoice edited, a sale order it came from
@@ -237,8 +259,10 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
       // Posting needs the Invoicing group as well as write access; see
       // [kInvoicingGroup].
       final canPost = await perm.hasGroup(kInvoicingGroup);
+      final session = await OdooSessionManager.getCurrentSession();
       if (mounted) {
         setState(() {
+          _serverGeneration = odooGeneration(session?.serverVersion);
           _canWriteAccountMove = canWrite;
           _canUnlinkAccountMove = canUnlink;
           _canCreatePaymentRegister = canCreatePayment;
@@ -1861,8 +1885,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                         },
                 ),
               ),
-            if (provider.invoiceState != 'draft' &&
-                provider.invoiceState != 'cancel')
+            if (_canRegisterPaymentOn(provider))
               Expanded(
                 child: _buildActionButton(
                   icon: HugeIcons.strokeRoundedPayment02,
@@ -1871,8 +1894,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
 
                   isPrimary: false,
 
-                  onPressed:
-                      (provider.isFullyPaid || !_canCreatePaymentRegister)
+                  onPressed: !_canCreatePaymentRegister
                       ? () {
                           if (!_canCreatePaymentRegister) {
                             CustomSnackbar.showError(
@@ -2790,9 +2812,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      quantity.toStringAsFixed(
-                        quantity.truncateToDouble() == quantity ? 0 : 1,
-                      ),
+                      formatQuantity(quantity),
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
@@ -3175,10 +3195,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                         'posted',
                       ].contains(provider.invoiceState.toLowerCase());
                       final canResetToDraft = isCancelled || isPosted;
-                      final isPaid =
-                          provider.paymentState.toLowerCase() == 'paid';
-                      final canRecordPayment =
-                          !isDraft && !isCancelled && !isPaid;
+                      final canRecordPayment = _canRegisterPaymentOn(provider);
 
                       return [
                         if (canConfirm)

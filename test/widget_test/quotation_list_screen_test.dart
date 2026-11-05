@@ -42,6 +42,7 @@ void main() {
       () => mockQuotationProvider.scrollController,
     ).thenReturn(ScrollController());
     when(() => mockQuotationProvider.activeFilters).thenReturn({});
+    when(() => mockQuotationProvider.supportsDeliveryFilters).thenReturn(true);
     when(() => mockQuotationProvider.isGrouped).thenReturn(false);
     when(() => mockQuotationProvider.filteredQuotations).thenReturn([]);
     when(() => mockQuotationProvider.allQuotations).thenReturn([]);

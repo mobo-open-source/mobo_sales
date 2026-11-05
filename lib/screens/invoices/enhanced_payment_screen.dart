@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 
 import 'package:hugeicons/hugeicons.dart';
 import 'package:shimmer/shimmer.dart';
 import '../../models/invoice.dart';
 import '../../models/payment.dart';
+import '../../providers/currency_provider.dart';
 import '../../services/payment_service.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../widgets/custom_date_picker.dart';
@@ -15,6 +17,7 @@ import '../../widgets/custom_text_field.dart';
 import '../../widgets/enhanced_payment_status_badge.dart';
 import '../../widgets/custom_snackbar.dart';
 import '../../utils/date_picker_utils.dart';
+import '../../utils/invoice_payment_rules.dart';
 
 class EnhancedPaymentScreen extends StatefulWidget {
   final Invoice invoice;
@@ -213,6 +216,43 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
     }
 
     _detectOdooEdition();
+    _loadCurrencyDecimals();
+  }
+
+  /// Decimal places of the invoice's currency (3 for KWD, 0 for JPY...), which
+  /// decide what counts as a difference and how amounts are shown.
+  int _currencyDecimals = 2;
+
+  Future<void> _loadCurrencyDecimals() async {
+    final currency = widget.invoice.currencyId;
+    final id = currency != null && currency.isNotEmpty && currency.first is int
+        ? currency.first as int
+        : null;
+    final decimals = await PaymentService.currencyDecimals(id);
+    if (!mounted || decimals == _currencyDecimals) return;
+    final untouched =
+        _amountController.text ==
+        widget.invoice.amountResidual.toStringAsFixed(_currencyDecimals);
+    setState(() => _currencyDecimals = decimals);
+    if (untouched) {
+      _amountController.text = widget.invoice.amountResidual.toStringAsFixed(
+        decimals,
+      );
+    }
+  }
+
+  /// [amount] in the invoice's own currency.
+  String _money(double amount) {
+    final currency = widget.invoice.currencyId;
+    final code = currency != null && currency.length > 1
+        ? currency[1].toString()
+        : '';
+    var symbol = code;
+    try {
+      symbol = context.read<CurrencyProvider>().getCurrencySymbol(code);
+    } catch (_) {}
+    final gap = symbol.length > 1 ? ' ' : '';
+    return '$symbol$gap${amount.toStringAsFixed(_currencyDecimals)}';
   }
 
   void _initializeControllers() {
@@ -390,7 +430,8 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
     final difference = paymentAmount - remainingBalance;
 
     setState(() {
-      if (paymentAmount > 0 && difference.abs() > 0.01) {
+      if (paymentAmount > 0 &&
+          isPaymentDifference(difference, _currencyDecimals)) {
         _differenceAmount = difference.abs();
         _showPaymentDifference = true;
 
@@ -474,9 +515,8 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
       );
 
       final options = PaymentOptions(
-        memo: _memoController.text.isNotEmpty
-            ? _memoController.text
-            : 'Payment for ${widget.invoice.name}',
+        // Empty stays empty: Odoo then fills in its own memo.
+        memo: _memoController.text.trim(),
         differenceHandling: _paymentDifferenceHandling == 'reconcile'
             ? PaymentDifferenceHandling.writeOff
             : PaymentDifferenceHandling.keepOpen,
@@ -1137,7 +1177,7 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
           ),
           const SizedBox(height: 4),
           Text(
-            '${_isOverpayment ? "Excess" : "Shortage"}: \$${_differenceAmount.toStringAsFixed(2)}',
+            '${_isOverpayment ? "Excess" : "Shortage"}: ${_money(_differenceAmount)}',
             style: TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.w500,
@@ -1340,7 +1380,7 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
 
                           _buildDetailRow(
                             'Payment Amount',
-                            '\$${paymentAmount.toStringAsFixed(2)}',
+                            _money(paymentAmount),
                             HugeIcons.strokeRoundedDollar01,
                             isDark,
                             valueColor: theme.primaryColor,
@@ -1406,7 +1446,7 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
                                           ),
                                         ),
                                         Text(
-                                          '${isOverpayment ? "Excess" : "Shortage"}: \$${differenceAmount.toStringAsFixed(2)}',
+                                          '${isOverpayment ? "Excess" : "Shortage"}: ${_money(differenceAmount)}',
                                           style: TextStyle(
                                             fontSize: 11,
                                             color: isDark

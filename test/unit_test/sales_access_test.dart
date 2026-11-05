@@ -5,6 +5,7 @@ import 'package:mobo_sales/services/sales_access.dart';
 class _FakeServer {
   _FakeServer({
     this.moduleInstalled = true,
+    this.onlySalePlumbing = false,
     this.inGroup = true,
     this.internal = true,
     this.acceptsRecordShape = true,
@@ -15,6 +16,10 @@ class _FakeServer {
   });
 
   final bool moduleInstalled;
+
+  /// The Sales app was uninstalled but its dependency `sale` stayed: ids of
+  /// `sale` still resolve, ids of `sale_management` do not.
+  final bool onlySalePlumbing;
   final bool inGroup;
 
   /// Whether the user is an internal one (in `base.group_user`).
@@ -40,7 +45,7 @@ class _FakeServer {
     calls.add('$model.$method');
     if (model == 'ir.model.data') {
       if (probeThrows) throw Exception('no network');
-      if (!moduleInstalled) {
+      if (!moduleInstalled || (onlySalePlumbing && args[0] != 'sale')) {
         return {
           'error': {
             'message': 'Odoo Server Error',
@@ -240,10 +245,34 @@ void main() {
       );
     });
 
-    test('asks for the Sales group and the sale module, nothing else', () {
+    test('asks for the Sales group and the Sales app, nothing else', () {
       expect(SalesAccess.groupXmlId, 'sales_team.group_sale_salesman');
-      expect(SalesAccess.moduleProbe, ['sale', 'sale_menu_root']);
+      expect(SalesAccess.moduleProbe, [
+        'sale_management',
+        'sale_order_template_view_form',
+      ]);
     });
+
+    test('the probe belongs to the Sales app, not to its dependency `sale`', () {
+      // `sale` survives uninstalling the app, so an id of `sale` would call an
+      // uninstalled Sales app installed.
+      expect(SalesAccess.moduleProbe.first, 'sale_management');
+    });
+
+    test(
+      'the Sales app uninstalled but `sale` left behind: moduleMissing',
+      () async {
+        expect(
+          await check(_FakeServer(onlySalePlumbing: true)),
+          SalesAccessStatus.moduleMissing,
+        );
+        // Whatever the user's groups say, there is no Sales app to use.
+        expect(
+          await check(_FakeServer(onlySalePlumbing: true, inGroup: false)),
+          SalesAccessStatus.moduleMissing,
+        );
+      },
+    );
   });
 
   group('recognising "module not installed"', () {

@@ -1,8 +1,12 @@
+import 'dart:async' show TimeoutException;
+
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:intl/intl.dart';
 import '../models/payment.dart';
 import '../models/invoice.dart';
 import 'data_change_bus.dart';
+import 'odoo_error_classifier.dart';
+import 'odoo_error_handler.dart';
 import 'odoo_session_manager.dart';
 import 'permission_service.dart';
 
@@ -169,6 +173,23 @@ class PaymentError extends Error {
   }
 }
 
+/// How far registering a payment got, so a failure can tell "never sent" from
+/// "sent, and the answer was lost".
+class _PaymentProgress {
+  /// True once the request that creates the payment was sent.
+  bool sent = false;
+
+  /// What the invoice still owed before the payment.
+  double? residualBefore;
+
+  /// The customer, and the newest payment they had before this one, so a
+  /// payment that appears afterwards can be told from older ones. (Odoo 19 keeps
+  /// the residual of an invoice whose payment is only "in process", so the
+  /// residual alone does not show that a payment was made.)
+  int? partnerId;
+  int? newestPaymentBefore;
+}
+
 class PaymentService {
   static const Duration _defaultTimeout = Duration(seconds: 45);
   static const Duration _extendedTimeout = Duration(seconds: 60);
@@ -298,67 +319,6 @@ class PaymentService {
     ];
   }
 
-  static Future<PaymentResult> _executeEnhancedWorkflow(
-    dynamic client,
-    int invoiceId,
-    double amount,
-    PaymentMethodData paymentMethod,
-    DateTime paymentDate,
-    PaymentOptions options,
-  ) async {
-    try {
-      final odooBehavior = await detectOdooPaymentBehavior();
-
-      await _validatePaymentData(client, invoiceId, amount, paymentMethod);
-
-      final invoiceData = await _getInvoiceDetails(client, invoiceId);
-      final paymentContext = await _buildPaymentContext(
-        client,
-        invoiceData,
-        paymentMethod,
-      );
-
-      final paymentResult = await _executeOdooPaymentWizardWithBehavior(
-        client,
-        invoiceId: invoiceId,
-        amount: amount,
-        paymentDate: paymentDate,
-        paymentMethod: paymentMethod,
-        context: paymentContext,
-        options: options,
-        odooBehavior: odooBehavior,
-      );
-
-      // The payment is recorded; what follows only reads it back. A failed
-      // read must not report the payment itself as failed.
-      Invoice updatedInvoice;
-      try {
-        updatedInvoice = await _getUpdatedInvoiceWithPayments(
-          client,
-          invoiceId,
-        );
-      } catch (_) {
-        updatedInvoice = await _getSafeInvoiceData(invoiceId);
-      }
-
-      Payment? payment;
-      if (paymentResult['payment_id'] != null) {
-        try {
-          payment = await getPaymentDetails(paymentResult['payment_id']);
-        } catch (_) {}
-      }
-
-      return PaymentResult(
-        success: true,
-        payment: payment,
-        updatedInvoice: updatedInvoice,
-        warnings: paymentResult['warnings'] ?? [],
-      );
-    } catch (e) {
-      rethrow;
-    }
-  }
-
   static Future<PaymentResult> createPaymentWithOdooFlow({
     required int invoiceId,
     required double amount,
@@ -374,31 +334,46 @@ class PaymentService {
       options: options,
     ).timeout(
       const Duration(seconds: 60),
-      onTimeout: () {
-        return PaymentResult(
-          success: false,
-          updatedInvoice: Invoice(
-            id: invoiceId,
-            name: 'Unknown',
-            customerName: 'Unknown',
-            lines: [],
-            taxLines: [],
-            subtotal: 0,
-            taxAmount: 0,
-            total: amount,
-            amountPaid: 0,
-            amountResidual: amount,
-            status: 'draft',
-            paymentState: 'not_paid',
-          ),
-          errorMessage:
-              'Payment is being processed. Please refresh to see the updated status.',
-          warnings: ['timeout_but_processing'],
-        );
-      },
+      onTimeout: () => _processingResult(invoiceId, amount),
     );
   }
 
+  /// What [createPaymentWithOdooFlow] answers when the server's answer to the
+  /// payment request did not arrive, or could not be told apart from "done":
+  /// not a failure and not a success, so the screen reloads the invoice and
+  /// reports what it finds. The payment is never sent again.
+  static PaymentResult _processingResult(int invoiceId, double amount) {
+    return PaymentResult(
+      success: false,
+      updatedInvoice: Invoice(
+        id: invoiceId,
+        name: 'Unknown',
+        customerName: 'Unknown',
+        lines: [],
+        taxLines: [],
+        subtotal: 0,
+        taxAmount: 0,
+        total: amount,
+        amountPaid: 0,
+        amountResidual: amount,
+        status: 'draft',
+        paymentState: 'not_paid',
+      ),
+      errorMessage:
+          'Payment is being processed. Please refresh to see the updated status.',
+      warnings: ['timeout_but_processing'],
+    );
+  }
+
+  /// Registers the payment once, and settles what happened when it does not
+  /// answer cleanly.
+  ///
+  /// The wizard is run at most once. A request that failed or timed out may
+  /// still have created the payment on the server; running it again then paid
+  /// the invoice twice (a partial payment of 300 on 1000 leaves 700, so the
+  /// repeat of 300 looks fine). So after a failure the invoice is read back:
+  /// if it owes less than before the payment went through, and if it cannot be
+  /// told the answer is "being processed".
   static Future<PaymentResult> _createPaymentWithTimeout({
     required int invoiceId,
     required double amount,
@@ -406,65 +381,456 @@ class PaymentService {
     required DateTime paymentDate,
     PaymentOptions? options,
   }) async {
+    final client = await clientProvider();
+    if (client == null) {
+      throw PaymentError.network(
+        message: 'No active Odoo session. Please log in again.',
+        action: PaymentErrorAction.retry,
+      );
+    }
+
+    final progress = _PaymentProgress();
     try {
-      final client = await clientProvider();
-      if (client == null) {
-        throw PaymentError.network(
-          message: 'No active Odoo session. Please log in again.',
-          action: PaymentErrorAction.retry,
-        );
-      }
-
-      try {
-        final paymentResult = await createPayment(
-          invoiceId: invoiceId,
-          amount: amount,
-          paymentMethod: paymentMethod.type,
-          paymentDate: paymentDate,
-          memo: options?.memo,
-          paymentDifferenceHandling:
-              options?.differenceHandling == PaymentDifferenceHandling.writeOff
-              ? 'reconcile'
-              : 'open',
-          writeoffAccountId: options?.writeOffConfig?.accountId,
-          writeoffLabel: options?.writeOffConfig?.label,
-        );
-
-        if (paymentResult['success'] == true) {
-          final updatedInvoice = await _getSafeInvoiceData(invoiceId);
-
-          return PaymentResult(
-            success: true,
-            payment: null,
-            updatedInvoice: updatedInvoice,
-            warnings: [],
-          );
-        } else {
-          throw Exception(paymentResult['error'] ?? 'Payment creation failed');
-        }
-      } catch (e) {
-        return await _executeEnhancedWorkflow(
-          client,
-          invoiceId,
-          amount,
-          paymentMethod,
-          paymentDate,
-          options ?? PaymentOptions(),
-        );
-      }
-    } catch (e) {
-      if (e is PaymentError) {
-        rethrow;
-      }
+      await _registerPayment(
+        client,
+        invoiceId: invoiceId,
+        amount: amount,
+        paymentDate: paymentDate,
+        journalType: paymentMethod.type,
+        memo: options?.memo,
+        differenceHandling:
+            options?.differenceHandling == PaymentDifferenceHandling.writeOff
+            ? 'reconcile'
+            : 'open',
+        writeoffAccountId: options?.writeOffConfig?.accountId,
+        writeoffLabel: options?.writeOffConfig?.label,
+        progress: progress,
+      );
 
       return PaymentResult(
-        success: false,
+        success: true,
+        payment: null,
         updatedInvoice: await _getSafeInvoiceData(invoiceId),
-        errorMessage: _handlePaymentError(e).message,
+        warnings: [],
+      );
+    } on PaymentError {
+      // Refused before anything was sent (a bad amount, an unposted invoice,
+      // no such journal): the user corrects it and tries again.
+      rethrow;
+    } catch (e) {
+      return await _resultAfterFailure(
+        client,
+        invoiceId: invoiceId,
+        amount: amount,
+        error: e,
+        progress: progress,
       );
     }
   }
 
+  static Future<PaymentResult> _resultAfterFailure(
+    dynamic client, {
+    required int invoiceId,
+    required double amount,
+    required Object error,
+    required _PaymentProgress progress,
+  }) async {
+    // Nothing was sent to create the payment: it is a plain failure.
+    if (!progress.sent) {
+      return PaymentResult(
+        success: false,
+        updatedInvoice: await _getSafeInvoiceData(invoiceId),
+        errorMessage: OdooErrorHandler.toSnackbarMessage(error),
+      );
+    }
+
+    // The request went out. Ask the server what became of it.
+    double? after;
+    try {
+      after = await _residualOf(client, invoiceId);
+    } catch (_) {}
+
+    final before = progress.residualBefore;
+    final owesLess = before != null && after != null && after < before - 1e-9;
+    var paymentAppeared = false;
+    try {
+      paymentAppeared = await _paymentAppeared(client, progress, amount);
+    } catch (_) {}
+    if (owesLess || paymentAppeared) {
+      // The invoice owes less than before, or a payment of this amount has
+      // appeared for the customer: the payment was recorded and only the
+      // answer got lost.
+      return PaymentResult(
+        success: true,
+        payment: null,
+        updatedInvoice: await _getSafeInvoiceData(invoiceId),
+        warnings: [],
+      );
+    }
+
+    // Nothing changed, and the server did answer with a refusal (it is not a
+    // lost connection): the payment was not made.
+    if (after != null && !_looksLikeLostAnswer(error)) {
+      return PaymentResult(
+        success: false,
+        updatedInvoice: await _getSafeInvoiceData(invoiceId),
+        errorMessage: OdooErrorHandler.toSnackbarMessage(error),
+      );
+    }
+
+    // The answer was lost and the invoice does not show it yet (or could not
+    // be read): the server may still be working on it.
+    return _processingResult(invoiceId, amount);
+  }
+
+  /// Whether [error] is the answer going missing (a timeout, a dropped
+  /// connection) rather than the server saying no.
+  static bool _looksLikeLostAnswer(Object error) {
+    if (error is TimeoutException) return true;
+    if (OdooErrorClassifier.isServerUnreachable(error)) return true;
+    final text = error.toString().toLowerCase();
+    return text.contains('timeout') ||
+        text.contains('timed out') ||
+        text.contains('connection') ||
+        text.contains('socket');
+  }
+
+  /// The id of the newest payment of [partnerId], or null when it cannot be
+  /// read (then only the invoice's residual tells whether a payment was made).
+  static Future<int?> _newestPaymentId(dynamic client, int? partnerId) async {
+    if (partnerId == null) return null;
+    try {
+      final rows = await client
+          .callKw({
+            'model': 'account.payment',
+            'method': 'search_read',
+            'args': [
+              [
+                ['partner_id', '=', partnerId],
+              ],
+              ['id'],
+            ],
+            'kwargs': {'order': 'id desc', 'limit': 1},
+          })
+          .timeout(_defaultTimeout);
+      if (rows is List) {
+        return rows.isEmpty ? 0 : rows.first['id'] as int?;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Whether the customer has a payment of [amount] newer than the one seen
+  /// before the request went out.
+  static Future<bool> _paymentAppeared(
+    dynamic client,
+    _PaymentProgress progress,
+    double amount,
+  ) async {
+    final partnerId = progress.partnerId;
+    final newest = progress.newestPaymentBefore;
+    if (partnerId == null || newest == null) return false;
+    final rows = await client
+        .callKw({
+          'model': 'account.payment',
+          'method': 'search_read',
+          'args': [
+            [
+              ['partner_id', '=', partnerId],
+              ['id', '>', newest],
+              ['amount', '>=', amount - 0.0001],
+              ['amount', '<=', amount + 0.0001],
+            ],
+            ['id'],
+          ],
+          'kwargs': {'limit': 1},
+        })
+        .timeout(_defaultTimeout);
+    return rows is List && rows.isNotEmpty;
+  }
+
+  static Future<double> _residualOf(dynamic client, int invoiceId) async {
+    final rows = await client
+        .callKw({
+          'model': 'account.move',
+          'method': 'search_read',
+          'args': [
+            [
+              ['id', '=', invoiceId],
+            ],
+            ['amount_residual'],
+          ],
+          'kwargs': {},
+        })
+        .timeout(_defaultTimeout);
+    if (rows is! List || rows.isEmpty) {
+      throw Exception('Invoice not found');
+    }
+    return ((rows.first['amount_residual'] as num?) ?? 0).toDouble();
+  }
+
+  /// Registers a payment on an invoice through Odoo's own wizard.
+  ///
+  /// The wizard is left to work out what it knows: the direction of the payment
+  /// (a credit note is refunded, an invoice is collected), the partner, the
+  /// company and, first, the journal and method line the invoice prefers. Only
+  /// what the user chose is sent: the amount, the date, the memo, how a
+  /// difference is handled, and the journal type (bank or cash) if the
+  /// wizard's own journal is of another kind.
+  static Future<({int? paymentId, int companyId})> _registerPayment(
+    dynamic client, {
+    required int invoiceId,
+    required double amount,
+    required DateTime paymentDate,
+    required String journalType,
+    String? memo,
+    String differenceHandling = 'open',
+    int? writeoffAccountId,
+    String? writeoffLabel,
+    required _PaymentProgress progress,
+  }) async {
+    if (amount <= 0) {
+      throw PaymentError.validation(
+        message: 'Payment amount must be greater than zero',
+        field: 'amount',
+        action: PaymentErrorAction.correct,
+      );
+    }
+
+    final invoice = await _getInvoiceDetails(client, invoiceId);
+    if (invoice['state'] != 'posted') {
+      throw PaymentError.validation(
+        message: 'Invoice must be posted before payment can be made',
+        action: PaymentErrorAction.correct,
+      );
+    }
+    progress.residualBefore = (invoice['amount_residual'] as num?)?.toDouble();
+    final companyId = _idOf(invoice['company_id']) ?? 1;
+    progress.partnerId = _idOf(invoice['partner_id']);
+    progress.newestPaymentBefore = await _newestPaymentId(
+      client,
+      progress.partnerId,
+    );
+
+    final canCreatePaymentRegister = await PermissionService.instance.canCreate(
+      'account.payment.register',
+    );
+    if (!canCreatePaymentRegister) {
+      throw Exception('You do not have permission to register payments.');
+    }
+
+    final context = {
+      'active_model': 'account.move',
+      'active_ids': [invoiceId],
+      'allowed_company_ids': [companyId],
+    };
+
+    final wizardData = <String, dynamic>{
+      'amount': amount,
+      'payment_date': DateFormat('yyyy-MM-dd').format(paymentDate),
+      // Odoo's field for the memo. Left out when the user typed none, so Odoo
+      // fills in its own (the invoice number).
+      if (memo != null && memo.trim().isNotEmpty) 'communication': memo.trim(),
+    };
+    if (differenceHandling == 'reconcile' && writeoffAccountId != null) {
+      wizardData['payment_difference_handling'] = 'reconcile';
+      wizardData['writeoff_account_id'] = writeoffAccountId;
+      wizardData['writeoff_label'] = writeoffLabel ?? 'Payment Difference';
+    }
+
+    final wizardId = await client
+        .callKw({
+          'model': 'account.payment.register',
+          'method': 'create',
+          'args': [wizardData],
+          'kwargs': {'context': context},
+        })
+        .timeout(_defaultTimeout);
+
+    await _chooseJournal(client, wizardId, journalType, context);
+
+    // From here on the payment may exist on the server.
+    progress.sent = true;
+    final result = await client
+        .callKw({
+          'model': 'account.payment.register',
+          'method': 'action_create_payments',
+          'args': [
+            [wizardId],
+          ],
+          'kwargs': {'context': context},
+        })
+        .timeout(_defaultTimeout);
+
+    int? paymentId;
+    if (result is Map && result['res_id'] is int) {
+      paymentId = result['res_id'] as int;
+    }
+
+    _announcePaymentRegistered(invoiceId, paymentId);
+    return (paymentId: paymentId, companyId: companyId);
+  }
+
+  /// Makes sure the wizard pays from a journal of the kind the user chose.
+  ///
+  /// The wizard has already picked one by Odoo's rules, the invoice's preferred
+  /// payment method line first; that stays when it is of the right type. Only
+  /// when it is not (the user chose cash, say) the first journal of the chosen
+  /// type that the wizard offers is used, in Odoo's own journal order.
+  static Future<void> _chooseJournal(
+    dynamic client,
+    dynamic wizardId,
+    String journalType,
+    Map<String, dynamic> context,
+  ) async {
+    final wanted = journalType.toLowerCase() == 'cash' ? 'cash' : 'bank';
+
+    Future<Map<String, dynamic>?> readWizard() async {
+      final rows = await client
+          .callKw({
+            'model': 'account.payment.register',
+            'method': 'read',
+            'args': [
+              [wizardId],
+              [
+                'journal_id',
+                'payment_method_line_id',
+                'available_journal_ids',
+                'available_payment_method_line_ids',
+              ],
+            ],
+            'kwargs': {'context': context},
+          })
+          .timeout(_defaultTimeout);
+      if (rows is List && rows.isNotEmpty && rows.first is Map) {
+        return Map<String, dynamic>.from(rows.first as Map);
+      }
+      return null;
+    }
+
+    final wizard = await readWizard();
+    if (wizard == null) return; // Cannot look: leave Odoo's own choice.
+
+    final available = _idsOf(wizard['available_journal_ids']);
+    if (available.isEmpty) return;
+
+    final journals = await client
+        .callKw({
+          'model': 'account.journal',
+          'method': 'search_read',
+          'args': [
+            [
+              ['id', 'in', available],
+            ],
+            ['id', 'name', 'type'],
+          ],
+          'kwargs': {'context': context},
+        })
+        .timeout(_defaultTimeout);
+    if (journals is! List) return;
+
+    final currentId = _idOf(wizard['journal_id']);
+    for (final j in journals) {
+      if (j is Map && j['id'] == currentId && j['type'] == wanted) return;
+    }
+
+    Map? match;
+    for (final j in journals) {
+      if (j is Map && j['type'] == wanted) {
+        match = j;
+        break;
+      }
+    }
+    if (match == null) {
+      throw PaymentError.validation(
+        message: 'No $wanted journal is available for this payment.',
+        action: PaymentErrorAction.correct,
+      );
+    }
+
+    await client
+        .callKw({
+          'model': 'account.payment.register',
+          'method': 'write',
+          'args': [
+            [wizardId],
+            {'journal_id': match['id']},
+          ],
+          'kwargs': {'context': context},
+        })
+        .timeout(_defaultTimeout);
+
+    // Odoo picks the method line again for the new journal; if it found none,
+    // take the first it offers.
+    final after = await readWizard();
+    if (after != null && _idOf(after['payment_method_line_id']) == null) {
+      final lines = _idsOf(after['available_payment_method_line_ids']);
+      if (lines.isNotEmpty) {
+        await client
+            .callKw({
+              'model': 'account.payment.register',
+              'method': 'write',
+              'args': [
+                [wizardId],
+                {'payment_method_line_id': lines.first},
+              ],
+              'kwargs': {'context': context},
+            })
+            .timeout(_defaultTimeout);
+      }
+    }
+  }
+
+  static final Map<int, int> _decimalsCache = {};
+
+  /// Decimal places of the currency [currencyId] (`res.currency`
+  /// `decimal_places`): 2 for most, 3 for KWD or BHD, 0 for JPY. Two when it
+  /// cannot be read, which is what most currencies use.
+  static Future<int> currencyDecimals(int? currencyId) async {
+    if (currencyId == null) return 2;
+    final cached = _decimalsCache[currencyId];
+    if (cached != null) return cached;
+    try {
+      final client = await clientProvider();
+      if (client == null) return 2;
+      final rows = await client
+          .callKw({
+            'model': 'res.currency',
+            'method': 'read',
+            'args': [
+              [currencyId],
+              ['decimal_places'],
+            ],
+            'kwargs': {},
+          })
+          .timeout(_defaultTimeout);
+      if (rows is List && rows.isNotEmpty) {
+        final places = rows.first['decimal_places'];
+        if (places is int && places >= 0 && places <= 6) {
+          return _decimalsCache[currencyId] = places;
+        }
+      }
+    } catch (_) {}
+    return 2;
+  }
+
+  static int? _idOf(dynamic value) {
+    if (value is int) return value;
+    if (value is List && value.isNotEmpty && value.first is int) {
+      return value.first as int;
+    }
+    return null;
+  }
+
+  static List<int> _idsOf(dynamic value) => value is List
+      ? [
+          for (final v in value)
+            if (v is int) v,
+        ]
+      : <int>[];
+
+  /// Registers a payment and answers with what the server says. Throws when
+  /// the server refuses it; nothing is announced then.
   static Future<Map<String, dynamic>> createPayment({
     required int invoiceId,
     required double amount,
@@ -480,63 +846,67 @@ class PaymentService {
       throw Exception('No active Odoo session');
     }
 
+    final done = await _registerPayment(
+      client,
+      invoiceId: invoiceId,
+      amount: amount,
+      paymentDate: paymentDate,
+      journalType: paymentMethod,
+      memo: memo,
+      differenceHandling: paymentDifferenceHandling,
+      writeoffAccountId: writeoffAccountId,
+      writeoffLabel: writeoffLabel,
+      progress: _PaymentProgress(),
+    );
+
+    // The payment exists on the server from here on. Reading the invoice back
+    // is only a courtesy to the caller, so a failure of that read must not turn
+    // a recorded payment into a failed one.
+    Map<String, dynamic> updatedInvoice = {};
     try {
-      final invoiceData = await _getInvoiceDetails(client, invoiceId);
-      final partnerId = invoiceData['partner_id'] is List
-          ? invoiceData['partner_id'][0]
-          : invoiceData['partner_id'];
-      final companyId = invoiceData['company_id'] is List
-          ? invoiceData['company_id'][0]
-          : invoiceData['company_id'] ?? 1;
+      updatedInvoice = await _getUpdatedInvoiceStatus(client, invoiceId, done);
+    } catch (_) {}
 
-      final journalData = await _findPaymentJournal(
-        client,
-        companyId,
-        paymentMethod,
-      );
-      final paymentMethodLineData = await _findPaymentMethodLine(
-        client,
-        journalData['id'],
-        companyId,
-      );
+    return {
+      'success': true,
+      'payment_id': done.paymentId,
+      'payment_state': updatedInvoice['payment_state'],
+      'updated_invoice': updatedInvoice,
+    };
+  }
 
-      final paymentResult = await _createPaymentViaWizard(
-        client,
-        invoiceId: invoiceId,
-        amount: amount,
-        paymentDate: paymentDate,
-        journalId: journalData['id'],
-        paymentMethodLineId: paymentMethodLineData['id'],
-        partnerId: partnerId,
-        companyId: companyId,
-        memo: memo ?? invoiceData['name']?.toString() ?? '',
-        paymentDifferenceHandling: paymentDifferenceHandling,
-        writeoffAccountId: writeoffAccountId,
-        writeoffLabel: writeoffLabel,
-      );
+  static Future<Map<String, dynamic>> _getUpdatedInvoiceStatus(
+    dynamic client,
+    int invoiceId,
+    ({int? paymentId, int companyId}) done,
+  ) async {
+    final result = await client
+        .callKw({
+          'model': 'account.move',
+          'method': 'search_read',
+          'args': [
+            [
+              ['id', '=', invoiceId],
+            ],
+            ['amount_residual', 'amount_total', 'state', 'payment_state'],
+          ],
+          'kwargs': {
+            'context': {
+              'allowed_company_ids': [done.companyId],
+            },
+          },
+        })
+        .timeout(_defaultTimeout);
 
-      // The payment exists on the server from here on. Reading the invoice
-      // back is only a courtesy to the caller, so a failure of that read must
-      // not turn a recorded payment into a failed one (the caller would then
-      // fall back to recording it a second time).
-      Map<String, dynamic> updatedInvoice = {};
-      try {
-        updatedInvoice = await _getUpdatedInvoiceStatus(
-          client,
-          invoiceId,
-          companyId,
-        );
-      } catch (_) {}
-
-      return {
-        'success': true,
-        'payment_id': paymentResult['payment_id'],
-        'payment_state': paymentResult['payment_state'],
-        'updated_invoice': updatedInvoice,
-      };
-    } catch (e) {
-      rethrow;
+    if (result.isEmpty) {
+      throw Exception('Failed to fetch updated invoice data');
     }
+
+    final invoice = result[0];
+    final amountResidual = (invoice['amount_residual'] as num? ?? 0).toDouble();
+    invoice['is_fully_paid'] = amountResidual < 1e-6;
+
+    return invoice;
   }
 
   static Future<Payment> getPaymentDetails(int paymentId) async {
@@ -1013,6 +1383,8 @@ class PaymentService {
               'currency_id',
               'name',
               'payment_state',
+              'state',
+              'move_type',
             ],
           ],
           'kwargs': {},
@@ -1024,191 +1396,6 @@ class PaymentService {
     }
 
     return result[0];
-  }
-
-  static Future<Map<String, dynamic>> _findPaymentJournal(
-    dynamic client,
-    int companyId,
-    String paymentMethod,
-  ) async {
-    final journalType = paymentMethod.toLowerCase() == 'cash' ? 'cash' : 'bank';
-
-    final result = await client
-        .callKw({
-          'model': 'account.journal',
-          'method': 'search_read',
-          'args': [
-            [
-              ['type', '=', journalType],
-              ['active', '=', true],
-              ['company_id', '=', companyId],
-            ],
-            ['id', 'name', 'type', 'company_id'],
-          ],
-          'kwargs': {'limit': 1},
-        })
-        .timeout(_defaultTimeout);
-
-    if (result.isEmpty) {
-      throw Exception('No $journalType journal found for company $companyId');
-    }
-
-    return result[0];
-  }
-
-  static Future<Map<String, dynamic>> _findPaymentMethodLine(
-    dynamic client,
-    int journalId,
-    int companyId,
-  ) async {
-    final result = await client
-        .callKw({
-          'model': 'account.payment.method.line',
-          'method': 'search_read',
-          'args': [
-            [
-              ['journal_id', '=', journalId],
-              ['payment_type', '=', 'inbound'],
-            ],
-            ['id', 'name', 'payment_method_id'],
-          ],
-          'kwargs': {'limit': 1},
-        })
-        .timeout(_defaultTimeout);
-
-    if (result.isEmpty) {
-      throw Exception('No payment method line found for journal $journalId');
-    }
-
-    return result[0];
-  }
-
-  static Future<Map<String, dynamic>> _createPaymentViaWizard(
-    dynamic client, {
-    required int invoiceId,
-    required double amount,
-    required DateTime paymentDate,
-    required int journalId,
-    required int paymentMethodLineId,
-    required int partnerId,
-    required int companyId,
-    required String memo,
-    String paymentDifferenceHandling = 'open',
-    int? writeoffAccountId,
-    String? writeoffLabel,
-  }) async {
-    final wizardData = {
-      'amount': amount,
-      'payment_date': DateFormat('yyyy-MM-dd').format(paymentDate),
-      'journal_id': journalId,
-      'payment_method_line_id': paymentMethodLineId,
-
-      'partner_id': partnerId,
-      'partner_type': 'customer',
-      'payment_type': 'inbound',
-      'company_id': companyId,
-      'group_payment': false,
-      'payment_difference_handling': paymentDifferenceHandling,
-    };
-
-    if (paymentDifferenceHandling == 'reconcile' && writeoffAccountId != null) {
-      wizardData['writeoff_account_id'] = writeoffAccountId;
-      wizardData['writeoff_label'] = writeoffLabel ?? 'Payment Difference';
-    }
-
-    final canCreatePaymentRegister = await PermissionService.instance.canCreate(
-      'account.payment.register',
-    );
-    if (!canCreatePaymentRegister) {
-      throw Exception('You do not have permission to register payments.');
-    }
-    final wizardId = await client
-        .callKw({
-          'model': 'account.payment.register',
-          'method': 'create',
-          'args': [wizardData],
-          'kwargs': {
-            'context': {
-              'active_model': 'account.move',
-              'active_ids': [invoiceId],
-              'default_payment_type': 'inbound',
-              'default_partner_type': 'customer',
-              'company_id': companyId,
-              'allowed_company_ids': [companyId],
-            },
-          },
-        })
-        .timeout(_defaultTimeout);
-
-    final result = await client
-        .callKw({
-          'model': 'account.payment.register',
-          'method': 'action_create_payments',
-          'args': [
-            [wizardId],
-          ],
-          'kwargs': {
-            'context': {
-              'active_model': 'account.move',
-              'active_ids': [invoiceId],
-              'company_id': companyId,
-              'allowed_company_ids': [companyId],
-            },
-          },
-        })
-        .timeout(_defaultTimeout);
-
-    int? paymentId;
-    if (result is Map && result['res_id'] != null) {
-      paymentId = result['res_id'];
-    }
-
-    _announcePaymentRegistered(invoiceId, paymentId);
-
-    await Future.delayed(const Duration(milliseconds: 500));
-
-    return {
-      'payment_id': paymentId,
-      'payment_state': 'posted',
-      'wizard_result': result,
-    };
-  }
-
-  static Future<Map<String, dynamic>> _getUpdatedInvoiceStatus(
-    dynamic client,
-    int invoiceId,
-    int companyId,
-  ) async {
-    await Future.delayed(const Duration(milliseconds: 1000));
-
-    final result = await client
-        .callKw({
-          'model': 'account.move',
-          'method': 'search_read',
-          'args': [
-            [
-              ['id', '=', invoiceId],
-            ],
-            ['amount_residual', 'amount_total', 'state', 'payment_state'],
-          ],
-          'kwargs': {
-            'context': {
-              'company_id': companyId,
-              'allowed_company_ids': [companyId],
-            },
-          },
-        })
-        .timeout(_defaultTimeout);
-
-    if (result.isEmpty) {
-      throw Exception('Failed to fetch updated invoice data');
-    }
-
-    final invoice = result[0];
-    final amountResidual = invoice['amount_residual'] as double? ?? 0.0;
-    invoice['is_fully_paid'] = amountResidual <= 0.01;
-
-    return invoice;
   }
 
   static Future<Map<String, dynamic>> _getPaymentReconciliationDetails(
@@ -1279,238 +1466,6 @@ class PaymentService {
     } catch (e) {
       return {'invoice_ids': <int>[], 'reconciled_amount': 0.0};
     }
-  }
-
-  static Future<void> _validatePaymentData(
-    dynamic client,
-    int invoiceId,
-    double amount,
-    PaymentMethodData paymentMethod,
-  ) async {
-    if (amount <= 0) {
-      throw PaymentError.validation(
-        message: 'Payment amount must be greater than zero',
-        field: 'amount',
-        action: PaymentErrorAction.correct,
-      );
-    }
-
-    final invoiceResult = await client
-        .callKw({
-          'model': 'account.move',
-          'method': 'search_read',
-          'args': [
-            [
-              ['id', '=', invoiceId],
-            ],
-            ['state', 'amount_residual', 'move_type'],
-          ],
-          'kwargs': {},
-        })
-        .timeout(_defaultTimeout);
-
-    if (invoiceResult.isEmpty) {
-      throw PaymentError.validation(
-        message: 'Invoice not found',
-        field: 'invoiceId',
-        action: PaymentErrorAction.refresh,
-      );
-    }
-
-    final invoice = invoiceResult[0];
-    if (invoice['state'] != 'posted') {
-      throw PaymentError.validation(
-        message: 'Invoice must be posted before payment can be made',
-        action: PaymentErrorAction.correct,
-      );
-    }
-
-    final amountResidual = (invoice['amount_residual'] ?? 0.0).toDouble();
-    if (amount > amountResidual) {
-      throw PaymentError.validation(
-        message:
-            'Payment amount cannot exceed remaining balance of \$${amountResidual.toStringAsFixed(2)}',
-        field: 'amount',
-        action: PaymentErrorAction.correct,
-      );
-    }
-  }
-
-  static Future<Map<String, dynamic>> _buildPaymentContext(
-    dynamic client,
-    Map<String, dynamic> invoiceData,
-    PaymentMethodData paymentMethod,
-  ) async {
-    final partnerId = invoiceData['partner_id'] is List
-        ? invoiceData['partner_id'][0]
-        : invoiceData['partner_id'];
-    final companyId = invoiceData['company_id'] is List
-        ? invoiceData['company_id'][0]
-        : invoiceData['company_id'] ?? 1;
-
-    return {
-      'partner_id': partnerId,
-      'company_id': companyId,
-      'active_model': 'account.move',
-      'active_ids': [invoiceData['id']],
-      'default_payment_type': 'inbound',
-      'default_partner_type': 'customer',
-      'allowed_company_ids': [companyId],
-    };
-  }
-
-  static Future<Map<String, dynamic>> _executeOdooPaymentWizardWithBehavior(
-    dynamic client, {
-    required int invoiceId,
-    required double amount,
-    required DateTime paymentDate,
-    required PaymentMethodData paymentMethod,
-    required Map<String, dynamic> context,
-    required PaymentOptions options,
-    required OdooPaymentBehavior odooBehavior,
-  }) async {
-    final journalData = await _findPaymentJournal(
-      client,
-      context['company_id'],
-      paymentMethod.type,
-    );
-    final paymentMethodLineData = await _findPaymentMethodLine(
-      client,
-      journalData['id'],
-      context['company_id'],
-    );
-
-    final wizardData = {
-      'amount': amount,
-      'payment_date': DateFormat('yyyy-MM-dd').format(paymentDate),
-      'journal_id': journalData['id'],
-      'payment_method_line_id': paymentMethodLineData['id'],
-      'partner_id': context['partner_id'],
-      'partner_type': 'customer',
-      'payment_type': 'inbound',
-      'company_id': context['company_id'],
-      'group_payment': false,
-      'payment_difference_handling':
-          options.differenceHandling == PaymentDifferenceHandling.writeOff
-          ? 'reconcile'
-          : 'open',
-    };
-
-    if (odooBehavior.requiresReconciliation &&
-        options.differenceHandling == PaymentDifferenceHandling.keepOpen) {}
-
-    if (options.differenceHandling == PaymentDifferenceHandling.writeOff &&
-        options.writeOffConfig != null) {
-      wizardData['writeoff_account_id'] = options.writeOffConfig!.accountId;
-      wizardData['writeoff_label'] = options.writeOffConfig!.label;
-    }
-
-    final canCreatePaymentRegister = await PermissionService.instance.canCreate(
-      'account.payment.register',
-    );
-    if (!canCreatePaymentRegister) {
-      throw Exception('You do not have permission to register payments.');
-    }
-    final wizardId = await client
-        .callKw({
-          'model': 'account.payment.register',
-          'method': 'create',
-          'args': [wizardData],
-          'kwargs': {'context': context},
-        })
-        .timeout(_defaultTimeout);
-
-    final result = await client
-        .callKw({
-          'model': 'account.payment.register',
-          'method': 'action_create_payments',
-          'args': [
-            [wizardId],
-          ],
-          'kwargs': {'context': context},
-        })
-        .timeout(_defaultTimeout);
-
-    int? paymentId;
-    List<String> warnings = [];
-
-    if (result is Map) {
-      paymentId = result['res_id'];
-      if (result['warning'] != null) {
-        warnings.add(result['warning'].toString());
-      }
-    }
-
-    _announcePaymentRegistered(invoiceId, paymentId);
-
-    await Future.delayed(const Duration(milliseconds: 500));
-
-    if (odooBehavior.marksAsPaidDirectly) {
-      await Future.delayed(const Duration(milliseconds: 500));
-    }
-
-    return {
-      'payment_id': paymentId,
-      'payment_state': odooBehavior.paymentStateAfterRecording,
-      'wizard_result': result,
-      'warnings': warnings,
-      'odoo_behavior': {
-        'marks_as_paid_directly': odooBehavior.marksAsPaidDirectly,
-        'requires_reconciliation': odooBehavior.requiresReconciliation,
-      },
-    };
-  }
-
-  static Future<Invoice> _getUpdatedInvoiceWithPayments(
-    dynamic client,
-    int invoiceId,
-  ) async {
-    await Future.delayed(const Duration(milliseconds: 1000));
-
-    final result = await client
-        .callKw({
-          'model': 'account.move',
-          'method': 'search_read',
-          'args': [
-            [
-              ['id', '=', invoiceId],
-            ],
-            [
-              'id',
-              'name',
-              'partner_id',
-              'amount_total',
-              'amount_residual',
-              'amount_tax',
-              'amount_untaxed',
-              'state',
-              'payment_state',
-              'invoice_date',
-              'invoice_date_due',
-              'invoice_origin',
-              'is_move_sent',
-              'create_date',
-              'write_date',
-              'currency_id',
-            ],
-          ],
-          'kwargs': {},
-        })
-        .timeout(_defaultTimeout);
-
-    if (result.isEmpty) {
-      throw PaymentError.sync(
-        message: 'Failed to fetch updated invoice data',
-        action: PaymentErrorAction.refresh,
-      );
-    }
-
-    final invoiceData = result[0];
-
-    final payments = await getPaymentsWithReconciliation(invoiceId);
-    invoiceData['payments'] = payments.map((p) => p.toJson()).toList();
-
-    return Invoice.fromJson(invoiceData);
   }
 
   static Future<Map<String, dynamic>> _getDetailedReconciliationData(

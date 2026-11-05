@@ -18,6 +18,7 @@ import '../services/field_validation_service.dart';
 import '../services/odoo_compat.dart';
 import '../services/odoo_error_classifier.dart';
 import '../utils/guarded_action.dart';
+import '../utils/group_labels.dart';
 
 class QuotationProvider with ChangeNotifier {
   final QuotationService _quotationService;
@@ -82,6 +83,12 @@ class QuotationProvider with ChangeNotifier {
   final Map<int, Map<String, dynamic>> _taxCache = {};
 
   Set<String> get activeFilters => _activeFilters;
+
+  /// Whether this database tracks deliveries on its orders, so the Delivered
+  /// and To Deliver filters mean something. Optimistic until the fields are
+  /// read.
+  bool get supportsDeliveryFilters =>
+      _availableFields.contains('delivery_status');
 
   int? _customerFilterId;
 
@@ -273,10 +280,10 @@ class QuotationProvider with ChangeNotifier {
           if (groupKey.isNotEmpty) {
             groups.putIfAbsent(groupKey, () => []).add(quotation);
           } else {
-            groups.putIfAbsent('Unknown', () => []).add(quotation);
+            groups.putIfAbsent(kEmptyGroupLabel, () => []).add(quotation);
           }
         } catch (e) {
-          groups.putIfAbsent('Unknown', () => []).add(quotation);
+          groups.putIfAbsent(kEmptyGroupLabel, () => []).add(quotation);
         }
       }
 
@@ -330,7 +337,7 @@ class QuotationProvider with ChangeNotifier {
             return 'Invalid Date';
           }
         }
-        return 'No Date';
+        return kEmptyGroupLabel;
       }
 
       final value = quotation[groupByField];
@@ -341,36 +348,36 @@ class QuotationProvider with ChangeNotifier {
           if (state == null ||
               state.isEmpty ||
               state.toLowerCase() == 'false') {
-            return 'Unknown Status';
+            return kEmptyGroupLabel;
           }
           return _getStateLabel(state);
         case 'partner_id':
           if (value is List && value.length >= 2) {
             final name = value[1].toString().trim();
             if (name.isEmpty || name.toLowerCase() == 'false') {
-              return 'Unknown Customer';
+              return kEmptyGroupLabel;
             }
             return name;
           }
-          return 'Unknown Customer';
+          return kEmptyGroupLabel;
         case 'user_id':
           if (value is List && value.length >= 2) {
             final name = value[1].toString().trim();
             if (name.isEmpty || name.toLowerCase() == 'false') {
-              return 'Unassigned';
+              return kEmptyGroupLabel;
             }
             return name;
           }
-          return 'Unassigned';
+          return kEmptyGroupLabel;
         case 'currency_id':
           if (value is List && value.length >= 2) {
             final name = value[1].toString().trim();
             if (name.isEmpty || name.toLowerCase() == 'false') {
-              return 'Unknown Currency';
+              return kEmptyGroupLabel;
             }
             return name;
           }
-          return 'Unknown Currency';
+          return kEmptyGroupLabel;
         case 'date_order':
         case 'validity_date':
           if (value != null &&
@@ -397,7 +404,7 @@ class QuotationProvider with ChangeNotifier {
               return 'Invalid Date';
             }
           }
-          return 'No Date';
+          return kEmptyGroupLabel;
         case 'amount_total':
           final amount = double.tryParse(value?.toString() ?? '0') ?? 0;
 
@@ -414,12 +421,12 @@ class QuotationProvider with ChangeNotifier {
           if (stringValue == null ||
               stringValue.isEmpty ||
               stringValue.toLowerCase() == 'false') {
-            return 'Unknown';
+            return kEmptyGroupLabel;
           }
           return stringValue;
       }
     } catch (e) {
-      return 'Unknown';
+      return kEmptyGroupLabel;
     }
   }
 
@@ -527,13 +534,13 @@ class QuotationProvider with ChangeNotifier {
         String undefinedLabel;
 
         if (groupByField.contains('date')) {
-          undefinedLabel = 'No Date';
+          undefinedLabel = kEmptyGroupLabel;
         } else if (groupByField == 'user_id') {
-          undefinedLabel = 'Unassigned';
+          undefinedLabel = kEmptyGroupLabel;
         } else if (groupByField == 'partner_id') {
-          undefinedLabel = 'Unknown Customer';
+          undefinedLabel = kEmptyGroupLabel;
         } else {
-          undefinedLabel = 'Undefined';
+          undefinedLabel = kEmptyGroupLabel;
         }
 
         _groupSummary[undefinedLabel] = missingCount;
@@ -563,7 +570,7 @@ class QuotationProvider with ChangeNotifier {
         value ??= group[baseField];
 
         if (value == null || value == false) {
-          return 'No Date';
+          return kEmptyGroupLabel;
         }
 
         if (value is String) {
@@ -607,7 +614,7 @@ class QuotationProvider with ChangeNotifier {
       final value = group[groupByField];
       return _getGroupKey({groupByField: value}, groupByField);
     } catch (e) {
-      return 'Unknown';
+      return kEmptyGroupLabel;
     }
   }
 
@@ -618,7 +625,7 @@ class QuotationProvider with ChangeNotifier {
         final field = parts[0];
         final granularity = parts.length > 1 ? parts[1] : 'month';
 
-        if (groupKey == 'No Date' || groupKey == 'Invalid Date') {
+        if (groupKey == kEmptyGroupLabel || groupKey == 'Invalid Date') {
           return [
             [field, '=', false],
           ];
@@ -641,7 +648,7 @@ class QuotationProvider with ChangeNotifier {
             ['state', '=', stateValue],
           ];
         case 'partner_id':
-          if (groupKey == 'Unknown Customer') {
+          if (groupKey == kEmptyGroupLabel) {
             return [
               ['partner_id', '=', false],
             ];
@@ -651,7 +658,7 @@ class QuotationProvider with ChangeNotifier {
             ['partner_id.name', 'ilike', groupKey],
           ];
         case 'user_id':
-          if (groupKey == 'Unassigned') {
+          if (groupKey == kEmptyGroupLabel) {
             return [
               ['user_id', '=', false],
             ];
@@ -660,7 +667,7 @@ class QuotationProvider with ChangeNotifier {
             ['user_id.name', 'ilike', groupKey],
           ];
         case 'currency_id':
-          if (groupKey == 'Unknown Currency') {
+          if (groupKey == kEmptyGroupLabel) {
             return [
               ['currency_id', '=', false],
             ];
@@ -670,7 +677,7 @@ class QuotationProvider with ChangeNotifier {
           ];
         case 'date_order':
         case 'validity_date':
-          if (groupKey == 'No Date' || groupKey == 'Invalid Date') {
+          if (groupKey == kEmptyGroupLabel || groupKey == 'Invalid Date') {
             return [
               [groupByField, '=', false],
             ];
@@ -707,7 +714,7 @@ class QuotationProvider with ChangeNotifier {
           } catch (e) {}
           return [];
         default:
-          if (groupKey == 'Unknown') {
+          if (groupKey == kEmptyGroupLabel) {
             return [
               [groupByField, '=', false],
             ];
@@ -1020,7 +1027,13 @@ class QuotationProvider with ChangeNotifier {
             ]);
             break;
           case 'sale':
-            domain.add(['state', '=', 'sale']);
+            // Odoo's "Sales Orders" filter: confirmed and, on the versions
+            // that have it, locked ('done') orders.
+            domain.add([
+              'state',
+              'in',
+              ['sale', 'done'],
+            ]);
             break;
           case 'user_quotations':
             // The id is read before the page is fetched; without it this
@@ -1041,9 +1054,13 @@ class QuotationProvider with ChangeNotifier {
             // `delivery_status` lives in `sale_stock` up to Odoo 19 (it moved
             // into `sale` at 20), so a database without that module installed
             // has no such field and the whole search would fail on it.
-            if (_availableFields.contains('delivery_status')) {
-              domain.add(deliveryStatusLeaf(filter)!);
-            }
+            // Without it nothing can be delivered or to deliver, so the
+            // filter matches nothing rather than silently matching all.
+            domain.add(
+              _availableFields.contains('delivery_status')
+                  ? deliveryStatusLeaf(filter)!
+                  : ['id', '=', 0],
+            );
             break;
           case 'expired':
             final now = DateTime.now();
@@ -1139,12 +1156,15 @@ class QuotationProvider with ChangeNotifier {
   }
 
   Future<void> _fetchSpecificPage() async {
-    if (_isLoadingMore) {
+    // A later page waits for the one in flight, but a read of the first page
+    // is a new question (another filter, search or date range) and replaces
+    // it: dropping it left the list loading, or showing the old filters' rows.
+    if (_isLoadingMore && _currentPage != 0) {
       return;
     }
 
     _isLoadingMore = true;
-    _loadEpoch++;
+    final epoch = ++_loadEpoch;
     _errorMessage = null;
     notifyListeners();
 
@@ -1172,6 +1192,10 @@ class QuotationProvider with ChangeNotifier {
         limit: _pageSize,
       );
 
+      // A newer load started while this one was reading; it owns the list
+      // and the loading flags now.
+      if (epoch != _loadEpoch) return;
+
       _totalQuotations = page.total;
       if (_currentPage == 0) {
         _allQuotations = page.rows;
@@ -1194,6 +1218,7 @@ class QuotationProvider with ChangeNotifier {
       notifyListeners();
       _runPendingQuietReload();
     } catch (e) {
+      if (epoch != _loadEpoch) return;
       if (e.toString().contains('odoo.exceptions.AccessError') ||
           e.toString().contains('You are not allowed to access')) {
         _accessErrorMessage =
@@ -1342,7 +1367,10 @@ class QuotationProvider with ChangeNotifier {
 
   bool get isGrouped => _isGrouped;
 
-  void setGroupBy(String? groupBy) {
+  /// [fetch] false leaves reading the group counts to the caller, which is
+  /// about to read the list and does so itself; both reading them started the
+  /// same request twice.
+  void setGroupBy(String? groupBy, {bool fetch = true}) {
     _selectedGroupBy = groupBy;
     _isGrouped = groupBy != null;
 
@@ -1351,7 +1379,7 @@ class QuotationProvider with ChangeNotifier {
     _groupedQuotations.clear();
     _lastFetchTime = null;
 
-    if (_isGrouped) {
+    if (_isGrouped && fetch) {
       _fetchGroupSummary();
     }
     notifyListeners();
@@ -1552,7 +1580,8 @@ class QuotationProvider with ChangeNotifier {
     }
 
     if (groupBy != null) {
-      setGroupBy(groupBy);
+      // The read below fetches the group counts, once.
+      setGroupBy(groupBy, fetch: false);
     } else if (clearGroupBy) {
       _selectedGroupBy = null;
       _isGrouped = false;
@@ -1592,6 +1621,14 @@ class QuotationProvider with ChangeNotifier {
     if (!isLoadMore) {
       _isLoading = true;
       _loadEpoch++;
+      // A new search, filter or page one: the group counts and the groups
+      // already opened described the old list. Emptied, the read below
+      // fetches them once, for this one.
+      if (_isGrouped) {
+        _groupSummary.clear();
+        _loadedGroups.clear();
+        _groupedQuotations.clear();
+      }
       _allQuotations.clear();
       _filteredQuotations.clear();
       _currentPage = 0;
@@ -1663,6 +1700,8 @@ class QuotationProvider with ChangeNotifier {
           _searchQuery.isEmpty &&
           _customerFilterId == null &&
           _invoiceNameFilter == null &&
+          _startDate == null &&
+          _endDate == null &&
           _selectedGroupBy == null;
 
       if (shouldUseCache) {

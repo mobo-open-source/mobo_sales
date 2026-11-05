@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../shared/widgets/mobo/mobo_field_label.dart';
@@ -18,6 +19,9 @@ class CustomTextField extends StatelessWidget {
   final bool isDark;
   final bool showBorder;
   final TextInputType? keyboardType;
+
+  /// Limits what can be typed, e.g. a quantity to digits and one point.
+  final List<TextInputFormatter>? inputFormatters;
   final int? maxLines;
   final Widget? suffixIcon;
 
@@ -30,6 +34,7 @@ class CustomTextField extends StatelessWidget {
     this.isDark = false,
     this.showBorder = false,
     this.keyboardType,
+    this.inputFormatters,
     this.maxLines = 1,
     this.suffixIcon,
     super.key,
@@ -60,6 +65,7 @@ class CustomTextField extends StatelessWidget {
           ),
           controller: controller,
           keyboardType: keyboardType ?? TextInputType.text,
+          inputFormatters: inputFormatters,
           maxLines: maxLines,
           decoration: InputDecoration(
             hintText: hintText,

@@ -91,6 +91,13 @@
             <data android:scheme="mailto" />
         </intent>
 
+        <!-- Voice search: from Android 11 the app cannot see the device's speech
+             recognition service unless it declares it, and speech_to_text then
+             reports that recognition is unavailable. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+
         <package android:name="com.google.android.apps.maps" />
     </queries>
 

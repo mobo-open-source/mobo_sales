@@ -1181,6 +1181,14 @@ class CreateInvoiceProvider with ChangeNotifier {
 
       await _linkToSaleOrder(saleOrderId!, invoiceId);
 
+      // The wizard decides the payment term and date itself; the ones chosen
+      // here go on the invoice afterwards, as the notes do.
+      if (writeVals.isNotEmpty) {
+        try {
+          await _invoiceService.updateInvoice(invoiceId, writeVals);
+        } catch (_) {}
+      }
+
       // The wizard makes the invoice; the notes typed here go on it afterwards.
       final narration = _narration;
       if (narration != null) {

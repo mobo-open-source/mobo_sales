@@ -37,19 +37,22 @@ void main() {
 
   tearDown(() => provider.dispose());
 
-  test('a profile edit is read again, and the new name is what it shows', () async {
-    await provider.fetchUserProfile();
-    expect(provider.userProfile?['name'], 'Ada');
-    final before = reads;
+  test(
+    'a profile edit is read again, and the new name is what it shows',
+    () async {
+      await provider.fetchUserProfile();
+      expect(provider.userProfile?['name'], 'Ada');
+      final before = reads;
 
-    server = {'id': 1, 'name': 'Ada Lovelace', 'image_1920': 'AAAA'};
-    bus.profileChanged();
-    await afterDebounce();
+      server = {'id': 1, 'name': 'Ada Lovelace', 'image_1920': 'AAAA'};
+      bus.profileChanged();
+      await afterDebounce();
 
-    expect(reads, before + 1);
-    expect(provider.userProfile?['name'], 'Ada Lovelace');
-    expect(provider.userProfile?['image_1920'], 'AAAA');
-  });
+      expect(reads, before + 1);
+      expect(provider.userProfile?['name'], 'Ada Lovelace');
+      expect(provider.userProfile?['image_1920'], 'AAAA');
+    },
+  );
 
   testWidgets('listeners of the provider are told, so the avatar redraws', (
     tester,

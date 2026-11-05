@@ -1,6 +1,7 @@
 import 'package:in_app_review/in_app_review.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../home_scaffold.dart' show HomeScaffoldState;
 import '../main.dart';
 import '../widgets/rating_dialog.dart';
 import '../widgets/custom_snackbar.dart';
@@ -61,6 +62,8 @@ class ReviewService {
     BuildContext? context,
   ]) async {
     if (_wasRequestedThisRun) return;
+    // The checks above took time: the user may have signed out meanwhile.
+    if (!HomeScaffoldState.isShowing) return;
 
     if (prefs.getBool(_keyNeverAskAgain) ?? false) {
       return;
@@ -107,7 +110,9 @@ class ReviewService {
           if (daysSinceLastRequest < waitDays) return;
         }
 
-        if (context != null && context.mounted) {
+        if (context != null &&
+            context.mounted &&
+            HomeScaffoldState.isShowing) {
           _wasRequestedThisRun = true;
           await prefs.setBool(_keyFeedbackGiven, false);
           await prefs.setInt(
@@ -121,7 +126,11 @@ class ReviewService {
   }
 
   /// Track app open and show dialog if criteria met
+  ///
+  /// Only while a signed-in user is inside the app: never on the get-started,
+  /// server or sign-in screens, nor on the app lock.
   Future<void> checkAndShowRating(BuildContext context) async {
+    if (!HomeScaffoldState.isShowing) return;
     final prefs = await SharedPreferences.getInstance();
     await _checkAndRequestReview(prefs, context);
   }

@@ -73,6 +73,15 @@ class CompanySelectorWidget extends StatelessWidget {
 
   Widget _buildEmptyState(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    // Tap to try loading the companies again.
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => context.read<CompanyProvider>().retry(),
+      child: _emptyPill(isDark),
+    );
+  }
+
+  Widget _emptyPill(bool isDark) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(

@@ -18,6 +18,9 @@ import '../../providers/contact_provider.dart';
 import '../../providers/currency_provider.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../services/odoo_error_handler.dart';
+import '../../utils/quantity_format.dart';
+import '../../widgets/quantity_stepper.dart';
+import '../../widgets/unit_price_field.dart';
 import '../../utils/odoo_version.dart';
 import '../../widgets/confetti_dialogs.dart';
 import '../../utils/data_loss_warning_mixin.dart';
@@ -892,7 +895,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
   void _showEditLineDialog(int index) {
     final line = _quoteLines[index];
     final quantityController = TextEditingController(
-      text: line['quantity'].toString(),
+      text: formatQuantity((line['quantity'] as num?)?.toDouble() ?? 0),
     );
     final priceController = TextEditingController(
       text: line['unit_price'].toString(),
@@ -926,7 +929,10 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                 labelText: 'Quantity',
                 border: OutlineInputBorder(),
               ),
-              keyboardType: TextInputType.number,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              inputFormatters: [QuantityInputFormatter()],
             ),
             const SizedBox(height: 16),
             TextField(
@@ -3198,17 +3204,22 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                                                             _subtotal,
                                                             currency: code,
                                                           );
-                                                  return Text(
-                                                    formatted,
-                                                    style: TextStyle(
-                                                      fontSize: 16,
-                                                      fontWeight:
-                                                          FontWeight.w500,
-                                                      color: isDark
-                                                          ? Colors.grey[300]
-                                                          : Colors.grey[700],
+                                                  return FittedBox(
+                                                    fit: BoxFit.scaleDown,
+                                                    alignment:
+                                                        Alignment.centerRight,
+                                                    child: Text(
+                                                      formatted,
+                                                      style: TextStyle(
+                                                        fontSize: 16,
+                                                        fontWeight:
+                                                            FontWeight.w500,
+                                                        color: isDark
+                                                            ? Colors.grey[300]
+                                                            : Colors.grey[700],
+                                                      ),
+                                                      textAlign: TextAlign.end,
                                                     ),
-                                                    textAlign: TextAlign.end,
                                                   );
                                                 },
                                               ),
@@ -3300,21 +3311,28 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                                                                       currency:
                                                                           code,
                                                                     );
-                                                            return Text(
-                                                              formatted,
-                                                              style: TextStyle(
-                                                                fontSize: 16,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .w500,
-                                                                color: isDark
-                                                                    ? Colors
-                                                                          .grey[300]
-                                                                    : Colors
-                                                                          .grey[700],
+                                                            return FittedBox(
+                                                              fit: BoxFit
+                                                                  .scaleDown,
+                                                              alignment: Alignment
+                                                                  .centerRight,
+                                                              child: Text(
+                                                                formatted,
+                                                                style: TextStyle(
+                                                                  fontSize: 16,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w500,
+                                                                  color: isDark
+                                                                      ? Colors
+                                                                            .grey[300]
+                                                                      : Colors
+                                                                            .grey[700],
+                                                                ),
+                                                                textAlign:
+                                                                    TextAlign
+                                                                        .end,
                                                               ),
-                                                              textAlign:
-                                                                  TextAlign.end,
                                                             );
                                                           },
                                                     ),
@@ -3362,17 +3380,22 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                                                             _total,
                                                             currency: code,
                                                           );
-                                                  return Text(
-                                                    formatted,
-                                                    style: TextStyle(
-                                                      fontSize: 20,
-                                                      fontWeight:
-                                                          FontWeight.bold,
-                                                      color: isDark
-                                                          ? Colors.white
-                                                          : Colors.blue,
+                                                  return FittedBox(
+                                                    fit: BoxFit.scaleDown,
+                                                    alignment:
+                                                        Alignment.centerRight,
+                                                    child: Text(
+                                                      formatted,
+                                                      style: TextStyle(
+                                                        fontSize: 20,
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                        color: isDark
+                                                            ? Colors.white
+                                                            : Colors.blue,
+                                                      ),
+                                                      textAlign: TextAlign.end,
                                                     ),
-                                                    textAlign: TextAlign.end,
                                                   );
                                                 },
                                               ),
@@ -3661,7 +3684,7 @@ class _QuoteLineItemState extends State<_QuoteLineItem> {
                           ),
                         ),
                         const SizedBox(height: 4),
-                        _QuoteQuantityInput(
+                        QuantityStepper(
                           initialValue: quantity,
                           onChanged: (value) {
                             setState(() => quantity = value);
@@ -3684,8 +3707,13 @@ class _QuoteLineItemState extends State<_QuoteLineItem> {
                           ),
                         ),
                         const SizedBox(height: 4),
-                        _QuotePriceInput(
+                        UnitPriceField(
                           initialValue: unitPrice,
+                          currencyLabel: (currency) =>
+                              (currency.companyCurrencyIdList != null &&
+                                  currency.companyCurrencyIdList!.length > 1)
+                              ? currency.companyCurrencyIdList![1].toString()
+                              : currency.currency,
                           onChanged: (value) {
                             setState(() => unitPrice = value);
                             widget.onUpdate(quantity, value);
@@ -3722,14 +3750,18 @@ class _QuoteLineItemState extends State<_QuoteLineItem> {
                           subtotal,
                           currency: code,
                         );
-                        return Text(
-                          formatted,
-                          textAlign: TextAlign.right,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color: widget.isDark
-                                ? Colors.white
-                                : theme.primaryColor,
+                        return FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerRight,
+                          child: Text(
+                            formatted,
+                            textAlign: TextAlign.right,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                              color: widget.isDark
+                                  ? Colors.white
+                                  : theme.primaryColor,
+                            ),
                           ),
                         );
                       },
@@ -3740,257 +3772,6 @@ class _QuoteLineItemState extends State<_QuoteLineItem> {
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _QuoteQuantityInput extends StatefulWidget {
-  final double initialValue;
-  final Function(double) onChanged;
-
-  const _QuoteQuantityInput({
-    required this.initialValue,
-    required this.onChanged,
-  });
-
-  @override
-  _QuoteQuantityInputState createState() => _QuoteQuantityInputState();
-}
-
-class _QuoteQuantityInputState extends State<_QuoteQuantityInput> {
-  late TextEditingController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TextEditingController(
-      text: _formatQuantity(widget.initialValue),
-    );
-    _controller.addListener(_onQuantityChanged);
-  }
-
-  /// Renders whole numbers without decimals (e.g. `1`) while preserving
-  /// fractional quantities (e.g. `2.5`) so unit-of-measure decimals aren't lost.
-  String _formatQuantity(double value) {
-    return value == value.roundToDouble()
-        ? value.toStringAsFixed(0)
-        : value.toString();
-  }
-
-  @override
-  void dispose() {
-    _controller.removeListener(_onQuantityChanged);
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _onQuantityChanged() {
-    // An empty or half-typed field is not a quantity yet, so the line keeps
-    // the one it has; 0 is a real value, though — it is how Odoo wants a line
-    // of a confirmed order removed, which this screen tells the user to do.
-    final value = double.tryParse(_controller.text);
-    if (value == null || value < 0) return;
-    widget.onChanged(value);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-
-    return SizedBox(
-      height: 40,
-      child: Container(
-        decoration: BoxDecoration(
-          color: isDark ? Colors.grey[800] : Colors.white,
-          border: Border.all(
-            color: isDark ? Colors.grey[600]! : theme.dividerColor,
-          ),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          children: [
-            IconButton(
-              icon: const Icon(Icons.remove, size: 18),
-              onPressed: () {
-                final currentValue = double.tryParse(_controller.text) ?? 1.0;
-                if (currentValue > 0) {
-                  // `_formatQuantity`, not `toInt()`: truncating here turned
-                  // a 2.5 into a 3 and lost the unit-of-measure decimals.
-                  _controller.text = _formatQuantity(
-                    (currentValue - 1).clamp(0, double.infinity).toDouble(),
-                  );
-                }
-              },
-              padding: const EdgeInsets.all(4),
-              constraints: const BoxConstraints(),
-              style: IconButton.styleFrom(
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                shape: const RoundedRectangleBorder(
-                  borderRadius: BorderRadius.horizontal(
-                    left: Radius.circular(6),
-                  ),
-                ),
-              ),
-            ),
-            Expanded(
-              child: TextField(
-                controller: _controller,
-                textAlign: TextAlign.center,
-                keyboardType: TextInputType.number,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: isDark ? Colors.white : null,
-                ),
-                decoration: const InputDecoration(
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(
-                    vertical: 8,
-                    horizontal: 4,
-                  ),
-                  isDense: true,
-                  counterText: '',
-                ),
-              ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.add, size: 18),
-              onPressed: () {
-                final currentValue = double.tryParse(_controller.text) ?? 0.0;
-                _controller.text = _formatQuantity(currentValue + 1);
-              },
-              padding: const EdgeInsets.all(4),
-              constraints: const BoxConstraints(),
-              style: IconButton.styleFrom(
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                shape: const RoundedRectangleBorder(
-                  borderRadius: BorderRadius.horizontal(
-                    right: Radius.circular(6),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _QuotePriceInput extends StatefulWidget {
-  final double initialValue;
-  final Function(double) onChanged;
-
-  const _QuotePriceInput({required this.initialValue, required this.onChanged});
-
-  @override
-  _QuotePriceInputState createState() => _QuotePriceInputState();
-}
-
-class _QuotePriceInputState extends State<_QuotePriceInput> {
-  late TextEditingController _controller;
-  final _focusNode = FocusNode();
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TextEditingController(
-      text: widget.initialValue.toStringAsFixed(2),
-    );
-    _controller.addListener(_onPriceChanged);
-  }
-
-  @override
-  void dispose() {
-    _controller.removeListener(_onPriceChanged);
-    _controller.dispose();
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  void _onPriceChanged() {
-    final cleanText = _controller.text.replaceAll(RegExp(r'[^\d.]'), '');
-    final value = double.tryParse(cleanText) ?? 0.0;
-    widget.onChanged(value);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-
-    return SizedBox(
-      height: 40,
-      child: TextField(
-        controller: _controller,
-        focusNode: _focusNode,
-        textAlign: TextAlign.right,
-        keyboardType: TextInputType.numberWithOptions(decimal: true),
-        style: theme.textTheme.bodyMedium?.copyWith(
-          color: isDark ? Colors.white : null,
-        ),
-        decoration: InputDecoration(
-          labelStyle: TextStyle(
-            color: isDark ? Colors.grey[400] : Colors.grey[600],
-          ),
-          prefixIcon: Padding(
-            padding: const EdgeInsets.only(
-              left: 12,
-              right: 8,
-              top: 12,
-              bottom: 12,
-            ),
-            child: Consumer<CurrencyProvider>(
-              builder: (context, currencyProvider, _) {
-                final code =
-                    (currencyProvider.companyCurrencyIdList != null &&
-                        currencyProvider.companyCurrencyIdList!.length > 1)
-                    ? currencyProvider.companyCurrencyIdList![1].toString()
-                    : currencyProvider.currency;
-                return Text(
-                  code,
-                  style: TextStyle(
-                    color: isDark ? Colors.grey[400] : Colors.grey,
-                  ),
-                );
-              },
-            ),
-          ),
-          prefixIconConstraints: const BoxConstraints(
-            minWidth: 0,
-            minHeight: 0,
-          ),
-          contentPadding: const EdgeInsets.symmetric(
-            vertical: 8,
-            horizontal: 12,
-          ),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(
-              color: isDark ? Colors.grey[600]! : theme.dividerColor,
-            ),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(
-              color: isDark ? Colors.grey[600]! : theme.dividerColor,
-            ),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(
-              color: isDark ? Colors.blue[300]! : theme.primaryColor,
-              width: 1.5,
-            ),
-          ),
-          isDense: true,
-        ),
-        onTap: () {
-          _controller.selection = TextSelection(
-            baseOffset: 0,
-            extentOffset: _controller.text.length,
-          );
-        },
       ),
     );
   }
@@ -4137,6 +3918,7 @@ class _QuantityDialogState extends State<QuantityDialog> {
                         decimal: true,
                         signed: false,
                       ),
+                      inputFormatters: [QuantityInputFormatter()],
                       validator: (value) {
                         if (value?.isEmpty ?? true) {
                           return 'Required';

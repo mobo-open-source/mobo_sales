@@ -631,10 +631,11 @@ void main() {
           case 'account.move.search_read':
             if (failStatusRead &&
                 (payload['args'] as List).last is List &&
+                // The read that reports the new status (the one that asks for
+                // the total), not the one before the payment.
                 ((payload['args'] as List).last as List).contains(
-                  'payment_state',
-                ) &&
-                ((payload['args'] as List).last as List).contains('state')) {
+                  'amount_total',
+                )) {
               throw Exception('read failed');
             }
             return [
@@ -737,6 +738,8 @@ void main() {
             'id': 7,
             'partner_id': [3, 'Customer'],
             'company_id': [1, 'Company'],
+            'state': 'posted',
+            'amount_residual': 100.0,
           },
         ];
       });

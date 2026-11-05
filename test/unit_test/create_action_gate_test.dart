@@ -4,17 +4,11 @@ import 'package:mobo_sales/widgets/create_action_gate.dart';
 void main() {
   group('createBlockedReason', () {
     test('a working list with a session allows the action', () {
-      expect(
-        createBlockedReason(isConnected: true, hasSession: true),
-        isNull,
-      );
+      expect(createBlockedReason(isConnected: true, hasSession: true), isNull);
     });
 
     test('offline is named as offline, not as a session problem', () {
-      final reason = createBlockedReason(
-        isConnected: false,
-        hasSession: true,
-      );
+      final reason = createBlockedReason(isConnected: false, hasSession: true);
       expect(reason, contains('offline'));
     });
 

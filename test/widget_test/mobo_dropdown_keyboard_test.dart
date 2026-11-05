@@ -77,7 +77,8 @@ void main() {
     expect(
       rect.bottom,
       lessThanOrEqualTo(screen.height - keyboard + 0.5),
-      reason: 'the panel runs under the keyboard, so its last rows cannot be '
+      reason:
+          'the panel runs under the keyboard, so its last rows cannot be '
           'tapped',
     );
   });

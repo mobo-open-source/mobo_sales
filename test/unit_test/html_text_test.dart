@@ -103,10 +103,7 @@ void main() {
     test('reads as a sentence, with no markup left in it', () {
       final shown = htmlToPlainText(stored);
 
-      expect(
-        shown,
-        'Terms & Conditions: https://mobo.easyinstance.com/terms',
-      );
+      expect(shown, 'Terms & Conditions: https://mobo.easyinstance.com/terms');
       expect(shown, isNot(contains('<')));
       expect(shown, isNot(contains('&amp;')));
       expect(shown, isNot(contains('href')));

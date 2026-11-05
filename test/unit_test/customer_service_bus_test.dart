@@ -184,6 +184,59 @@ void main() {
     expect(heard.single.id, 5);
   });
 
+  test('archiving writes active false and announces it as gone', () async {
+    final service = serviceAnswering((payload) => true);
+
+    await service.setCustomerActive(5, false);
+    await settle();
+
+    final write = calls.singleWhere((c) => c['method'] == 'write');
+    expect(write['args'], [
+      [5],
+      {'active': false},
+    ]);
+    expect(heard.single.kind, DataChangeKind.deleted);
+    expect(heard.single.id, 5);
+  });
+
+  test('unarchiving writes active true and announces an update', () async {
+    final service = serviceAnswering((payload) => true);
+
+    await service.setCustomerActive(5, true);
+    await settle();
+
+    final write = calls.singleWhere((c) => c['method'] == 'write');
+    expect(write['args'], [
+      [5],
+      {'active': true},
+    ]);
+    expect(heard.single.entity, DataEntity.customer);
+    expect(heard.single.kind, DataChangeKind.updated);
+    expect(heard.single.id, 5);
+  });
+
+  test('an archive the server refuses announces nothing', () async {
+    final service = serviceAnswering((payload) => false);
+
+    await expectLater(service.setCustomerActive(5, true), throwsException);
+    await settle();
+
+    expect(heard, isEmpty);
+  });
+
+  test('without write access nothing is sent for an unarchive', () async {
+    when(
+      () => permissions.canWrite('res.partner'),
+    ).thenAnswer((_) async => false);
+    final service = serviceAnswering((payload) => true);
+
+    await expectLater(service.setCustomerActive(5, true), throwsException);
+    await settle();
+
+    expect(calls.where((c) => c['method'] == 'write'), isEmpty);
+    expect(heard, isEmpty);
+  });
+
   test('with no session nothing is sent or announced', () async {
     final service = CustomerService.forTesting(
       bus: bus,

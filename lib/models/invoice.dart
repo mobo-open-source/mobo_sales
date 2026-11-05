@@ -132,6 +132,9 @@ class Invoice {
   final double amountResidual;
   final String status;
   final String paymentState;
+
+  /// Odoo's `move_type` (`out_invoice`, `out_refund`...), when known.
+  final String? moveType;
   final bool? isMoveSent;
   final DateTime? invoiceDate;
   final DateTime? dueDate;
@@ -168,6 +171,7 @@ class Invoice {
     required this.amountResidual,
     required this.status,
     required this.paymentState,
+    this.moveType,
     this.isMoveSent,
     this.invoiceDate,
     this.dueDate,
@@ -290,6 +294,9 @@ class Invoice {
           : total,
       status: state,
       paymentState: paymentState,
+      moveType: json['move_type'] is String
+          ? json['move_type'] as String
+          : null,
       isMoveSent: json['is_move_sent'] is bool ? json['is_move_sent'] : null,
       invoiceDate: json['invoice_date'] != false && json['invoice_date'] != null
           ? DateTime.parse(json['invoice_date'].toString())
@@ -357,6 +364,7 @@ class Invoice {
       'amount_residual': amountResidual,
       'state': status,
       'payment_state': paymentState,
+      'move_type': moveType,
       'is_move_sent': isMoveSent,
       'invoice_date': invoiceDate?.toIso8601String(),
       'invoice_date_due': dueDate?.toIso8601String(),

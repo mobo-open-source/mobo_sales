@@ -401,7 +401,36 @@ void main() {
       // Already finished, or never going to be.
       expect(kValidatableDeliveryStates, isNot(contains('done')));
       expect(kValidatableDeliveryStates, isNot(contains('cancel')));
-      expect(kValidatableDeliveryStates, isNot(contains('draft')));
+      // Odoo's own Validate buttons show in draft too: button_validate
+      // confirms a draft picking first.
+      expect(kValidatableDeliveryStates, contains('draft'));
+    });
+
+    test('a delivery is ready once its stock is reserved', () {
+      expect(isDeliveryReady('assigned'), isTrue);
+      for (final state in ['draft', 'confirmed', 'waiting', 'done', 'cancel']) {
+        expect(isDeliveryReady(state), isFalse, reason: state);
+      }
+    });
+
+    test('Validate works on a quantity, however it got there', () {
+      // Odoo refuses a transfer with no quantity reserved or typed ...
+      expect(canValidateDelivery('confirmed', 0), isFalse);
+      expect(canValidateDelivery('waiting', 0), isFalse);
+      expect(canValidateDelivery('assigned', 0), isFalse);
+      // ... and takes one that is reserved by Check Availability, or typed on a
+      // line even when the warehouse has no stock.
+      expect(canValidateDelivery('assigned', 5), isTrue);
+      expect(canValidateDelivery('confirmed', 3), isTrue);
+      // A draft delivery is Odoo's to fill with its demand.
+      expect(canValidateDelivery('draft', 0), isTrue);
+    });
+
+    test('the other transfer buttons show in the states Odoo shows them in', () {
+      expect(kCheckAvailabilityStates, {'confirmed', 'waiting'});
+      expect(kUnreservableDeliveryStates, {'assigned'});
+      expect(kCancellableDeliveryStates, isNot(contains('done')));
+      expect(kCancellableDeliveryStates, isNot(contains('cancel')));
     });
   });
 

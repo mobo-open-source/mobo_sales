@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../../utils/group_labels.dart';
 
 import 'package:hugeicons/hugeicons.dart';
 import 'package:intl/intl.dart';
@@ -304,7 +305,7 @@ class CustomerListScreenState extends State<CustomerListScreen>
       'active': 'Status',
     };
 
-    return groupByOptions[groupBy] ?? groupBy;
+    return groupByDisplayLabel(groupBy, groupByOptions);
   }
 
   Widget _buildTopPaginationBar(ContactProvider provider, bool isDark) {
@@ -2451,8 +2452,10 @@ class CustomerListScreenState extends State<CustomerListScreen>
             const SizedBox(height: 8),
             Chip(
               label: Text(
-                provider.groupByOptions[tempState['selectedGroupBy']] ??
-                    tempState['selectedGroupBy'],
+                groupByDisplayLabel(
+                  tempState['selectedGroupBy'] as String?,
+                  provider.groupByOptions,
+                ),
                 style: const TextStyle(fontSize: 13),
               ),
               backgroundColor: isDark
@@ -2704,7 +2707,10 @@ class CustomerListScreenState extends State<CustomerListScreen>
         }
         if (hasGroupBy) {
           final groupByLabel =
-              provider.groupByOptions[selectedGroupBy] ?? selectedGroupBy;
+              groupByDisplayLabel(
+                selectedGroupBy,
+                provider.groupByOptions,
+              );
           parts.add('grouped by $groupByLabel');
         }
         message = 'Applied ${parts.join(' and ')}';

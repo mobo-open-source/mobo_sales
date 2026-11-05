@@ -36,6 +36,9 @@ class MoboSelectFormField<T> extends FormField<T> {
     bool isLoading = false,
     String emptyText = 'No matches',
     VoidCallback? onOpened,
+    VoidCallback? onLoadMore,
+    bool hasMore = false,
+    bool isLoadingMore = false,
   }) : super(
          initialValue: value,
          builder: (field) => MoboSelectField<T>(
@@ -59,6 +62,9 @@ class MoboSelectFormField<T> extends FormField<T> {
            isLoading: isLoading,
            emptyText: emptyText,
            onOpened: onOpened,
+           onLoadMore: onLoadMore,
+           hasMore: hasMore,
+           isLoadingMore: isLoadingMore,
          ),
        );
 

@@ -477,10 +477,7 @@ void main() {
     test('is there when only some of the fields exist and one is set', () {
       // A server that lacks `signature` still answers for the others.
       expect(
-        saleOrderShowsSignature({
-          'require_signature': true,
-          'state': 'draft',
-        }),
+        saleOrderShowsSignature({'require_signature': true, 'state': 'draft'}),
         isTrue,
       );
       expect(saleOrderShowsSignature({'require_signature': false}), isFalse);
@@ -489,7 +486,10 @@ void main() {
     test('is not there once the order can no longer be signed', () {
       // What a tester hit on a confirmed order: a tab holding "Not signed
       // yet" and nothing that could be pressed.
-      expect(saleOrderShowsSignature(row(require: true, state: 'sale')), isFalse);
+      expect(
+        saleOrderShowsSignature(row(require: true, state: 'sale')),
+        isFalse,
+      );
     });
 
     test('is still there for a confirmed order that was signed', () {
@@ -543,10 +543,7 @@ void main() {
     });
 
     test('no once it is already signed', () {
-      expect(
-        saleOrderHasToBeSigned(order(signature: 'iVBORw0KGgo=')),
-        isFalse,
-      );
+      expect(saleOrderHasToBeSigned(order(signature: 'iVBORw0KGgo=')), isFalse);
       expect(
         saleOrderHasToBeSigned(order(signature: {'content': 'iVBOR'})),
         isFalse,

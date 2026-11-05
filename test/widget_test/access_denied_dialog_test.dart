@@ -57,7 +57,7 @@ void main() {
 
     expect(find.text('Module Missing'), findsOneWidget);
     expect(
-      find.textContaining('The required "Sales" module is not installed'),
+      find.textContaining('The "Sales" app is not installed'),
       findsOneWidget,
     );
     expect(find.text('Back to Login'), findsOneWidget);
@@ -129,7 +129,7 @@ void main() {
       );
       expect(
         tester
-            .getTopLeft(find.textContaining('The required "Sales" module'))
+            .getTopLeft(find.textContaining('The "Sales" app'))
             .dx,
         closeTo(card.left + 24, 1),
         reason: 'paragraph starts at the card padding',

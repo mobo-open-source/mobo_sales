@@ -596,6 +596,48 @@ class CustomerService {
     }
   }
 
+  /// Writes `active` on the partner [customerId]: false archives, true
+  /// unarchives. One `write` either way; Odoo archives and restores the
+  /// partner's own contacts and addresses with it.
+  ///
+  /// Announced either way, as [DataChangeKind.deleted] when archiving (the
+  /// default lists stop showing it) and [DataChangeKind.updated] when
+  /// restoring (the "Archived" list stops showing it), so every list follows.
+  Future<void> setCustomerActive(int customerId, bool active) async {
+    final canWrite = await PermissionService.instance.canWrite('res.partner');
+    if (!canWrite) {
+      throw Exception(
+        'You do not have permission to '
+        '${active ? 'unarchive' : 'archive'} customers.',
+      );
+    }
+    if (!await _hasSession()) {
+      throw Exception('No active Odoo session');
+    }
+
+    final result = await _callKw({
+      'model': 'res.partner',
+      'method': 'write',
+      'args': [
+        [customerId],
+        {'active': active},
+      ],
+      'kwargs': {},
+    });
+    if (result != true) {
+      throw Exception(
+        active
+            ? 'Failed to unarchive the customer'
+            : 'Failed to archive the customer',
+      );
+    }
+    _bus.publish(
+      DataEntity.customer,
+      active ? DataChangeKind.updated : DataChangeKind.deleted,
+      id: customerId,
+    );
+  }
+
   Future<bool> deleteCustomer(int customerId) async {
     try {
       final canWrite = await PermissionService.instance.canWrite('res.partner');

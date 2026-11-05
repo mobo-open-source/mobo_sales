@@ -28,6 +28,13 @@ class HomeScaffold extends StatefulWidget {
 
 class HomeScaffoldState extends State<HomeScaffold>
     with WidgetsBindingObserver {
+  /// How many home screens are on screen: more than zero only while a
+  /// signed-in user is inside the app. Pop-ups that belong to the signed-in
+  /// app (the rating prompt) check it so they never show on the sign-in or
+  /// server screens.
+  static int _mounted = 0;
+  static bool get isShowing => _mounted > 0;
+
   int _selectedIndex = 0;
   bool _hasInitializedSettings = false;
   late List<String> _titles;
@@ -43,6 +50,7 @@ class HomeScaffoldState extends State<HomeScaffold>
   @override
   void initState() {
     super.initState();
+    _mounted++;
     WidgetsBinding.instance.addObserver(this);
     _initializeTitles();
 
@@ -51,6 +59,7 @@ class HomeScaffoldState extends State<HomeScaffold>
 
   @override
   void dispose() {
+    _mounted--;
     WidgetsBinding.instance.removeObserver(this);
     _cachedProfileAction = null;
     super.dispose();
@@ -87,10 +96,19 @@ class HomeScaffoldState extends State<HomeScaffold>
 
   void changeTab(int index) {
     if (index >= 0 && index < _titles.length) {
-      setState(() {
-        _selectedIndex = index;
-      });
+      _selectTab(index);
     }
+  }
+
+  /// Shows tab [index]. Landing on the Dashboard from another tab tells it so,
+  /// because it stays alive behind the others and would otherwise keep showing
+  /// the figures it read when it was last in front.
+  void _selectTab(int index) {
+    final backToDashboard = index == 0 && _selectedIndex != 0;
+    setState(() {
+      _selectedIndex = index;
+    });
+    if (backToDashboard) DashboardScreen.shown.value++;
   }
 
   List<Widget>? _buildPageActions(BuildContext context, int index) {
@@ -1065,9 +1083,7 @@ class HomeScaffoldState extends State<HomeScaffold>
     return WillPopScope(
       onWillPop: () async {
         if (_selectedIndex != 0) {
-          setState(() {
-            _selectedIndex = 0;
-          });
+          _selectTab(0);
           return false;
         }
 
@@ -1088,11 +1104,7 @@ class HomeScaffoldState extends State<HomeScaffold>
           showSelectedLabels: true,
           showUnselectedLabels: true,
           currentIndex: _selectedIndex,
-          onTap: (index) {
-            setState(() {
-              _selectedIndex = index;
-            });
-          },
+          onTap: _selectTab,
           items: _navBarItems(),
           snakeViewColor: isDark ? colorScheme.primary : colorScheme.primary,
           unselectedLabelStyle: TextStyle(

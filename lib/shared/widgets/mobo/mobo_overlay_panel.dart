@@ -15,8 +15,16 @@ mixin MoboOverlayPanelMixin<T extends StatefulWidget> on State<T> {
 
   static const double _maxPanelHeight = 320;
 
+  /// A list with no chrome of its own needs room for little more than a row.
+  /// Floored any higher, the panel was made taller than the space left above
+  /// the keyboard or below the field, and its last rows sat where taps never
+  /// arrive.
+  static const double minListHeight = 96;
+
   final LayerLink layerLink = LayerLink();
   OverlayEntry? _entry;
+  double _minHeight = _minPanelHeight;
+  ScrollPosition? _scrollPosition;
 
   bool get isPanelOpen => _entry != null;
 
@@ -49,6 +57,10 @@ mixin MoboOverlayPanelMixin<T extends StatefulWidget> on State<T> {
   /// [builder] is handed the height the panel must fit inside; it is the
   /// caller's job to make its list scroll within that.
   ///
+  /// [minHeight] is the least the panel can be given: [_minPanelHeight] by
+  /// default, for a panel with chrome around its list; a bare list passes a
+  /// smaller one so it shrinks to the space that is really there.
+  ///
   /// [onBarrierTap] runs instead of [closePanel] when the user dismisses the
   /// panel by tapping outside it. Defaulting straight to [closePanel] is
   /// wrong for a searchable field: its search box is a live [TextField], and
@@ -71,8 +83,10 @@ mixin MoboOverlayPanelMixin<T extends StatefulWidget> on State<T> {
     bool searchable = false,
     VoidCallback? onBarrierTap,
     bool Function(Offset globalPosition)? onFieldTap,
+    double minHeight = _minPanelHeight,
   }) {
     if (_entry != null) return;
+    _minHeight = minHeight;
     final dismiss = onBarrierTap ?? closePanel;
 
     // An open keyboard would push a panel that cannot use it off screen.
@@ -119,7 +133,19 @@ mixin MoboOverlayPanelMixin<T extends StatefulWidget> on State<T> {
     );
 
     Overlay.of(context).insert(_entry!);
+
+    // The page scrolling moves the field under the panel, which changes the
+    // room left; the overlay only re-measures when it is rebuilt.
+    _scrollPosition = Scrollable.maybeOf(context)?.position
+      ?..addListener(_onScroll);
     if (mounted) setState(() {});
+  }
+
+  void _onScroll() => _entry?.markNeedsBuild();
+
+  void _detachScroll() {
+    _scrollPosition?.removeListener(_onScroll);
+    _scrollPosition = null;
   }
 
   /// Where the panel may go and how tall it may be, measured against the
@@ -155,18 +181,19 @@ mixin MoboOverlayPanelMixin<T extends StatefulWidget> on State<T> {
     final spaceAbove = fieldTop - media.padding.top - media.viewInsets.top;
 
     final openUpward =
-        spaceBelow < _minPanelHeight + _gap && spaceAbove > spaceBelow;
+        spaceBelow < _minHeight + _gap && spaceAbove > spaceBelow;
     final available = openUpward ? spaceAbove : spaceBelow;
 
     return (
       openUpward: openUpward,
-      maxHeight: (available - _gap - 8).clamp(_minPanelHeight, _maxPanelHeight),
+      maxHeight: (available - _gap - 8).clamp(_minHeight, _maxPanelHeight),
       width: fieldSize.width,
     );
   }
 
   void closePanel() {
     if (_entry == null) return;
+    _detachScroll();
     _entry!.remove();
     _entry = null;
     if (mounted) setState(() {});
@@ -187,6 +214,7 @@ mixin MoboOverlayPanelMixin<T extends StatefulWidget> on State<T> {
   /// Removes the entry without touching state. Call from [dispose] — going
   /// through [closePanel] there would `setState` on a defunct widget.
   void disposePanel() {
+    _detachScroll();
     _entry?.remove();
     _entry = null;
   }

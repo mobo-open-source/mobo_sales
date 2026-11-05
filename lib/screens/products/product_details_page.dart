@@ -10,6 +10,7 @@ import 'package:mobo_sales/models/product.dart';
 import 'package:mobo_sales/services/odoo_session_manager.dart';
 import 'package:mobo_sales/widgets/custom_snackbar.dart';
 import 'package:provider/provider.dart';
+import '../../utils/quantity_format.dart';
 import '../../providers/currency_provider.dart';
 import '../../providers/last_opened_provider.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
@@ -3399,7 +3400,8 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
         ),
         content: TextField(
           controller: controller,
-          keyboardType: TextInputType.number,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          inputFormatters: [QuantityInputFormatter()],
           decoration: InputDecoration(
             labelText: 'Quantity',
             labelStyle: TextStyle(
@@ -3469,7 +3471,10 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
               const SizedBox(height: 20),
               TextField(
                 controller: quantityController,
-                keyboardType: TextInputType.number,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                inputFormatters: [QuantityInputFormatter()],
                 decoration: InputDecoration(
                   labelText: 'Quantity',
                   prefixIcon: Icon(HugeIcons.strokeRoundedPackage, size: 20),
@@ -3645,7 +3650,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
                       _buildConfirmationRow('Product:', product.name, isDark),
                       _buildConfirmationRow(
                         'Quantity:',
-                        quantity.toString(),
+                        formatQuantity(quantity),
                         isDark,
                       ),
                       _buildConfirmationRow(

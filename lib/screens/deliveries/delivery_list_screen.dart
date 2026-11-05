@@ -13,6 +13,7 @@ import '../../widgets/empty_state_widget.dart';
 import 'delivery_details_screen.dart';
 import '../../services/odoo_error_classifier.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../../utils/group_labels.dart';
 
 class DeliveryListScreen extends StatefulWidget {
   final String? saleOrderName;
@@ -695,14 +696,14 @@ class _DeliveryListScreenState extends State<DeliveryListScreen>
           groupKey = delivery.getStateLabel();
           break;
         case 'partner_id':
-          groupKey = delivery.partnerName ?? 'No Customer';
+          groupKey = delivery.partnerName ?? kEmptyGroupLabel;
           break;
         case 'scheduled_date':
           if (delivery.scheduledDate != null) {
             final date = DateTime.parse(delivery.scheduledDate!);
             groupKey = DateFormat('MMM yyyy').format(date);
           } else {
-            groupKey = 'No Date';
+            groupKey = kEmptyGroupLabel;
           }
           break;
         default:

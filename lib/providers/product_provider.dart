@@ -8,6 +8,7 @@ import '../services/session_service.dart';
 import '../services/field_validation_service.dart';
 import '../services/product_service.dart';
 import '../services/odoo_error_classifier.dart';
+import '../utils/group_labels.dart';
 
 /// Manages the product list with pagination, filtering, grouping, category selection, and search.
 class ProductProvider with ChangeNotifier {
@@ -35,6 +36,10 @@ class ProductProvider with ChangeNotifier {
   bool _isLoading = false;
   bool _isLoadingMore = false;
   bool _isSearching = false;
+
+  /// Number of the latest [fetchProducts] call. A response that comes back
+  /// after a newer call started belongs to filters no longer on screen.
+  int _fetchToken = 0;
 
   static const int _pageSize = 40;
   int _currentPage = 0;
@@ -298,6 +303,10 @@ class ProductProvider with ChangeNotifier {
   }
 
   void _processResult(List<dynamic> result) {
+    // A read has answered, even if with nothing: the list may now show its
+    // empty state. Never set, an empty result (the last archived product
+    // unarchived, a filter nothing matches) stayed on the loading skeleton.
+    _hasInitiallyLoaded = true;
     final fetchedProducts = result
         .map((productData) {
           if (productData is Map) {
@@ -353,6 +362,15 @@ class ProductProvider with ChangeNotifier {
       hasIsStorable: _hasIsStorable,
     );
   }
+
+  /// The domain the list reads, for tests.
+  @visibleForTesting
+  List<dynamic> domainFor(
+    String searchQuery,
+    String category,
+    Map<String, dynamic>? filters, {
+    int? generation,
+  }) => _buildDomain(searchQuery, category, filters, generation: generation);
 
   List<dynamic> _buildDomain(
     String searchQuery,
@@ -443,7 +461,15 @@ class ProductProvider with ChangeNotifier {
     String? category,
     Map<String, dynamic>? filters,
   }) async {
-    if (_isLoading || _isSearching) return;
+    // A call that names a search, category or filters is a new question, so it
+    // supersedes one still running (see [_fetchToken]) instead of being
+    // dropped, which left the old filters' rows under the new filters.
+    final isNewQuery =
+        forceRefresh ||
+        searchQuery != null ||
+        category != null ||
+        filters != null;
+    if ((_isLoading || _isSearching) && !isNewQuery) return;
 
     if (!forceRefresh &&
         _products.isNotEmpty &&
@@ -474,6 +500,7 @@ class ProductProvider with ChangeNotifier {
       return;
     }
 
+    final token = ++_fetchToken;
     _currentSearchQuery = (searchQuery ?? '').trim();
     _currentCategory = category ?? 'All Products';
     _currentFilters = filters;
@@ -528,14 +555,17 @@ class ProductProvider with ChangeNotifier {
               );
 
       final results = await Future.wait([countFuture, listFuture]);
+      if (token != _fetchToken) return;
       _totalProducts = results[0] as int;
       _processResult(results[1] as List<dynamic>);
       _lastFetchTime = DateTime.now();
     } on TimeoutException {
+      if (token != _fetchToken) return;
       _error = "Request timed out. Please check your connection and try again.";
       _isServerUnreachable = false;
       _accessErrorMessage = null;
     } catch (e) {
+      if (token != _fetchToken) return;
       if (_isServerUnreachableError(e)) {
         _isServerUnreachable = true;
         _error =
@@ -558,9 +588,13 @@ class ProductProvider with ChangeNotifier {
         _accessErrorMessage = null;
       }
     } finally {
-      _isLoading = false;
-      _isSearching = false;
-      notifyListeners();
+      if (token == _fetchToken) {
+        // Also after a failure, so the error or empty state can render.
+        _hasInitiallyLoaded = true;
+        _isLoading = false;
+        _isSearching = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -707,17 +741,7 @@ class ProductProvider with ChangeNotifier {
 
       if (_totalProducts > totalGroupedCount) {
         final missingCount = _totalProducts - totalGroupedCount;
-        String undefinedLabel;
-
-        if (_selectedGroupBy == 'categ_id') {
-          undefinedLabel = 'Uncategorized';
-        } else if (_selectedGroupBy == 'type') {
-          undefinedLabel = 'Unknown Type';
-        } else {
-          undefinedLabel = 'Undefined';
-        }
-
-        _groupSummary[undefinedLabel] = missingCount;
+        _groupSummary[kEmptyGroupLabel] = missingCount;
       }
 
       notifyListeners();
@@ -865,18 +889,18 @@ class ProductProvider with ChangeNotifier {
   String _getGroupKeyFromReadGroup(Map group, String groupByField) {
     final groupValue = group[groupByField];
     if (groupValue == null || groupValue == false) {
-      return 'Unknown';
+      return kEmptyGroupLabel;
     }
 
     if (groupValue is List && groupValue.isNotEmpty) {
-      return groupValue[1]?.toString() ?? 'Unknown';
+      return groupValue[1]?.toString() ?? kEmptyGroupLabel;
     }
 
     return groupValue.toString();
   }
 
   List<dynamic> _buildGroupDomain(String groupKey, String groupByField) {
-    if (groupKey == 'Unknown' || groupKey == 'No Category') {
+    if (groupKey == kEmptyGroupLabel) {
       return [
         [groupByField, '=', false],
       ];
@@ -979,7 +1003,7 @@ class ProductProvider with ChangeNotifier {
         final groupKey = _getGroupKey(product, _selectedGroupBy!);
         groups.putIfAbsent(groupKey, () => []).add(product);
       } catch (e) {
-        groups.putIfAbsent('Unknown', () => []).add(product);
+        groups.putIfAbsent(kEmptyGroupLabel, () => []).add(product);
       }
     }
 
@@ -1032,12 +1056,12 @@ class ProductProvider with ChangeNotifier {
             ];
             return '${monthNames[date.month - 1]} ${date.year}';
           }
-          return 'Unknown Date';
+          return kEmptyGroupLabel;
         default:
           return 'Other';
       }
     } catch (e) {
-      return 'Unknown';
+      return kEmptyGroupLabel;
     }
   }
 

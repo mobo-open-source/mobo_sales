@@ -73,7 +73,7 @@ class _FakeOdoo {
               'data': {
                 'name': 'builtins.ValueError',
                 'message':
-                    'External ID not found in the system: sale.sale_menu_root',
+                    'External ID not found in the system: sale_management.sale_order_template_view_form',
               },
             };
           }

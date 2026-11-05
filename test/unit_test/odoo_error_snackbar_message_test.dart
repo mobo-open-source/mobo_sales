@@ -107,7 +107,8 @@ void main() {
   test('a web page where JSON was expected is explained, not quoted', () {
     // Exactly what the dashboard greeting showed a tester: the raw
     // FormatException from decoding a proxy/login page as JSON.
-    const raw = 'FormatException: Unexpected character (at character 1)\n'
+    const raw =
+        'FormatException: Unexpected character (at character 1)\n'
         '<html>\n^\n';
     expect(say(raw), isNot(contains('character')));
     expect(say(raw), isNot(contains('<html')));

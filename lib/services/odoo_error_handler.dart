@@ -32,6 +32,17 @@ class OdooErrorHandler {
   /// are about the connection, the session or the user's rights get their own
   /// short wording, because the server's text for those is not meant for
   /// users. [fallback] is used when nothing readable is left.
+  /// Shown when Odoo has nothing to invoice on an order yet: lines invoiced on
+  /// delivered quantities that have not shipped. Not a failure, so it is shown
+  /// as a warning.
+  static const String nothingToInvoiceMessage =
+      'Nothing to invoice yet. The products on this order are invoiced on '
+      'delivered quantities and none have been delivered. Deliver them first, '
+      'or create a down payment invoice instead.';
+
+  static bool isNothingToInvoice(String message) =>
+      message.contains(nothingToInvoiceMessage);
+
   static String toSnackbarMessage(dynamic e, {String? fallback}) {
     final generic = fallback ?? 'Something went wrong. Please try again.';
     final raw = e.toString();
@@ -99,8 +110,7 @@ class OdooErrorHandler {
   /// Odoo answers JSON-RPC with JSON. A web page instead — a proxy error page,
   /// a maintenance notice, or the login form after a session expired — fails
   /// in `jsonDecode` as "FormatException: Unexpected character (at character
-  /// 1)" followed by `<html>`, which is meaningless to the person holding
-  /// the phone.
+  /// 1) `<html>`", which is meaningless to the person holding the phone.
   static bool isNotJsonResponse(dynamic error) {
     if (error is FormatException) return true;
     final s = error.toString().toLowerCase();
@@ -180,7 +190,9 @@ class OdooErrorHandler {
       // A Python exception named by its full path, which Odoo puts in front
       // of the sentence it actually wants read:
       // `odoo.exceptions.UserError: ...`, `psycopg2.errors.X: ...`.
-      RegExp(r'^(?:[a-zA-Z_]\w*\.)+[A-Za-z_]\w*(?:Error|Exception|Warning)\s*:\s*'),
+      RegExp(
+        r'^(?:[a-zA-Z_]\w*\.)+[A-Za-z_]\w*(?:Error|Exception|Warning)\s*:\s*',
+      ),
       RegExp(r'^Failed to [^:\n]{3,80}:\s+'),
       RegExp(r'^Odoo Server Error\s*:\s*'),
     ];
@@ -396,6 +408,25 @@ Please contact your system administrator for assistance.''';
       }
 
       return '⚠️ Company Mismatch\n\nThe product and taxes belong to different companies. Please ensure all items in the invoice belong to the same company.\n\nContact your administrator if you need assistance.';
+    }
+
+    // Odoo refuses to invoice an order whose lines have nothing to invoice
+    // yet — typically a delivered-quantities product that has not shipped.
+    if (s.contains('no items are available to invoice') ||
+        s.contains('nothing to invoice')) {
+      return nothingToInvoiceMessage;
+    }
+
+    // Any other rule Odoo enforces on purpose (a UserError, a
+    // ValidationError) already carries a sentence written for the user; show
+    // it rather than hiding it behind a generic apology.
+    if (s.contains('usererror') ||
+        s.contains('validationerror') ||
+        s.contains('odoo.exceptions.warning')) {
+      final sentence = _tidy(_serverSentence(errorString));
+      if (sentence.isNotEmpty && !_looksTechnical(sentence)) {
+        return '⚠️ Could Not Complete\n\n$sentence';
+      }
     }
 
     return defaultMessage ??

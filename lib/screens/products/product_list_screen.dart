@@ -7,12 +7,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:hugeicons/hugeicons.dart';
-import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'package:odoo_rpc/odoo_rpc.dart';
 import 'package:provider/provider.dart';
 import 'package:mobo_sales/utils/app_theme.dart';
 import 'package:shimmer/shimmer.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../models/product.dart';
@@ -34,9 +32,11 @@ import '../../widgets/product_list_tile.dart';
 import 'product_details_page.dart';
 import 'create_product_screen.dart';
 import '../../widgets/list_search_bar.dart';
+import '../../widgets/voice_search_dialog.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import '../../services/odoo_error_handler.dart';
 import '../../widgets/create_action_gate.dart';
+import '../../utils/group_labels.dart';
 
 class ProductListScreen extends StatefulWidget {
   const ProductListScreen({super.key});
@@ -179,14 +179,8 @@ class ProductListScreenState extends State<ProductListScreen>
 
   final Map<String, Uint8List> _base64ImageCache = {};
 
-  final stt.SpeechToText _speech = stt.SpeechToText();
+  /// True while the voice search pop-up is open.
   bool _isListening = false;
-  String _voiceInput = '';
-  bool _isListeningDialogShown = false;
-  Timer? _listeningTimeoutTimer;
-  VoidCallback? _updateDialogCallback;
-  bool _isProcessingSpeech = false;
-  String _speechStatus = '';
   bool _isScanning = false;
 
   final Map<String, bool> _expandedProductGroups = {};
@@ -783,8 +777,8 @@ class ProductListScreenState extends State<ProductListScreen>
                       style: TextStyle(fontSize: 13),
                     ),
                     backgroundColor: isDark
-                        ? Colors.white.withValues(alpha: 0.08)
-                        : theme.primaryColor.withValues(alpha: 0.08),
+                        ? Colors.white.withOpacity(.08)
+                        : theme.primaryColor.withOpacity(0.08),
                     deleteIcon: const Icon(Icons.close, size: 16),
                     onDeleted: () => setDialogState(
                       () => tempState['showArchivedOnly'] = false,
@@ -959,8 +953,8 @@ class ProductListScreenState extends State<ProductListScreen>
                 selected: tempState['showArchivedOnly'] == true,
                 selectedColor: theme.primaryColor,
                 backgroundColor: isDark
-                    ? Colors.white.withValues(alpha: 0.08)
-                    : theme.primaryColor.withValues(alpha: 0.08),
+                    ? Colors.white.withOpacity(.08)
+                    : theme.primaryColor.withOpacity(0.08),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(8),
                   side: BorderSide(
@@ -1235,6 +1229,10 @@ class ProductListScreenState extends State<ProductListScreen>
     });
   }
 
+  /// Number of the latest full (not load-more) [_loadProducts] call; an older
+  /// call that finishes after a newer one started must not touch the screen.
+  int _loadSeq = 0;
+
   Future<void> _loadProducts({bool isLoadMore = false}) async {
     if (!mounted) return;
 
@@ -1256,6 +1254,7 @@ class ProductListScreenState extends State<ProductListScreen>
 
     final sessionService = context.read<SessionService>();
     final productProvider = context.read<ProductProvider>();
+    final seq = isLoadMore ? _loadSeq : ++_loadSeq;
 
     try {
       await _checkConnectivity();
@@ -1301,7 +1300,7 @@ class ProductListScreenState extends State<ProductListScreen>
         );
       }
 
-      if (!mounted) return;
+      if (!mounted || seq != _loadSeq) return;
 
       setState(() {
         _totalProducts = productProvider.totalProducts;
@@ -1439,9 +1438,10 @@ class ProductListScreenState extends State<ProductListScreen>
                     const SizedBox(width: 8),
                     _buildGroupByPill(
                       isDark,
-                      productProvider.groupByOptions[productProvider
-                              .selectedGroupBy] ??
-                          productProvider.selectedGroupBy!,
+                      groupByDisplayLabel(
+                        productProvider.selectedGroupBy,
+                        productProvider.groupByOptions,
+                      ),
                     ),
                   ],
 
@@ -2101,14 +2101,9 @@ class ProductListScreenState extends State<ProductListScreen>
                     imageUrl: imageUrl,
                     imageBytes: imageBytes,
                     isDark: isDark,
-                    onTap: () {
-                      Product navProduct = product;
-                      if (product.productVariantIds != null &&
-                          product.productVariantIds!.isNotEmpty) {
-                        navProduct = product.copyWith(
-                          id: product.productVariantIds![0].toString(),
-                        );
-                      }
+                    onTap: () async {
+                      final navProduct = await _withVariantId(product);
+                      if (!mounted) return;
                       Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -2208,7 +2203,10 @@ class ProductListScreenState extends State<ProductListScreen>
             final variantIds = template['productVariantIds'] as List<int>?;
             if (variantIds != null && variantIds.isNotEmpty) {
               navProduct = navProduct.copyWith(id: variantIds[0].toString());
+            } else {
+              navProduct = await _withVariantId(navProduct);
             }
+            if (!mounted) return;
             _navigateToDetails(navProduct);
           }
         }
@@ -2658,6 +2656,9 @@ class ProductListScreenState extends State<ProductListScreen>
         'qtyAvailable': product.qtyAvailable,
         'imageUrl': product.imageUrl,
         'category': product.category ?? 'Uncategorized',
+        // What the product has, or null: the group of products with no
+        // category is named from this, not from the text shown for it.
+        'categoryRaw': product.category,
         'attributes': product.attributes ?? [],
         'variants': [product],
         'variantCount': product.variantCount > 1 ? product.variantCount : 1,
@@ -2675,9 +2676,10 @@ class ProductListScreenState extends State<ProductListScreen>
       String computeGroup(Map<String, dynamic> tmpl) {
         switch (groupKey) {
           case 'categ_id':
-            return (tmpl['category'] as String?)?.trim().isNotEmpty == true
-                ? (tmpl['category'] as String)
-                : 'Uncategorized';
+            final raw = tmpl['categoryRaw'] as String?;
+            return raw != null && raw.trim().isNotEmpty
+                ? raw
+                : kEmptyGroupLabel;
           case 'uom_id':
             final variants = (tmpl['variants'] as List).cast<Product>();
             String? uom;
@@ -2690,7 +2692,9 @@ class ProductListScreenState extends State<ProductListScreen>
                 uom = u;
               }
             }
-            return (uom != null && uom.trim().isNotEmpty) ? uom : 'Unknown UoM';
+            return (uom != null && uom.trim().isNotEmpty)
+                ? uom
+                : kEmptyGroupLabel;
           case 'active':
             final variants = (tmpl['variants'] as List).cast<Product>();
             final anyActive = variants.any((v) => (v.active ?? true));
@@ -2715,7 +2719,7 @@ class ProductListScreenState extends State<ProductListScreen>
                           : minDate);
               }
             }
-            if (minDate == null) return 'Unknown Date';
+            if (minDate == null) return kEmptyGroupLabel;
             return DateFormat(
               'yyyy MMM',
             ).format(DateTime(minDate.year, minDate.month));
@@ -2729,7 +2733,7 @@ class ProductListScreenState extends State<ProductListScreen>
                     : (v.writeDate!.isAfter(maxDate) ? v.writeDate : maxDate);
               }
             }
-            if (maxDate == null) return 'Unknown Date';
+            if (maxDate == null) return kEmptyGroupLabel;
             return DateFormat(
               'yyyy MMM',
             ).format(DateTime(maxDate.year, maxDate.month));
@@ -2755,12 +2759,12 @@ class ProductListScreenState extends State<ProductListScreen>
               DateTime? da;
               DateTime? db;
               try {
-                da = ga == 'Unknown Date'
+                da = ga == kEmptyGroupLabel
                     ? null
                     : DateFormat('yyyy MMM').parse(ga);
               } catch (_) {}
               try {
-                db = gb == 'Unknown Date'
+                db = gb == kEmptyGroupLabel
                     ? null
                     : DateFormat('yyyy MMM').parse(gb);
               } catch (_) {}
@@ -2859,12 +2863,12 @@ class ProductListScreenState extends State<ProductListScreen>
         if (value is List && value.length >= 2) {
           return value[1].toString();
         }
-        return 'Uncategorized';
+        return kEmptyGroupLabel;
       } else if (groupByField == 'uom_id') {
         if (value is List && value.length >= 2) {
           return value[1].toString();
         }
-        return 'Unknown UoM';
+        return kEmptyGroupLabel;
       } else if (groupByField == 'active') {
         return value == true ? 'Active' : 'Inactive';
       } else if (groupByField == 'list_price' ||
@@ -2885,15 +2889,15 @@ class ProductListScreenState extends State<ProductListScreen>
               'yyyy MMM',
             ).format(DateTime(date.year, date.month));
           } catch (e) {
-            return 'Unknown Date';
+            return kEmptyGroupLabel;
           }
         }
-        return 'Unknown Date';
+        return kEmptyGroupLabel;
       }
 
-      return value?.toString() ?? 'Unknown';
+      return value?.toString() ?? kEmptyGroupLabel;
     } catch (e) {
-      return 'Unknown';
+      return kEmptyGroupLabel;
     }
   }
 
@@ -3114,7 +3118,7 @@ class ProductListScreenState extends State<ProductListScreen>
     try {
       switch (groupByField) {
         case 'categ_id':
-          if (groupKey == 'Uncategorized') {
+          if (groupKey == kEmptyGroupLabel) {
             return [
               ['categ_id', '=', false],
             ];
@@ -3126,7 +3130,7 @@ class ProductListScreenState extends State<ProductListScreen>
             ['categ_id.name', 'ilike', leafCategory],
           ];
         case 'uom_id':
-          if (groupKey == 'Unknown UoM') {
+          if (groupKey == kEmptyGroupLabel) {
             return [
               ['uom_id', '=', false],
             ];
@@ -3173,7 +3177,7 @@ class ProductListScreenState extends State<ProductListScreen>
           return [];
         case 'create_date':
         case 'write_date':
-          if (groupKey == 'Unknown Date') {
+          if (groupKey == kEmptyGroupLabel) {
             return [
               [groupByField, '=', false],
             ];
@@ -3205,7 +3209,7 @@ class ProductListScreenState extends State<ProductListScreen>
           } catch (e) {}
           return [];
         default:
-          if (groupKey == 'Unknown') {
+          if (groupKey == kEmptyGroupLabel) {
             return [
               [groupByField, '=', false],
             ];
@@ -3511,613 +3515,60 @@ class ProductListScreenState extends State<ProductListScreen>
     );
   }
 
+  /// Opens the voice search pop-up. The words come back only when the user
+  /// taps Search in it; until then nothing is searched or typed anywhere.
   Future<void> _listen() async {
-    if (_isLoading || _isProcessingSpeech) return;
+    if (_isLoading || _isListening) return;
 
-    try {
-      if (!_isListening) {
-        final hasPermission = await _requestMicrophonePermission(
-          showRationale: true,
-        );
-
-        if (!hasPermission) {
-          if (!mounted) return;
-          _showPermissionDialog();
-          return;
-        }
-
-        if (!_speech.isAvailable) {
-          final isInitialized = await _speech.initialize(
-            onStatus: _handleSpeechStatusUpdate,
-            onError: _handleSpeechError,
-          );
-
-          if (!isInitialized) {
-            throw Exception('Failed to initialize speech recognition');
-          }
-        }
-
-        setState(() {
-          _isListening = true;
-          _speechStatus = 'initializing';
-        });
-        _showListeningDialog();
-        _startListeningTimeout();
-
-        await _speech.listen(
-          onResult: (result) {
-            if (!mounted) return;
-            setState(() {
-              _voiceInput = result.recognizedWords;
-              _searchController.text = _voiceInput;
-              _searchController.selection = TextSelection.fromPosition(
-                TextPosition(offset: _searchController.text.length),
-              );
-            });
-
-            _updateDialogCallback?.call();
-
-            if (result.recognizedWords.isNotEmpty && result.finalResult) {
-              HapticFeedback.lightImpact();
-            }
-          },
-          listenFor: const Duration(seconds: 30),
-          pauseFor: const Duration(seconds: 3),
-          partialResults: true,
-          cancelOnError: false,
-          listenMode: stt.ListenMode.dictation,
-        );
-      } else {
-        await _speech.stop();
-        setState(() {
-          _isListening = false;
-          _isProcessingSpeech = false;
-        });
-        _dismissListeningDialog();
-        _cancelListeningTimeout();
-      }
-    } catch (e) {
+    final hasPermission = await _requestMicrophonePermission(
+      showRationale: true,
+    );
+    if (!hasPermission) {
       if (!mounted) return;
-      _handleSpeechError('Error during voice recognition: ${e.toString()}');
+      _showPermissionDialog();
+      return;
     }
-  }
-
-  void _handleSpeechStatusUpdate(String status) {
     if (!mounted) return;
 
-    setState(() {
-      _speechStatus = status;
-
-      switch (status) {
-        case 'listening':
-          _isListening = true;
-          _isProcessingSpeech = false;
-
-          break;
-
-        case 'done':
-        case 'notListening':
-          _isListening = false;
-          _isProcessingSpeech = false;
-          _dismissListeningDialog();
-          _cancelListeningTimeout();
-          if (_voiceInput.isNotEmpty) {
-            _performVoiceSearch();
-          }
-
-          break;
-
-        case 'processing':
-          _isProcessingSpeech = true;
-          break;
-
-        default:
-          _isListening = false;
-          _isProcessingSpeech = false;
-          break;
-      }
-    });
-  }
-
-  void _handleSpeechError(dynamic error) {
+    setState(() => _isListening = true);
+    final words = await showVoiceSearchDialog(context);
     if (!mounted) return;
+    setState(() => _isListening = false);
 
-    setState(() {
-      _isListening = false;
-      _isProcessingSpeech = false;
-      _speechStatus = 'error';
-    });
-
-    _dismissListeningDialog();
-    _cancelListeningTimeout();
-
-    String errorMessage = 'An error occurred during voice recognition';
-
-    if (error is String) {
-      errorMessage = error;
-    } else if (error is Exception) {
-      errorMessage = error.toString();
-    } else {
-      errorMessage = error?.toString() ?? 'Unknown speech recognition error';
-    }
-
-    if (mounted) {
-      CustomSnackbar.showError(context, errorMessage);
-    }
+    if (words != null) _performVoiceSearch(words);
   }
 
-  void _showListeningDialog() {
-    if (_isListeningDialogShown) return;
-    _isListeningDialogShown = true;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final primaryColor = Theme.of(context).colorScheme.primary;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) {
-          void updateDialogText() {
-            setDialogState(() {});
-          }
-
-          _updateDialogCallback = updateDialogText;
-
-          return AlertDialog(
-            backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-            elevation: 8,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-              side: BorderSide(
-                color: isDark ? Colors.grey[800]! : Colors.grey[300]!,
-                width: 1,
-              ),
-            ),
-            title: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Voice Search',
-                    style: TextStyle(
-                      color: isDark ? Colors.white : Colors.black87,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 20,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  onPressed: () {
-                    Navigator.of(context).pop();
-                    _showVoiceSearchTips();
-                  },
-                  icon: Icon(
-                    HugeIcons.strokeRoundedHelpCircle,
-                    color: isDark ? Colors.grey[400] : Colors.grey[600],
-                    size: 24,
-                  ),
-                  tooltip: 'Voice Search Tips',
-                  style: IconButton.styleFrom(padding: const EdgeInsets.all(4)),
-                ),
-              ],
-            ),
-            content: Container(
-              constraints: const BoxConstraints(maxWidth: 300),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const SizedBox(height: 16),
-                  Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      Container(
-                        width: 80,
-                        height: 80,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: isDark
-                              ? Colors.white.withOpacity(.1)
-                              : primaryColor.withOpacity(0.1),
-                        ),
-                      ),
-                      Container(
-                        width: 64,
-                        height: 64,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: isDark
-                              ? Colors.white.withOpacity(.2)
-                              : primaryColor.withOpacity(0.2),
-                        ),
-                      ),
-                      SizedBox(
-                        width: 48,
-                        height: 48,
-                        child: LoadingAnimationWidget.staggeredDotsWave(
-                          color: isDark ? Colors.white : primaryColor,
-                          size: 48,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  Text(
-                    _isProcessingSpeech
-                        ? 'Processing speech...'
-                        : _speechStatus == 'listening'
-                        ? 'Listening...'
-                        : _speechStatus == 'initializing'
-                        ? 'Starting microphone...'
-                        : 'Ready to listen',
-                    style: TextStyle(
-                      color: isDark ? Colors.grey[300] : Colors.grey[800],
-                      fontSize: 18,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? Colors.white.withOpacity(.1)
-                          : _isProcessingSpeech
-                          ? Colors.blue.withOpacity(0.1)
-                          : _speechStatus == 'listening'
-                          ? Colors.green.withOpacity(0.1)
-                          : _speechStatus == 'initializing'
-                          ? Colors.orange.withOpacity(0.1)
-                          : Colors.grey.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: isDark
-                            ? Colors.white.withOpacity(.3)
-                            : _isProcessingSpeech
-                            ? Colors.blue.withOpacity(0.3)
-                            : _speechStatus == 'listening'
-                            ? Colors.green.withOpacity(0.3)
-                            : _speechStatus == 'initializing'
-                            ? Colors.orange.withOpacity(0.3)
-                            : Colors.grey.withOpacity(0.3),
-                        width: 1,
-                      ),
-                    ),
-                    child: Text(
-                      _isProcessingSpeech
-                          ? 'Processing'
-                          : _speechStatus == 'listening'
-                          ? 'Active'
-                          : _speechStatus == 'initializing'
-                          ? 'Starting'
-                          : 'Standby',
-                      style: TextStyle(
-                        color: isDark
-                            ? Colors.white
-                            : _isProcessingSpeech
-                            ? Colors.blue
-                            : _speechStatus == 'listening'
-                            ? Colors.green
-                            : _speechStatus == 'initializing'
-                            ? Colors.orange
-                            : Colors.grey,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: isDark ? Colors.grey[850] : Colors.grey[50],
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: isDark ? Colors.grey[700]! : Colors.grey[200]!,
-                        width: 1,
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(
-                              'Recognized Text:',
-                              style: TextStyle(
-                                color: isDark
-                                    ? Colors.grey[400]
-                                    : Colors.grey[600],
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            if (_voiceInput.isNotEmpty)
-                              Text(
-                                '${_voiceInput.split(' ').length} words',
-                                style: TextStyle(
-                                  color: isDark
-                                      ? Colors.grey[400]
-                                      : Colors.grey[600],
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w400,
-                                ),
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Container(
-                          constraints: const BoxConstraints(minHeight: 60),
-                          child: Text(
-                            _voiceInput.isEmpty
-                                ? 'Start speaking clearly into your microphone...\n\nTry saying: "laptop", "phone", "shoes", etc.'
-                                : _voiceInput,
-                            style: TextStyle(
-                              color: isDark ? Colors.white : Colors.black87,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w500,
-                              height: 1.3,
-                            ),
-                            textAlign: TextAlign.left,
-                          ),
-                        ),
-                        if (_voiceInput.isNotEmpty) ...[
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              Icon(
-                                Icons.info_outline,
-                                size: 14,
-                                color: isDark
-                                    ? Colors.grey[400]
-                                    : Colors.grey[600],
-                              ),
-                              const SizedBox(width: 4),
-                              Expanded(
-                                child: Text(
-                                  'Tap "Search" to find products or continue speaking',
-                                  style: TextStyle(
-                                    color: isDark
-                                        ? Colors.grey[400]
-                                        : Colors.grey[600],
-                                    fontSize: 11,
-                                    fontStyle: FontStyle.italic,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              if (_voiceInput.isNotEmpty)
-                MoboDialogButtons(
-                  secondaryLabel: 'Cancel',
-                  onSecondary: () {
-                    setState(() => _isListening = false);
-                    _speech.stop();
-                    _updateDialogCallback = null;
-                    _dismissListeningDialog();
-                    _cancelListeningTimeout();
-                  },
-                  primaryLabel: 'Search',
-                  onPrimary: () {
-                    _dismissListeningDialog();
-                    _cancelListeningTimeout();
-                    _performVoiceSearch();
-                  },
-                )
-              else
-                TextButton.icon(
-                  onPressed: () {
-                    setState(() => _isListening = false);
-                    _speech.stop();
-                    _updateDialogCallback = null;
-                    _dismissListeningDialog();
-                    _cancelListeningTimeout();
-                  },
-                  icon: Icon(
-                    HugeIcons.strokeRoundedCancelCircleHalfDot,
-                    color: isDark ? Colors.grey[400] : Colors.grey[600],
-                    size: 20,
-                  ),
-                  label: Text(
-                    'Cancel',
-                    style: TextStyle(
-                      color: isDark ? Colors.grey[400] : Colors.grey[600],
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                ),
-            ],
-            actionsPadding: _voiceInput.isNotEmpty
-                ? const EdgeInsets.fromLTRB(24, 8, 24, 20)
-                : const EdgeInsets.fromLTRB(8, 0, 8, 8),
-          );
-        },
-      ),
-    );
-  }
-
-  void _dismissListeningDialog() {
-    if (_isListeningDialogShown) {
-      setState(() {
-        _isListening = false;
-        _isProcessingSpeech = false;
-      });
-      Navigator.of(context, rootNavigator: true).pop();
-      _isListeningDialogShown = false;
-      _updateDialogCallback = null;
-    }
-  }
-
-  void _startListeningTimeout() {
-    _cancelListeningTimeout();
-    _listeningTimeoutTimer = Timer(const Duration(seconds: 15), () {
-      if (_isListening) {
-        setState(() => _isListening = false);
-        _speech.stop();
-        _dismissListeningDialog();
-        CustomSnackbar.showWarning(
-          context,
-          'Listening timed out after 15 seconds. Please try again.',
-        );
-      }
-    });
-  }
-
-  void _cancelListeningTimeout() {
-    _listeningTimeoutTimer?.cancel();
-    _listeningTimeoutTimer = null;
-  }
-
-  void _showVoiceSearchTips() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            Icon(
-              HugeIcons.strokeRoundedBulb,
-              color: isDark
-                  ? Colors.white
-                  : Theme.of(context).colorScheme.primary,
-              size: 24,
-            ),
-            const SizedBox(width: 8),
-            Text(
-              'Voice Search Tips',
-              style: TextStyle(
-                color: isDark ? Colors.white : Colors.black87,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildTipItem(
-              'Speak clearly and at a normal pace',
-              HugeIcons.strokeRoundedVoice,
-              isDark,
-            ),
-            _buildTipItem(
-              'Use specific product names: "laptop", "phone", "shoes"',
-              HugeIcons.strokeRoundedSearch01,
-              isDark,
-            ),
-            _buildTipItem(
-              'Try brand names: "Apple", "Samsung", "Nike"',
-              HugeIcons.strokeRoundedBrandfetch,
-              isDark,
-            ),
-            _buildTipItem(
-              'Use categories: "electronics", "clothing", "books"',
-              HugeIcons.strokeRoundedPackage,
-              isDark,
-            ),
-            _buildTipItem(
-              'Speak in a quiet environment for better accuracy',
-              HugeIcons.strokeRoundedVolumeLow,
-              isDark,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: Text(
-              'Got it!',
-              style: TextStyle(
-                color: isDark
-                    ? Colors.white
-                    : Theme.of(context).colorScheme.primary,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTipItem(String text, IconData icon, bool isDark) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            icon,
-            size: 16,
-            color: isDark ? Colors.grey[400] : Colors.grey[600],
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              text,
-              style: TextStyle(
-                color: isDark ? Colors.grey[300] : Colors.grey[700],
-                fontSize: 14,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _performVoiceSearch() {
-    if (_voiceInput.trim().isEmpty) {
+  void _performVoiceSearch(String words) {
+    final query = words.trim();
+    if (query.isEmpty) {
       _showAllProducts();
       return;
     }
 
-    CustomSnackbar.showSuccess(
-      context,
-      'Searching for: "${_voiceInput.trim()}"',
-    );
+    CustomSnackbar.showSuccess(context, 'Searching for: "$query"');
 
-    setState(() {
-      _searchController.text = _voiceInput.trim();
-    });
+    // Put the words in the search box without waking its debounce, which
+    // would load the same products a second time half a second later.
+    _debounceTimer?.cancel();
+    _lastSearchValue = query;
+    setState(() => _searchController.text = query);
 
+    // Reset the same way the search box's own debounce does. `_loadProducts`
+    // returns at once when it is already loading *and* has loaded, so setting
+    // `_isLoading` alone here made it skip the load and left the shimmer up
+    // for good.
     setState(() {
       _currentPage = 0;
       _hasMoreData = true;
       _isLoading = true;
+      _hasLoaded = false;
     });
 
     _loadProducts();
   }
 
   void _showAllProducts() {
-    setState(() {
-      _voiceInput = '';
-      _searchController.clear();
-    });
+    setState(() => _searchController.clear());
 
     setState(() {
       _currentPage = 0;
@@ -4125,93 +3576,9 @@ class ProductListScreenState extends State<ProductListScreen>
       _cachedProducts.clear();
       _lastFetchTime = null;
       _isLoading = true;
+      _hasLoaded = false;
     });
     _loadProducts();
-  }
-
-  void _startListening() async {
-    setState(() {
-      _voiceInput = '';
-      _searchController.clear();
-    });
-    if (!_isListening) {
-      bool available = false;
-      try {
-        available = await _speech.initialize(
-          onStatus: (val) {
-            if (!mounted) return;
-            setState(() {
-              _speechStatus = val;
-              if (val == 'done' || val == 'notListening') {
-                _isListening = false;
-                _isProcessingSpeech = false;
-              } else if (val == 'listening') {
-                _isListening = true;
-                _isProcessingSpeech = false;
-              } else if (val == 'processing') {
-                _isProcessingSpeech = true;
-              }
-            });
-            if (val == 'done' || val == 'notListening') {
-              _dismissListeningDialog();
-              _cancelListeningTimeout();
-              if (_voiceInput.isNotEmpty) {
-                _performVoiceSearch();
-              }
-            }
-          },
-          onError: (val) {
-            if (!mounted) return;
-            setState(() {
-              _isListening = false;
-              _isProcessingSpeech = false;
-              _speechStatus = 'error';
-            });
-            _dismissListeningDialog();
-            _cancelListeningTimeout();
-            _handleSpeechError(val.errorMsg ?? val.toString());
-          },
-        );
-      } catch (e) {
-        available = false;
-        _handleSpeechError(e.toString());
-      }
-      if (available) {
-        setState(() => _isListening = true);
-        _showListeningDialog();
-        _startListeningTimeout();
-        _speech.listen(
-          onResult: (val) {
-            if (!mounted) return;
-            setState(() {
-              _voiceInput = val.recognizedWords;
-              _searchController.text = _voiceInput;
-              _searchController.selection = TextSelection.fromPosition(
-                TextPosition(offset: _searchController.text.length),
-              );
-            });
-            _updateDialogCallback?.call();
-            if (val.recognizedWords.isNotEmpty && val.finalResult) {
-              HapticFeedback.lightImpact();
-            }
-          },
-          listenFor: const Duration(seconds: 30),
-          pauseFor: const Duration(seconds: 3),
-          partialResults: true,
-          cancelOnError: false,
-        );
-      } else {
-        setState(() => _isListening = false);
-        _handleSpeechError(
-          'Voice search is not available or permission denied.',
-        );
-      }
-    } else {
-      setState(() => _isListening = false);
-      _speech.stop();
-      _dismissListeningDialog();
-      _cancelListeningTimeout();
-    }
   }
 
   static final Map<String, List<Map<String, String>>> _attributeCache = {};
@@ -4355,6 +3722,7 @@ class ProductListScreenState extends State<ProductListScreen>
       _cachedProducts.clear();
       _lastFetchTime = null;
       _isLoading = true;
+      _hasLoaded = false;
       _filteredProductTemplates.clear();
     });
     await _loadProducts();
@@ -4469,7 +3837,7 @@ class ProductListScreenState extends State<ProductListScreen>
       'responsible_id': 'Responsible Person',
     };
 
-    return groupByOptions[groupBy] ?? groupBy;
+    return groupByDisplayLabel(groupBy, groupByOptions);
   }
 
   bool _listEquals(List<String> list1, List<String> list2) {
@@ -4570,6 +3938,39 @@ class ProductListScreenState extends State<ProductListScreen>
     );
   }
 
+  /// The list rows are templates, and the details page reads a
+  /// `product.product`. Odoo leaves archived variants out of a template's
+  /// `product_variant_ids`, so for an archived product the variant is looked
+  /// up with `active_test` off; without it the template id was read as a
+  /// variant id and the page said "Product not found".
+  Future<Product> _withVariantId(Product product) async {
+    final ids = product.productVariantIds;
+    if (ids != null && ids.isNotEmpty) {
+      return product.copyWith(id: ids[0].toString());
+    }
+    final templateId = product.templateId ?? int.tryParse(product.id);
+    if (templateId == null) return product;
+    try {
+      final found = await OdooSessionManager.safeCallKw({
+        'model': 'product.product',
+        'method': 'search',
+        'args': [
+          [
+            ['product_tmpl_id', '=', templateId],
+          ],
+        ],
+        'kwargs': {
+          'limit': 1,
+          'context': {'active_test': false},
+        },
+      });
+      if (found is List && found.isNotEmpty && found.first is int) {
+        return product.copyWith(id: found.first.toString());
+      }
+    } catch (_) {}
+    return product;
+  }
+
   void _navigateToDetails(Product product) async {
     final result = await Navigator.push(
       context,
@@ -4586,10 +3987,8 @@ class ProductListScreenState extends State<ProductListScreen>
   @override
   void dispose() {
     _productChangeSubscription?.cancel();
-    _cancelListeningTimeout();
     _debounceTimer?.cancel();
     _retryTimer?.cancel();
-    _listeningTimeoutTimer?.cancel();
     _connectivityService.removeListener(_onConnectivityChanged);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {

@@ -37,6 +37,9 @@ class MoboSelectField<T> extends StatefulWidget {
     this.isLoading = false,
     this.emptyText = 'No matches',
     this.onOpened,
+    this.onLoadMore,
+    this.hasMore = false,
+    this.isLoadingMore = false,
   });
 
   final List<MoboOption<T>> options;
@@ -90,6 +93,19 @@ class MoboSelectField<T> extends StatefulWidget {
   /// left behind, and not just the chosen value it already holds.
   final VoidCallback? onOpened;
 
+  /// For a server-backed list longer than one page: called when the user
+  /// scrolls to the end of the options, and while [hasMore] is true, so the
+  /// next page can be appended to [options]. Without it only the first page is
+  /// ever reachable.
+  final VoidCallback? onLoadMore;
+
+  /// Whether the server has more options than [options] holds.
+  final bool hasMore;
+
+  /// A next page is being fetched; draws a spinner under the last option and
+  /// holds off asking again.
+  final bool isLoadingMore;
+
   @override
   State<MoboSelectField<T>> createState() => _MoboSelectFieldState<T>();
 }
@@ -103,6 +119,30 @@ class _MoboSelectFieldState<T> extends State<MoboSelectField<T>>
     ..addListener(_onSearchFocusChanged);
 
   String _query = '';
+
+  /// The panel's list, watched for the end to ask for another page.
+  late final ScrollController _listScroll = ScrollController()
+    ..addListener(_maybeLoadMore);
+
+  /// How many options there were when the next page was last asked for. A
+  /// scroll fires many notifications near the end; each page is asked for once,
+  /// whether or not the caller has yet flagged [isLoadingMore].
+  int? _askedAtCount;
+
+  void _maybeLoadMore() {
+    if (widget.onLoadMore == null ||
+        !widget.hasMore ||
+        widget.isLoadingMore ||
+        !_listScroll.hasClients ||
+        _askedAtCount == widget.options.length) {
+      return;
+    }
+    final position = _listScroll.position;
+    if (position.pixels >= position.maxScrollExtent - 120) {
+      _askedAtCount = widget.options.length;
+      widget.onLoadMore!();
+    }
+  }
 
   /// The label of the option the user last picked here.
   ///
@@ -162,14 +202,27 @@ class _MoboSelectFieldState<T> extends State<MoboSelectField<T>>
     }
     // Options and the spinner both arrive while the panel is open.
     if (oldWidget.options != widget.options ||
-        oldWidget.isLoading != widget.isLoading) {
+        oldWidget.isLoading != widget.isLoading ||
+        oldWidget.hasMore != widget.hasMore ||
+        oldWidget.isLoadingMore != widget.isLoadingMore) {
+      // A page that came back empty-handed (a failed read) may be asked for
+      // again; a new list may be too.
+      if (oldWidget.isLoadingMore && !widget.isLoadingMore) {
+        _askedAtCount = null;
+      }
       refreshPanel();
+      // A page that does not fill the panel has nothing to scroll, so the
+      // end would never be reached: ask for the next one from here.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _maybeLoadMore();
+      });
     }
   }
 
   @override
   void dispose() {
     disposePanel();
+    _listScroll.dispose();
     _searchFocusNode
       ..removeListener(_onSearchFocusChanged)
       ..dispose();
@@ -196,6 +249,8 @@ class _MoboSelectFieldState<T> extends State<MoboSelectField<T>>
 
   void _onQueryChanged(String value) {
     _query = value;
+    // A new search is a new list: start it at the top.
+    if (_listScroll.hasClients) _listScroll.jumpTo(0);
     widget.onSearchChanged?.call(value);
     // The panel is a sibling in the Overlay, so it needs telling separately.
     setState(() {});
@@ -210,6 +265,8 @@ class _MoboSelectFieldState<T> extends State<MoboSelectField<T>>
       builder: _buildPanel,
       onBarrierTap: _searchable ? _closeAndUnfocus : null,
       onFieldTap: _tapClearWhileOpen,
+      // Just a list: no chrome to keep room for.
+      minHeight: MoboOverlayPanelMixin.minListHeight,
     );
 
     // A server-backed field starts with nothing to show, so opening it said
@@ -465,11 +522,28 @@ class _MoboSelectFieldState<T> extends State<MoboSelectField<T>>
       );
     }
 
+    final showFooter = widget.hasMore || widget.isLoadingMore;
     return ListView.builder(
+      controller: _listScroll,
       shrinkWrap: true,
       padding: const EdgeInsets.symmetric(vertical: 6),
-      itemCount: options.length,
+      itemCount: options.length + (showFooter ? 1 : 0),
       itemBuilder: (context, index) {
+        if (index == options.length) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Center(
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: colors.primary,
+                ),
+              ),
+            ),
+          );
+        }
         final option = options[index];
         final isSelected = option.value == widget.value;
 
