@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../services/odoo_error_handler.dart';
 import 'package:hugeicons/hugeicons.dart';
 import 'package:provider/provider.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -11,6 +12,7 @@ import '../../shared/widgets/mobo/mobo_select_field.dart';
 import '../../utils/quiet_reload_gate.dart';
 import '../../widgets/custom_snackbar.dart';
 import '../../widgets/loading_skeletons.dart';
+import '../../utils/odoo_date.dart';
 
 class ProductSalesHistoryScreen extends StatefulWidget {
   final Product product;
@@ -198,7 +200,7 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
     } catch (e) {
       if (mounted && !quiet) {
         setState(() => _isLoading = false);
-        CustomSnackbar.showError(context, 'Failed to load sales history: $e');
+        CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not load the sales history.'));
       }
     }
   }
@@ -226,8 +228,8 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
         }
       }
 
-      if (sale['create_date'] != null) {
-        final date = DateTime.parse(sale['create_date']);
+      final date = OdooDate.parseDatetime(sale['create_date']);
+      if (date != null) {
         if (firstSale == null || date.isBefore(firstSale)) {
           firstSale = date;
         }
@@ -254,6 +256,25 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
     };
   }
 
+  /// How many months apart the labels under the chart are.
+  ///
+  /// Six labels is what fits across a phone without them touching; a twelve
+  /// month chart therefore names every second month, a six month one every
+  /// month.
+  int get _monthLabelInterval {
+    const mostLabelsThatFit = 6;
+    if (_chartData.length <= mostLabelsThatFit) return 1;
+    return (_chartData.length / mostLabelsThatFit).ceil();
+  }
+
+  /// "Dec 2025" shortened to "Dec 25" for the axis, where the full year has
+  /// nowhere to go.
+  static String _shortMonthLabel(String month) {
+    final parts = month.split(' ');
+    if (parts.length != 2 || parts[1].length != 4) return month;
+    return '${parts[0]} ${parts[1].substring(2)}';
+  }
+
   List<SalesData> _generateChartData() {
     final Map<String, double> monthlyData = {};
     final now = DateTime.now();
@@ -266,8 +287,8 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
     }
 
     for (final sale in _salesHistory) {
-      if (sale['create_date'] != null) {
-        final date = DateTime.parse(sale['create_date']);
+      final date = OdooDate.parseDatetime(sale['create_date']);
+      if (date != null) {
         final monthKey = DateFormat('MMM yyyy').format(date);
         if (monthlyData.containsKey(monthKey)) {
           monthlyData[monthKey] =
@@ -576,15 +597,25 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
                         bottomTitles: AxisTitles(
                           sideTitles: SideTitles(
                             showTitles: true,
-                            reservedSize: 30,
+                            reservedSize: 34,
+                            // Without an interval every month is drawn, and
+                            // twelve "Dec 2025" labels on a phone print on
+                            // top of each other. One label per
+                            // [_monthLabelInterval] months, each short enough
+                            // to stand alone.
+                            interval: _monthLabelInterval.toDouble(),
                             getTitlesWidget: (value, meta) {
-                              if (value.toInt() >= _chartData.length) {
+                              final index = value.toInt();
+                              if (index < 0 || index >= _chartData.length) {
+                                return const SizedBox.shrink();
+                              }
+                              if (index % _monthLabelInterval != 0) {
                                 return const SizedBox.shrink();
                               }
                               return SideTitleWidget(
                                 meta: meta,
                                 child: Text(
-                                  _chartData[value.toInt()].month,
+                                  _shortMonthLabel(_chartData[index].month),
                                   style: TextStyle(
                                     color: isDark
                                         ? Colors.grey[400]
@@ -704,11 +735,12 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
                 final orderName = sale['order_id'] is List
                     ? sale['order_id'][1]
                     : 'Unknown Order';
-                final date = sale['create_date'] != null
-                    ? DateFormat(
-                        'MMM dd, yyyy',
-                      ).format(DateTime.parse(sale['create_date']))
-                    : 'Unknown Date';
+                final date =
+                    OdooDate.formatForDisplay(
+                      sale['create_date'],
+                      pattern: 'MMM dd, yyyy',
+                    ) ??
+                    'Unknown Date';
 
                 return ListTile(
                   contentPadding: EdgeInsets.zero,
@@ -831,11 +863,12 @@ class _ProductSalesHistoryScreenState extends State<ProductSalesHistoryScreen> {
                 final orderName = quote['order_id'] is List
                     ? quote['order_id'][1]
                     : 'Unknown Quote';
-                final date = quote['create_date'] != null
-                    ? DateFormat(
-                        'MMM dd, yyyy',
-                      ).format(DateTime.parse(quote['create_date']))
-                    : 'Unknown Date';
+                final date =
+                    OdooDate.formatForDisplay(
+                      quote['create_date'],
+                      pattern: 'MMM dd, yyyy',
+                    ) ??
+                    'Unknown Date';
 
                 return ListTile(
                   contentPadding: EdgeInsets.zero,

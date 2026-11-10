@@ -15,6 +15,7 @@ import '../../utils/quantity_format.dart';
 import '../../widgets/edit_delivery_line_sheet.dart';
 import '../../widgets/lot_selection_sheet.dart';
 import '../../widgets/custom_snackbar.dart';
+import '../../widgets/section_error_state.dart';
 
 class DeliveryDetailsScreen extends StatefulWidget {
   final int deliveryId;
@@ -110,6 +111,11 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
     }
     if (result.outcome == DeliveryValidationOutcome.needsBackorder) {
       await _resolveBackorder(name, result);
+      return;
+    }
+    if (result.outcome == DeliveryValidationOutcome.needsSmsChoice &&
+        result.wizardId != null) {
+      await _resolveSmsConfirmation(name, result);
       return;
     }
     if (result.outcome == DeliveryValidationOutcome.lotsRequired) {
@@ -241,6 +247,113 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
       CustomSnackbar.showSuccess(
         context,
         answer ? '$name confirmed, backorder created' : '$name confirmed',
+      );
+    } else {
+      CustomSnackbar.showInfo(
+        context,
+        'Odoo needs another confirmation to finish $name. Please complete it '
+        'in Odoo.',
+      );
+    }
+    await _fetchDeliveryDetails();
+  }
+
+  /// Odoo asks, once per company, whether to text the customer that their
+  /// goods are on the way.
+  ///
+  /// The question has two buttons and no other input, so it is answered here
+  /// rather than by sending the user to Odoo on a desktop mid-delivery.
+  Future<void> _resolveSmsConfirmation(
+    String name,
+    DeliveryValidationResult result,
+  ) async {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primary = Theme.of(context).primaryColor;
+    final answer = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        backgroundColor: isDark ? Colors.grey[900] : Colors.white,
+        title: Text(
+          'Text the customer?',
+          style: Theme.of(ctx).textTheme.titleLarge?.copyWith(
+            fontWeight: FontWeight.w700,
+            color: isDark ? Colors.white : Theme.of(ctx).colorScheme.onSurface,
+          ),
+        ),
+        content: Text(
+          'Odoo can send an SMS telling the customer $name is on its way. '
+          'Choosing not to send turns these messages off for the whole '
+          'company, which is how Odoo itself behaves — it only asks once.',
+          style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
+            color: isDark
+                ? Colors.grey[300]
+                : Theme.of(ctx).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: primary,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              child: const Text('Send SMS'),
+            ),
+          ),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text("Don't Send"),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+    // Dismissed: the delivery is not validated and the question comes back
+    // next time, exactly as leaving Odoo's own dialog would.
+    if (answer == null || !mounted) {
+      await _fetchDeliveryDetails();
+      return;
+    }
+
+    final done = await runGuardedAction<DeliveryValidationResult>(
+      context: context,
+      message: 'Confirming delivery...',
+      failurePrefix: 'Failed to confirm delivery',
+      action: () => DeliveryService.instance.resolveSmsConfirmation(
+        widget.deliveryId,
+        sendSms: answer,
+        wizardId: result.wizardId!,
+        context: result.wizardContext ?? const {},
+      ),
+    );
+    if (done == null || !mounted) return;
+
+    _didChange = true;
+    DataChangeBus.instance.publish(
+      DataEntity.quotation,
+      DataChangeKind.updated,
+      origin: this,
+    );
+    if (done.isValidated) {
+      CustomSnackbar.showSuccess(
+        context,
+        answer ? '$name confirmed, SMS sent' : '$name confirmed',
       );
     } else {
       CustomSnackbar.showInfo(
@@ -706,6 +819,35 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
     }
   }
 
+  /// An Odoo datetime formatted for display, or null when there isn't one.
+  ///
+  /// Odoo sends `false`, not null, for an unset field, and `DateTime.parse`
+  /// takes a String — so `DateTime.parse(false)` throws "type 'bool' is not a
+  /// subtype of type 'String'". It threw here during a build, which paints the
+  /// whole screen red in debug and blank in release: cancelling a delivery
+  /// clears its deadline, and the Deadline row checked only for null.
+  ///
+  /// `tryParse` rather than `parse` for the same reason one level down: a
+  /// value that is a string but not a date must not take the screen with it.
+  String? _odooDateTime(dynamic value) {
+    if (value == null || value is bool) return null;
+    final parsed = DateTime.tryParse(value.toString());
+    if (parsed == null) return null;
+    return DateFormat('MMM dd, yyyy HH:mm').format(parsed);
+  }
+
+  /// One info row for an Odoo datetime, or nothing at all when it is unset.
+  Widget _buildDateRow(
+    bool isDark,
+    IconData icon,
+    String label,
+    dynamic rawValue,
+  ) {
+    final text = _odooDateTime(rawValue);
+    if (text == null) return const SizedBox.shrink();
+    return _buildInfoRow(isDark, icon, label, text);
+  }
+
   String _safeString(dynamic value, [String defaultValue = 'N/A']) {
     if (value == null || value == false) return defaultValue;
     if (value is List && value.length > 1) return value[1].toString();
@@ -802,7 +944,15 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
             ? _buildErrorState(isDark)
             : _deliveryData != null
             ? _buildDeliveryDetails(isDark)
-            : const SizedBox.shrink(),
+            // Not loading, no error recorded, and no delivery. Every path in
+            // _fetchDeliveryDetails should end in data or an error, so
+            // reaching this is a bug upstream; a message and a Retry are the
+            // floor, so no path can leave the page blank. The path that gets
+            // here has not been identified.
+            : SectionErrorState(
+                error: null,
+                onRetry: _fetchDeliveryDetails,
+              ),
         bottomNavigationBar: _isLoading || !_canShowValidate
             ? null
             : MoboBottomActionBar(child: _buildActionBar(isDark)),
@@ -1153,34 +1303,24 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
                     'Priority',
                     _getPriorityLabel(_deliveryData!['priority'].toString()),
                   ),
-                if (_deliveryData!['scheduled_date'] != null)
-                  _buildInfoRow(
-                    isDark,
-                    HugeIcons.strokeRoundedCalendar03,
-                    'Scheduled Date',
-                    DateFormat(
-                      'MMM dd, yyyy HH:mm',
-                    ).format(DateTime.parse(_deliveryData!['scheduled_date'])),
-                  ),
-                if (_deliveryData!['date_deadline'] != null)
-                  _buildInfoRow(
-                    isDark,
-                    HugeIcons.strokeRoundedAlarmClock,
-                    'Deadline',
-                    DateFormat(
-                      'MMM dd, yyyy HH:mm',
-                    ).format(DateTime.parse(_deliveryData!['date_deadline'])),
-                  ),
-                if (_deliveryData!['date_done'] != null &&
-                    _deliveryData!['date_done'] != false)
-                  _buildInfoRow(
-                    isDark,
-                    HugeIcons.strokeRoundedCheckmarkCircle02,
-                    'Done Date',
-                    DateFormat(
-                      'MMM dd, yyyy HH:mm',
-                    ).format(DateTime.parse(_deliveryData!['date_done'])),
-                  ),
+                _buildDateRow(
+                  isDark,
+                  HugeIcons.strokeRoundedCalendar03,
+                  'Scheduled Date',
+                  _deliveryData!['scheduled_date'],
+                ),
+                _buildDateRow(
+                  isDark,
+                  HugeIcons.strokeRoundedAlarmClock,
+                  'Deadline',
+                  _deliveryData!['date_deadline'],
+                ),
+                _buildDateRow(
+                  isDark,
+                  HugeIcons.strokeRoundedCheckmarkCircle02,
+                  'Done Date',
+                  _deliveryData!['date_done'],
+                ),
                 if (_deliveryData!['location_id'] != null)
                   _buildInfoRow(
                     isDark,

@@ -529,7 +529,10 @@ void main() {
       expect(c.currency, 'USD');
       expect(c.totalReceivable, 48012.5);
       expect(c.categoryIds, [7]);
-      expect(c.createdAt, DateTime.parse('2026-09-29 10:23:30'));
+      // Odoo's `create_date` is naive UTC: no offset on the wire, but it is
+      // UTC. Asserting the instant rather than the wall clock keeps this
+      // correct in every timezone.
+      expect(c.createdAt, DateTime.utc(2026, 9, 29, 10, 23, 30).toLocal());
       expect(c.imageUrl, 'iVBORw0KGgo=');
       expect(c.hasValidCoordinates(), isFalse);
     });

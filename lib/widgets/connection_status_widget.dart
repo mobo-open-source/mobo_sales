@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:mobo_sales/utils/app_theme.dart';
 import '../services/connectivity_service.dart';
+import '../services/odoo_error_classifier.dart';
+import '../services/odoo_error_handler.dart';
 import '../services/session_service.dart';
 import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'package:lottie/lottie.dart';
@@ -109,17 +111,27 @@ class ConnectionStatusWidget extends StatelessWidget {
   /// still gets the same words. Duplicating the matching elsewhere is how
   /// two parts of the app end up disagreeing about what the same error
   /// means.
+
+  /// The one wording for "the server could not be reached", whichever screen
+  /// hit it.
+  ///
+  /// Screens do not pass a sentence of their own. One dead server otherwise
+  /// reads four different ways, under two different titles, on four tabs of
+  /// the same app, and naming the entity that failed to load adds nothing:
+  /// the user is looking at the screen it failed on.
+  static const Map<String, String> cantReachServer = {
+    'title': 'Can\'t Reach Server',
+    'message':
+        'Unable to connect to your Odoo server. Please check your network or server status and try again.',
+  };
+
   static Map<String, String> errorInfoFor(String? error) {
-    if (error == null || error.isEmpty) {
-      return {
-        'title': 'Can\'t Reach Server',
-        'message':
-            'Unable to connect to your Odoo server. Please check your network or server status and try again.',
-      };
-    }
+    if (error == null || error.isEmpty) return cantReachServer;
 
     final errorLower = error.toLowerCase();
 
+    // Signing in again is the only way out of this one, so it keeps its own
+    // wording and its own button.
     if (errorLower.contains('session expired') ||
         errorLower.contains('access denied') ||
         errorLower.contains('odoo session expired')) {
@@ -129,35 +141,9 @@ class ConnectionStatusWidget extends StatelessWidget {
       };
     }
 
-    if (errorLower.contains('socketexception') ||
-        errorLower.contains('no route to host') ||
-        errorLower.contains('failed host lookup') ||
-        errorLower.contains('connection refused') ||
-        errorLower.contains('network is unreachable') ||
-        errorLower.contains('clientexception')) {
-      String serverHint = '';
-      final addressMatch = RegExp(r'address = ([^,]+)').firstMatch(error);
-      if (addressMatch != null) {
-        serverHint = '\n\nServer: ${addressMatch.group(1)}';
-      }
-
-      return {
-        'title': 'Can\'t Reach Server',
-        'message':
-            'Unable to connect to your Odoo server. Please check your network connection and try again.$serverHint',
-      };
-    }
-
-    if (errorLower.contains('formatexception') ||
-        errorLower.contains('html') ||
-        errorLower.contains('unexpected character')) {
-      return {
-        'title': 'Server Error',
-        'message':
-            'The server returned an unexpected response. Please try again later.',
-      };
-    }
-
+    // A named HTTP status means the server answered, so it is worth saying
+    // which one: waiting helps here, checking the network does not. Tested
+    // before the general case below, which would otherwise swallow them.
     if (errorLower.contains('500 internal server error')) {
       return {
         'title': 'Server Error (500)',
@@ -184,8 +170,47 @@ class ConnectionStatusWidget extends StatelessWidget {
       };
     }
 
-    return {'title': 'Error', 'message': error};
+    // Everything else that means "no usable answer came back" is one
+    // condition with one set of words. A refused socket, a proxy's HTML error
+    // page, a FormatException from jsonDecode meeting that page, the sentence
+    // the providers set — the user does the same thing about all of them, and
+    // splitting them is what had Customers saying "Can't Reach Server" while
+    // Quotations said "Server Error" about the very same dead server.
+    if (_namesATransportFailure(errorLower) ||
+        OdooErrorClassifier.isServerUnreachable(error)) {
+      final address = RegExp(r'address = ([^,]+)').firstMatch(error);
+      if (address == null) return cantReachServer;
+      return {
+        'title': cantReachServer['title']!,
+        'message': '${cantReachServer['message']!}'
+            '\n\nServer: ${address.group(1)}',
+      };
+    }
+
+    // Everything above recognised the failure. This is the one that got
+    // away, and it goes through the same gate as every snackbar rather than
+    // straight onto the screen.
+    //
+    // Returning `error` as-is puts Odoo's Python traceback on screen: a read
+    // that asks for a field the server does not have arrives as an
+    // OdooException carrying file paths, line numbers and all.
+    return {
+      'title': 'Error',
+      'message': OdooErrorHandler.toSnackbarMessage(error),
+    };
   }
+
+  /// The shapes a transport failure arrives in that the shared classifier
+  /// does not name, because they are wordings this app chose itself.
+  static bool _namesATransportFailure(String errorLower) =>
+      errorLower.contains('unreachable') ||
+      errorLower.contains('from server/database') ||
+      errorLower.contains('formatexception') ||
+      errorLower.contains('html') ||
+      errorLower.contains('unexpected character') ||
+      errorLower.contains('no route to host') ||
+      errorLower.contains('failed host lookup') ||
+      errorLower.contains('connection refused');
 
   Widget _buildLoadingState(
     BuildContext context,

@@ -126,6 +126,26 @@ class OdooErrorHandler {
   /// away Odoo's own messages, which routinely name `odoo.exceptions.UserError`
   /// before saying something the user needs to read. [_tidy] strips that
   /// prefix first; what this catches is what survives it.
+  /// Type names that mean the failure came from the device or the framework,
+  /// never from Odoo.
+  static const List<String> _dartExceptionNames = [
+    'platformexception',
+    'missingpluginexception',
+    'clientexception',
+    'handshakeexception',
+    'filesystemexception',
+    'pathnotfoundexception',
+    'processexception',
+    'oserror',
+    'stateerror',
+    'argumenterror',
+    'rangeerror',
+    'unimplementederror',
+    'unsupportederror',
+    'concurrentmodificationerror',
+    'assertionerror',
+  ];
+
   static bool _looksTechnical(String text) {
     final t = text.toLowerCase();
     return t.contains('instance of ') ||
@@ -138,6 +158,12 @@ class OdooErrorHandler {
         t.contains('null check operator') ||
         t.contains('nosuchmethoderror') ||
         t.contains('stack trace') ||
+        // Dart and Flutter's own exception type names. A general rule such as
+        // "any identifier ending in Exception or Error" cannot be used here:
+        // Odoo's own failures are named UserError, ValidationError and
+        // AccessError, and suppressing those would throw away the one message
+        // that actually tells the user what they did wrong.
+        _dartExceptionNames.any(t.contains) ||
         text.startsWith('{') ||
         text.startsWith('[') ||
         RegExp(r'^#\d+\s').hasMatch(text);
@@ -147,6 +173,25 @@ class OdooErrorHandler {
   /// error map, what follows `Odoo Server Error:` in the app's own wrapping,
   /// or [raw] itself. An error this class already phrased for a dialog (a
   /// title line with an emoji, then paragraphs) gives its first paragraph.
+  /// Whether [lowercased] is Odoo refusing on purpose, rather than the app
+  /// or the connection failing.
+  ///
+  /// `RedirectWarning` is how Odoo asks for missing configuration ("You must
+  /// define a journal..."), and `MissingError` is reading a record that has
+  /// just been deleted. Both read perfectly well to the user, and both used
+  /// to come out as "An unexpected error occurred".
+  static bool _namesOdooBusinessError(String lowercased) {
+    const names = [
+      'usererror',
+      'validationerror',
+      'missingerror',
+      'redirectwarning',
+      'lockerror',
+      'odoo.exceptions.warning',
+    ];
+    return names.any(lowercased.contains);
+  }
+
   static String _serverSentence(String raw) {
     final paragraphs = raw.trim().split(RegExp(r'\n\s*\n'));
     if (paragraphs.length > 1 && _startsWithSymbol(paragraphs.first)) {
@@ -417,12 +462,15 @@ Please contact your system administrator for assistance.''';
       return nothingToInvoiceMessage;
     }
 
-    // Any other rule Odoo enforces on purpose (a UserError, a
-    // ValidationError) already carries a sentence written for the user; show
-    // it rather than hiding it behind a generic apology.
-    if (s.contains('usererror') ||
-        s.contains('validationerror') ||
-        s.contains('odoo.exceptions.warning')) {
+    // Any rule Odoo enforces on purpose already carries a sentence written
+    // for the user; show it rather than hiding it behind a generic apology.
+    //
+    // The payload names the concrete class — `odoo.exceptions.MissingError`,
+    // not `UserError` — so matching on "usererror" alone misses most of them
+    // and replaces a readable reason with "An unexpected error occurred".
+    // Every name below is in `odoo/exceptions.py`; 19 and 20 add `LockError`,
+    // so asking for a name an older release never raises never matches.
+    if (_namesOdooBusinessError(s)) {
       final sentence = _tidy(_serverSentence(errorString));
       if (sentence.isNotEmpty && !_looksTechnical(sentence)) {
         return '⚠️ Could Not Complete\n\n$sentence';

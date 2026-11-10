@@ -1,3 +1,5 @@
+import '../utils/odoo_date.dart';
+
 /// Represents a customer or partner record from Odoo's `res.partner` model.
 class Contact {
   final int id;
@@ -122,10 +124,10 @@ class Contact {
       latitude: json['partner_latitude']?.toDouble(),
       longitude: json['partner_longitude']?.toDouble(),
       createdAt: json['create_date'] != null
-          ? DateTime.parse(json['create_date'])
+          ? OdooDate.parseDatetime(json['create_date'])
           : null,
       updatedAt: json['write_date'] != null
-          ? DateTime.parse(json['write_date'])
+          ? OdooDate.parseDatetime(json['write_date'])
           : null,
       isCompany: json['is_company'] ?? false,
       companyName:

@@ -18,6 +18,7 @@ import 'package:mobo_sales/services/invoice_service.dart';
 import '../services/odoo_error_handler.dart';
 import '../services/odoo_session_manager.dart';
 import '../services/review_service.dart';
+import '../utils/odoo_date.dart';
 
 class CreateInvoiceProvider with ChangeNotifier {
   bool _isLoading = false;
@@ -390,7 +391,8 @@ class CreateInvoiceProvider with ChangeNotifier {
       final commitmentDate = _selectedSaleOrder!.extraData?['commitment_date'];
       if (commitmentDate != null && commitmentDate != false) {
         try {
-          setDueDate(DateTime.parse(commitmentDate));
+          final parsed = OdooDate.parseDatetime(commitmentDate);
+          if (parsed != null) setDueDate(parsed);
         } catch (e) {}
       }
 

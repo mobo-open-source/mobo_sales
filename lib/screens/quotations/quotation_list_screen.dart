@@ -26,6 +26,7 @@ import '../../utils/quotation_status.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import '../../services/odoo_error_handler.dart';
 import '../../widgets/create_action_gate.dart';
+import '../../utils/odoo_date.dart';
 
 class QuotationListScreen extends StatefulWidget {
   final int? customerId;
@@ -2031,12 +2032,7 @@ class _QuotationListScreenState extends State<QuotationListScreen>
     if (dateString == null || dateString.isEmpty || dateString == 'N/A') {
       return fallback;
     }
-    try {
-      final date = DateTime.parse(dateString);
-      return DateFormat(format).format(date);
-    } catch (e) {
-      return fallback;
-    }
+    return OdooDate.formatForDisplay(dateString, pattern: format) ?? fallback;
   }
 
   Future<void> _handleRefresh() async {
@@ -2122,7 +2118,7 @@ class _QuotationListScreenState extends State<QuotationListScreen>
       } catch (e) {
         if (context.mounted) {
           Navigator.of(context).pop();
-          CustomSnackbar.showError(context, 'Failed to delete quotation: $e');
+          CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not delete the quotation.'));
         }
       }
     }
@@ -2195,7 +2191,7 @@ class _QuotationListScreenState extends State<QuotationListScreen>
       } catch (e) {
         if (context.mounted) {
           Navigator.of(context).pop();
-          CustomSnackbar.showError(context, 'Failed to cancel quotation: $e');
+          CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not cancel the quotation.'));
         }
       }
     }
@@ -2407,8 +2403,7 @@ class _QuotationListScreenState extends State<QuotationListScreen>
                     if (provider.isServerUnreachable) {
                       return ConnectionStatusWidget(
                         serverUnreachable: true,
-                        serverErrorMessage:
-                            'Unable to load quotations from server/database. Please check your server or try again.',
+                        serverErrorMessage: provider.errorMessage,
                         onRetry: () {
                           if (connectivityService.isConnected &&
                               sessionService.hasValidSession) {

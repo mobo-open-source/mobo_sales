@@ -27,6 +27,7 @@ import 'package:mobo_sales/widgets/full_image_screen.dart';
 import 'package:mobo_sales/widgets/profile_details_shimmer.dart';
 import 'package:mobo_sales/widgets/circular_image_widget.dart';
 import 'package:mobo_sales/widgets/loading_dialog.dart';
+import '../../utils/avatar_cache.dart';
 import '../../widgets/dispose_when_unmounted.dart';
 
 class ProfileDetailsScreen extends StatefulWidget {
@@ -65,11 +66,14 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
 
   /// Save is offered only once the form differs from the record it opened with.
   ///
-  /// It reads what Save sends, the six text fields. The photo, the address and
-  /// the related company are each written the moment they are picked, so
-  /// nothing is left pending on them for Save to send.
+  /// It reads what Save sends: the six text fields and whether a new photo is
+  /// waiting to go with them. The address and the related company are each
+  /// written the moment they are picked, so nothing is left pending on those.
   late final _changes = FormChangeTracker(
     () => {
+      // Not the image itself — only whether there is one, so the tracker
+      // compares a word instead of a megabyte of base64.
+      'photo': _pickedImageBase64 == null ? '' : 'picked',
       'name': _nameController.text.trim(),
       'email': _emailController.text.trim(),
       'phone': _phoneController.text.trim(),
@@ -162,7 +166,13 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
 
   void _cancelEdit() {
     _updateControllers();
-    setState(() => _isEditMode = false);
+    setState(() {
+      // Discarding the edit discards the photo chosen during it, as Cancel
+      // says it will.
+      _pickedImageFile = null;
+      _pickedImageBase64 = null;
+      _isEditMode = false;
+    });
   }
 
   @override
@@ -326,11 +336,8 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
       if (!mounted) return;
 
       setState(() => _pickedImageBase64 = base64Encode(bytes));
-
-      await _saveImage();
-      if (mounted) {
-        _showSuccessSnackBar('Image updated successfully');
-      }
+      // Staged, not sent: uploading on pick would leave Save greyed out over
+      // a photo that had already changed, and Cancel unable to undo it.
     } catch (e) {
       if (mounted) {
         _showErrorSnackBar('Failed to update image: $e');
@@ -600,23 +607,15 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
     }
   }
 
+  /// Uploads the staged photo.
+  ///
+  /// No dialog and no message of its own: Save already has one up, and a
+  /// failure here has to reach Save so the whole save is reported as failed
+  /// rather than quietly losing the photo.
   Future<void> _saveImage() async {
-    if (_pickedImageBase64 == null || !mounted) return;
-
-    _showLoadingDialog(context, 'Saving Image');
-    try {
-      await _updateProfileField(
-        'image_1920',
-        _pickedImageBase64,
-      ).timeout(_networkTimeout);
-    } catch (e) {
-      _dismissLoadingDialog();
-      if (mounted) {
-        _showErrorSnackBar(_saveFailureMessage(e, 'Failed to update image'));
-      }
-    } finally {
-      _dismissLoadingDialog();
-    }
+    final staged = _pickedImageBase64;
+    if (staged == null) return;
+    await _updateProfileField('image_1920', staged).timeout(_networkTimeout);
   }
 
   Future<void> _saveAllChanges() async {
@@ -704,6 +703,14 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
       DataChangeBus.instance.profileChanged(origin: this);
     }
 
+    // The photo last, and in a write of its own. `image_1920` is one of the
+    // few fields Odoo lets a plain user set on their own record, and only
+    // when every field in the same write is — sending it alongside `phone`
+    // would cost a non-administrator their own photo. Last, because
+    // uploading it reloads the profile, and a reload part-way through would
+    // put the server's values back into the fields still being saved.
+    await _saveImage();
+
     await _fetchUserProfile();
   }
 
@@ -748,11 +755,16 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
         'kwargs': {},
       });
 
-      if (field == 'image_1920' && mounted) {
-        setState(() {
-          _pickedImageFile = null;
-          _pickedImageBase64 = null;
-        });
+      if (field == 'image_1920') {
+        // Every avatar drawn from `/web/image` must stop trusting its cached
+        // copy; the URL alone never changes when the photo does.
+        AvatarCache.invalidate();
+        if (mounted) {
+          setState(() {
+            _pickedImageFile = null;
+            _pickedImageBase64 = null;
+          });
+        }
       }
 
       DataChangeBus.instance.profileChanged(origin: this);
@@ -1012,6 +1024,19 @@ class _ProfileDetailsScreenState extends State<ProfileDetailsScreen> {
 
   String? Function(String?)? _getValidatorForField(String labelText) {
     switch (labelText.toLowerCase()) {
+      // `res.users.name` is required, and Postgres accepts an empty string
+      // where it would reject a null — so a cleared name saved and left the
+      // user nameless. The sibling profile screen already refuses this; the
+      // form here had a validator for email and website and none for the one
+      // field Odoo insists on.
+      case 'full name':
+      case 'name':
+        return (value) {
+          if (value == null || value.trim().isEmpty) {
+            return 'Name is required';
+          }
+          return null;
+        };
       case 'email':
         return (value) {
           if (value == null || value.trim().isEmpty) return null;

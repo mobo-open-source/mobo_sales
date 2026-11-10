@@ -1130,18 +1130,11 @@ class CustomerListScreenState extends State<CustomerListScreen>
                 onClear: _clearSearchAndReload,
               ),
 
-              // Paired with the pagination row below, which this gap exists
-              // to separate from the search bar. The row disappears on an
-              // empty result or a failed load; left unconditional, the gap
-              // stayed and pushed the centred message ~8px below where the
-              // other lists put theirs.
-              Consumer<ContactProvider>(
-                builder: (context, provider, _) =>
-                    (!provider.hasInitiallyLoaded ||
-                        provider.getPaginationText() == '0 items')
-                    ? const SizedBox.shrink()
-                    : const SizedBox(height: 16),
-              ),
+              // No gap here: Invoices, Quotations and Products all go straight
+              // from the search bar into the pagination row, whose own
+              // `vertical: 8` padding is the whole separation. A 16px spacer
+              // on this screen alone sat the row visibly lower than the rest
+              // of the bottom-nav pages.
 
               Consumer<ContactProvider>(
                 builder: (context, provider, _) {

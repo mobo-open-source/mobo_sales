@@ -20,6 +20,10 @@ enum DeliveryValidationOutcome {
   lotsRequired,
 
   /// Less than the demand is being delivered, so Odoo asks whether to keep the
+  /// Odoo asked whether to text the customer that the goods are on the way.
+  /// `stock_sms`'s `confirm.stock.sms`, which it raises once per company.
+  needsSmsChoice,
+
   /// rest in a backorder. [DeliveryValidationResult.wizardContext] is what
   /// answers it (see [DeliveryService.resolveBackorder]).
   needsBackorder,
@@ -31,6 +35,7 @@ class DeliveryValidationResult {
     this.step,
     this.state,
     this.wizardContext,
+    this.wizardId,
   });
 
   final DeliveryValidationOutcome outcome;
@@ -41,8 +46,15 @@ class DeliveryValidationResult {
   /// The picking's state after the attempt.
   final String? state;
 
-  /// The context Odoo attached to the backorder question, to answer it with.
+  /// The context Odoo attached to the question, to answer it with.
   final Map<String, dynamic>? wizardContext;
+
+  /// The record Odoo already created for the question, when it made one.
+  ///
+  /// The SMS wizard is answered on Odoo's own record rather than a fresh one:
+  /// its buttons re-validate the pickings named in the action's context, so a
+  /// wizard this app created would have nothing to validate.
+  final int? wizardId;
 
   bool get isValidated => outcome == DeliveryValidationOutcome.validated;
 }
@@ -236,9 +248,55 @@ class DeliveryService {
       );
     }
 
+    // Outgoing goods, SMS confirmation on, and the company has not been asked
+    // before: Odoo offers to text the customer. Identical in 17, 18, 19 and 20.
+    if (result is Map && result['res_model'] == 'confirm.stock.sms') {
+      final ctx = result['context'];
+      final id = result['res_id'];
+      return DeliveryValidationResult(
+        DeliveryValidationOutcome.needsSmsChoice,
+        state: state,
+        wizardContext: ctx is Map ? Map<String, dynamic>.from(ctx) : const {},
+        wizardId: id is int ? id : int.tryParse('$id'),
+      );
+    }
+
     return DeliveryValidationResult(
       DeliveryValidationOutcome.needsConfirmationInOdoo,
       step: result is Map ? result['name']?.toString() : null,
+      state: state,
+    );
+  }
+
+  /// Answers Odoo's "text the customer?" question and finishes validating.
+  ///
+  /// Both buttons on `confirm.stock.sms` end by re-running `button_validate`
+  /// on the pickings named in [context], so this returns the delivery's state
+  /// afterwards exactly as [validateDelivery] does.
+  ///
+  /// Answering no also turns SMS confirmation off for the company, which is
+  /// Odoo's own behaviour, not this app's: `dont_send_sms` writes
+  /// `stock_text_confirmation: False` the first time it is used. The caller
+  /// says so before asking.
+  Future<DeliveryValidationResult> resolveSmsConfirmation(
+    int pickingId, {
+    required bool sendSms,
+    required int wizardId,
+    Map<String, dynamic> context = const {},
+  }) async {
+    await OdooSessionManager.safeCallKw({
+      'model': 'confirm.stock.sms',
+      'method': sendSms ? 'send_sms' : 'dont_send_sms',
+      'args': [
+        [wizardId],
+      ],
+      'kwargs': {'context': context},
+    });
+    final state = await _readState(pickingId);
+    return DeliveryValidationResult(
+      state == 'done'
+          ? DeliveryValidationOutcome.validated
+          : DeliveryValidationOutcome.needsConfirmationInOdoo,
       state: state,
     );
   }

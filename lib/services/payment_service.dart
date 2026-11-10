@@ -9,6 +9,7 @@ import 'odoo_error_classifier.dart';
 import 'odoo_error_handler.dart';
 import 'odoo_session_manager.dart';
 import 'permission_service.dart';
+import '../utils/odoo_date.dart';
 
 class PaymentMethodData {
   final int id;
@@ -1535,7 +1536,7 @@ class PaymentService {
               invoiceId: invoiceId,
               amount: amount,
               reconcileDate: reconcile['create_date'] != null
-                  ? DateTime.parse(reconcile['create_date'])
+                  ? OdooDate.parseDatetime(reconcile['create_date'])
                   : null,
               isFullReconciliation: true,
             ),

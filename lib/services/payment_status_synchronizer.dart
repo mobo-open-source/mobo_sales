@@ -2,6 +2,7 @@ import 'dart:async';
 import '../models/payment.dart';
 import 'data_change_bus.dart';
 import 'odoo_session_manager.dart';
+import '../utils/odoo_date.dart';
 
 class PaymentStatusUpdate {
   final int invoiceId;
@@ -407,7 +408,7 @@ class PaymentStatusSynchronizer {
       for (var reconcile in reconciliationResult) {
         final reconcileAmount = (reconcile['amount'] ?? 0.0).toDouble();
         final reconcileDate = reconcile['create_date'] != null
-            ? DateTime.parse(reconcile['create_date'])
+            ? OdooDate.parseDatetime(reconcile['create_date'])
             : null;
 
         int? debitMoveId;

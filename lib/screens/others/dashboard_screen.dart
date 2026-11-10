@@ -43,6 +43,7 @@ import '../../services/data_change_bus.dart';
 import '../../services/odoo_error_handler.dart';
 import '../../widgets/create_action_gate.dart';
 import '../../services/connectivity_service.dart';
+import '../../utils/odoo_date.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -942,22 +943,14 @@ class _DashboardScreenState extends State<DashboardScreen>
       final last7DaysStart = DateTime(now.year, now.month, now.day - 6);
       final last7DaysEndEx = DateTime(now.year, now.month, now.day + 1);
 
-      String formatUtcDateTime(DateTime d) {
-        final u = d.toUtc();
-        String p(int v) => v.toString().padLeft(2, '0');
-        return '${u.year}-${p(u.month)}-${p(u.day)} '
-            '${p(u.hour)}:${p(u.minute)}:${p(u.second)}';
-      }
+      final monthStartStr = OdooDate.formatDatetime(monthStart);
+      final monthEndExStr = OdooDate.formatDatetime(monthEndEx);
+      final weekStartStr = OdooDate.formatDatetime(weekStart);
+      final weekEndExStr = OdooDate.formatDatetime(weekEndEx);
+      final last7DaysStartStr = OdooDate.formatDatetime(last7DaysStart);
+      final last7DaysEndExStr = OdooDate.formatDatetime(last7DaysEndEx);
 
-      final monthStartStr = formatUtcDateTime(monthStart);
-      final monthEndExStr = formatUtcDateTime(monthEndEx);
-      final weekStartStr = formatUtcDateTime(weekStart);
-      final weekEndExStr = formatUtcDateTime(weekEndEx);
-      final last7DaysStartStr = formatUtcDateTime(last7DaysStart);
-      final last7DaysEndExStr = formatUtcDateTime(last7DaysEndEx);
-
-      final todayStr =
-          '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      final todayStr = OdooDate.formatDate(now);
 
       await _loadCurrencyRates();
 
@@ -1217,8 +1210,8 @@ class _DashboardScreenState extends State<DashboardScreen>
 
       if (mounted) {
         // A failure that is not about the server — an expired session above
-        // all — used to set nothing at all, so the tiles simply showed zeros
-        // and nothing told the user why.
+        // all — still has to be recorded, or the tiles show zeros with
+        // nothing to say why.
         setState(() {
           if (isServerError) {
             _isServerUnreachable = true;
@@ -2000,8 +1993,8 @@ class _DashboardScreenState extends State<DashboardScreen>
 
       if (!mounted) return;
       // A failure that is not about the server — an expired session above
-      // all — used to set nothing at all, so the tiles simply showed zeros
-      // and nothing told the user why.
+      // all — still has to be recorded, or the tiles show zeros with
+      // nothing to say why.
       setState(() {
         if (isServerError) {
           _isServerUnreachable = true;

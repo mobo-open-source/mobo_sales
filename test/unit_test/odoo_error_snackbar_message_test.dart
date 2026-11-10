@@ -1,11 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mobo_sales/services/odoo_session_manager.dart';
 import 'package:mobo_sales/services/odoo_error_handler.dart';
 
 /// What a user reads in the error snackbar: the reason, in one sentence, with
 /// none of the wrapping the app and Odoo put around it.
 void main() {
+  _theRpcClientsOwnErrors();
+  _businessErrorsKeepTheirSentence();
   String say(Object error) => OdooErrorHandler.toSnackbarMessage(error);
 
   test('a "create a warehouse" warning is just its message', () {
@@ -105,8 +108,7 @@ void main() {
   );
 
   test('a web page where JSON was expected is explained, not quoted', () {
-    // Exactly what the dashboard greeting showed a tester: the raw
-    // FormatException from decoding a proxy/login page as JSON.
+    // The raw FormatException from decoding a proxy or login page as JSON.
     const raw =
         'FormatException: Unexpected character (at character 1)\n'
         '<html>\n^\n';
@@ -162,4 +164,175 @@ void main() {
       );
     },
   );
+}
+
+/// Odoo names the concrete exception class in the JSON-RPC payload, not its
+/// base, so a gate that only looked for "UserError" threw away the sentence
+/// Odoo wrote for most refusals. A tester saw "An unexpected error occurred"
+/// where Odoo had explained itself.
+void _businessErrorsKeepTheirSentence() {
+  String payload(String name, String message) => {
+    'code': 200,
+    'message': 'Odoo Server Error',
+    'data': {
+      'name': name,
+      'debug': '$name: $message\n',
+      'message': message,
+      'arguments': [message],
+      'context': <String, dynamic>{},
+    },
+  }.toString();
+
+  group('Odoo says why, and the app repeats it', () {
+    const cases = <String, String>{
+      'odoo.exceptions.UserError':
+          'You cannot delete an entry which has been posted once.',
+      'odoo.exceptions.ValidationError': 'The reference must be unique.',
+      // Odoo asks for missing configuration this way.
+      'odoo.exceptions.RedirectWarning':
+          'You must define a journal before posting this entry.',
+      // Reading a record somebody else just deleted.
+      'odoo.exceptions.MissingError':
+          'Record does not exist or has been deleted.',
+      // Odoo 19 and 20 only; older releases never raise it.
+      'odoo.exceptions.LockError': 'The record is locked by another user.',
+    };
+
+    cases.forEach((name, message) {
+      test(name.split('.').last, () {
+        final shown = OdooErrorHandler.toUserMessage(
+          Exception(payload(name, message)),
+        );
+        expect(shown, contains(message));
+        expect(
+          shown,
+          isNot(contains('unexpected error')),
+          reason: 'Odoo explained itself; the app hid it',
+        );
+      });
+    });
+  });
+}
+
+/// The shape the app's own RPC client actually throws.
+///
+/// `OdooSessionManager` posts to `/web/dataset/call_kw` itself rather than
+/// going through `odoo_rpc`. Keeping only `data.message` — the sentence
+/// without the exception that carried it — leaves nothing downstream able to
+/// tell a rule Odoo enforces from a crash. These go through the same two
+/// steps the app does.
+void _theRpcClientsOwnErrors() {
+  Exception thrown(String name, String message) => Exception(
+    OdooSessionManager.describeRpcError({
+      'code': 200,
+      'message': 'Odoo Server Error',
+      'data': {
+        'name': name,
+        'debug': '$name: $message\n',
+        'message': message,
+        'arguments': [message],
+      },
+    }),
+  );
+
+  group('what safeCallKw throws still says why', () {
+    test('a posted invoice that cannot be deleted', () {
+      final shown = OdooErrorHandler.toUserMessage(
+        thrown(
+          'odoo.exceptions.UserError',
+          'You cannot delete an entry which has been posted once.',
+        ),
+      );
+
+      expect(
+        shown,
+        contains('You cannot delete an entry which has been posted once.'),
+      );
+      expect(shown, isNot(contains('unexpected error')));
+      expect(
+        shown,
+        isNot(contains('odoo.exceptions')),
+        reason: 'the class name is for the app, not the user',
+      );
+    });
+
+    test('a missing journal', () {
+      final shown = OdooErrorHandler.toUserMessage(
+        thrown(
+          'odoo.exceptions.RedirectWarning',
+          'You have to define a journal for this company first.',
+        ),
+      );
+
+      expect(shown, contains('define a journal'));
+      expect(shown, isNot(contains('unexpected error')));
+    });
+
+    test('an error with no sentence still names something', () {
+      final shown = OdooErrorHandler.toUserMessage(
+        Exception(
+          OdooSessionManager.describeRpcError({
+            'message': 'Odoo Server Error',
+            'data': {'name': 'odoo.exceptions.UserError'},
+          }),
+        ),
+      );
+
+      expect(shown, isNotEmpty);
+      expect(shown, isNot(contains('odoo.exceptions')));
+    });
+  });
+
+  group('the sentence a device failure gets', () {
+    // Snackbars pass a plain sentence as the fallback and let the formatter
+    // decide, rather than appending the exception
+    // ("Failed to open email app: PlatformException(ACTIVITY_NOT_FOUND...)"),
+    // so an Odoo failure still gets Odoo's own words.
+    test('a platform exception never reaches the user', () {
+      const plain = 'Could not open the email app.';
+
+      expect(
+        OdooErrorHandler.toSnackbarMessage(
+          Exception(
+            'PlatformException(ACTIVITY_NOT_FOUND, No Activity found to '
+            'handle Intent { act=android.intent.action.SENDTO }, null, null)',
+          ),
+          fallback: plain,
+        ),
+        plain,
+      );
+    });
+
+    test('a scanner failure the same', () {
+      const plain = 'Could not read that barcode.';
+
+      expect(
+        OdooErrorHandler.toSnackbarMessage(
+          Exception('MissingPluginException(No implementation found)'),
+          fallback: plain,
+        ),
+        plain,
+      );
+    });
+
+    test("but Odoo's own words outrank the fallback", () {
+      expect(
+        OdooErrorHandler.toSnackbarMessage(
+          'UserError: You cannot delete a posted entry.',
+          fallback: 'Could not delete the quotation.',
+        ),
+        contains('cannot delete a posted entry'),
+      );
+    });
+
+    test('an unreachable server still says so', () {
+      expect(
+        OdooErrorHandler.toSnackbarMessage(
+          Exception('SocketException: Connection refused'),
+          fallback: 'Could not load products.',
+        ),
+        contains('Could not reach the server'),
+      );
+    });
+  });
 }

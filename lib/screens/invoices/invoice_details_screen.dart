@@ -19,7 +19,9 @@ import 'package:mobo_sales/models/quote.dart';
 import 'package:shimmer/shimmer.dart';
 import '../../utils/quantity_format.dart';
 import '../../services/data_change_bus.dart';
+import '../../services/odoo_error_classifier.dart';
 import '../../services/odoo_error_handler.dart';
+import '../../widgets/connection_status_widget.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../widgets/list_shimmer.dart';
 import '../../providers/currency_provider.dart';
@@ -40,6 +42,8 @@ import '../quotations/quotation_list_screen.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import 'package:mobo_sales/widgets/loading_skeletons.dart';
 import 'package:mobo_sales/widgets/loading_dialog.dart';
+import '../../utils/odoo_date.dart';
+import '../../utils/guarded_action.dart';
 
 class InvoiceDetailsPage extends StatefulWidget {
   final String invoiceId;
@@ -1816,7 +1820,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                   } catch (e) {
                     dismissDialog();
                     _showSafeSnackBar(
-                      'PDF generation failed: ${e.toString()}',
+                      describeActionFailure(e, 'PDF generation failed'),
                       backgroundColor: Colors.red,
                     );
                   }
@@ -1847,25 +1851,17 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                           );
                         }
                       : () async {
-                          showDialog(
+                          final success = await runGuardedAction<bool>(
                             context: context,
-                            barrierDismissible: false,
-                            builder: (ctx) {
-                              return const LoadingDialog(
-                                message: 'Confirming Invoice...',
-                                subtitle:
-                                    'Please wait while we validate your invoice',
-                              );
-                            },
-                          );
-
-                          final success = await provider.postInvoice(
-                            context,
-                            widget.invoiceId,
+                            message: 'Confirming Invoice...',
+                            subtitle:
+                                'Please wait while we validate your invoice',
+                            failurePrefix: 'Could not confirm the invoice',
+                            action: () =>
+                                provider.postInvoice(context, widget.invoiceId),
                           );
                           if (context.mounted) {
-                            Navigator.of(context).pop();
-                            if (success) {
+                            if (success == true) {
                               setState(() {
                                 _hasChanges = true;
                               });
@@ -1875,7 +1871,9 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                 'Invoice validated successfully',
                               );
                               widget.onInvoiceUpdated?.call();
-                            } else {
+                            } else if (success == false) {
+                              // null means the action threw or timed out and
+                              // [runGuardedAction] has already said so.
                               CustomSnackbar.showError(
                                 context,
                                 provider.errorMessage,
@@ -2067,25 +2065,16 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
             label: 'Reset to Draft',
             color: AppTheme.primaryColor,
             onPressed: () async {
-              showDialog(
+              final success = await runGuardedAction<bool>(
                 context: context,
-                barrierDismissible: false,
-                builder: (ctx) {
-                  return const LoadingDialog(
-                    message: 'Resetting Invoice...',
-                    subtitle:
-                        'Please wait while we reset your invoice to draft',
-                  );
-                },
-              );
-
-              final success = await provider.resetToDraft(
-                context,
-                widget.invoiceId,
+                message: 'Resetting Invoice...',
+                subtitle: 'Please wait while we reset your invoice to draft',
+                failurePrefix: 'Could not reset the invoice to draft',
+                action: () =>
+                    provider.resetToDraft(context, widget.invoiceId),
               );
               if (context.mounted) {
-                Navigator.of(context).pop();
-                if (success) {
+                if (success == true) {
                   setState(() {
                     _hasChanges = true;
                   });
@@ -2094,7 +2083,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                     context,
                     'Invoice reset to draft successfully',
                   );
-                } else {
+                } else if (success == false) {
                   CustomSnackbar.showError(context, provider.errorMessage);
                 }
               }
@@ -2107,24 +2096,16 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
             color: Colors.red[700]!,
             isPrimary: true,
             onPressed: () async {
-              showDialog(
+              final success = await runGuardedAction<bool>(
                 context: context,
-                barrierDismissible: false,
-                builder: (ctx) {
-                  return const LoadingDialog(
-                    message: 'Cancelling Invoice...',
-                    subtitle: 'Please wait while we cancel your invoice',
-                  );
-                },
-              );
-
-              final success = await provider.cancelInvoice(
-                context,
-                widget.invoiceId,
+                message: 'Cancelling Invoice...',
+                subtitle: 'Please wait while we cancel your invoice',
+                failurePrefix: 'Could not cancel the invoice',
+                action: () =>
+                    provider.cancelInvoice(context, widget.invoiceId),
               );
               if (context.mounted) {
-                Navigator.of(context).pop();
-                if (success) {
+                if (success == true) {
                   setState(() {
                     _hasChanges = true;
                   });
@@ -2133,7 +2114,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                     context,
                     'Invoice cancelled successfully',
                   );
-                } else {
+                } else if (success == false) {
                   CustomSnackbar.showError(context, provider.errorMessage);
                 }
               }
@@ -2166,24 +2147,19 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                 ),
               );
               if (confirm == true) {
-                showDialog(
+                // [runGuardedAction] closes its own popup. A pop taken
+                // against this context resolves to the nearest navigator and
+                // can remove the page instead of the dialog.
+                final success = await runGuardedAction<bool>(
                   context: context,
-                  barrierDismissible: false,
-                  builder: (ctx) {
-                    return const LoadingDialog(
-                      message: 'Deleting Invoice...',
-                      subtitle: 'Please wait while we delete your invoice',
-                    );
-                  },
-                );
-
-                final success = await provider.deleteInvoice(
-                  context,
-                  widget.invoiceId,
+                  message: 'Deleting Invoice...',
+                  subtitle: 'Please wait while we delete your invoice',
+                  failurePrefix: 'Could not delete the invoice',
+                  action: () =>
+                      provider.deleteInvoice(context, widget.invoiceId),
                 );
                 if (context.mounted) {
-                  Navigator.of(context).pop();
-                  if (success) {
+                  if (success == true) {
                     setState(() {
                       _hasChanges = true;
                     });
@@ -2192,7 +2168,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                       'Invoice deleted successfully',
                     );
                     Navigator.of(context).pop(true);
-                  } else {
+                  } else if (success == false) {
                     CustomSnackbar.showError(context, provider.errorMessage);
                   }
                 }
@@ -2885,7 +2861,38 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
     );
   }
 
+  /// Whether there is an invoice on screen to keep showing.
+  ///
+  /// True once the record has been read, and it stays true while an action
+  /// runs against it or a refresh is in flight, so neither replaces the page.
+  /// Whether the app bar's actions can be offered.
+  ///
+  /// Edit, Confirm, Reset to Draft, Cancel, Register Payment — each reads or
+  /// writes the invoice on a server that has just failed to give it to us.
+  /// Edit is the worst: it opens a form prefilled from whatever stale copy is
+  /// around.
+  bool _actionsAvailable(InvoiceDetailsProvider provider) =>
+      !provider.isLoading &&
+      provider.invoiceNumber.isNotEmpty &&
+      provider.errorMessage.isEmpty;
+
+  bool _hasInvoiceOnScreen(InvoiceDetailsProvider provider) =>
+      provider.invoice != null && provider.invoiceNumber.isNotEmpty;
+
   Widget _buildErrorState(InvoiceDetailsProvider provider) {
+    // A server that cannot be reached gets the shared illustration and the
+    // shared wording, the same as the list the user tapped through from.
+    // Without this the identical dead server read as a plain red line of text
+    // here and as the connection screen one tap earlier.
+    if (OdooErrorClassifier.isServerUnreachable(provider.errorMessage)) {
+      return ConnectionStatusWidget(
+        serverUnreachable: true,
+        serverErrorMessage: provider.errorMessage,
+        onRetry: () =>
+            provider.fetchInvoiceDetails(context, widget.invoiceId),
+      );
+    }
+
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -2961,7 +2968,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
     return Consumer<InvoiceDetailsProvider>(
       builder: (context, provider, child) {
         try {
-          if (provider.isLoading || provider.invoiceNumber.isEmpty) {
+          if (!_hasInvoiceOnScreen(provider)) {
             if (_fadeController.value != 0.0) {
               _fadeController.value = 0.0;
             }
@@ -3012,16 +3019,17 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                       child: IconButton(
                         icon: Icon(
                           HugeIcons.strokeRoundedPencilEdit02,
-
-                          color: Theme.of(context).brightness == Brightness.dark
-                              ? Colors.grey[400]
-                              : Colors.grey[600],
+                          // Its enabled colour is already grey, so without
+                          // this a switched-off Edit looks exactly like a
+                          // working one and simply stops answering taps.
+                          color: _actionsAvailable(provider)
+                              ? (isDark ? Colors.grey[400] : Colors.grey[600])
+                              : (isDark
+                                    ? Colors.grey[700]
+                                    : Colors.grey[350]),
                         ),
                         tooltip: 'Edit Invoice',
-                        onPressed:
-                            (provider.isLoading ||
-                                provider.invoiceNumber.isEmpty ||
-                                provider.errorMessage.isNotEmpty)
+                        onPressed: !_actionsAvailable(provider)
                             ? null
                             : () async {
                                 Map<String, dynamic>? completeInvoice;
@@ -3078,78 +3086,44 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                 );
 
                                 if (result == true && mounted) {
-                                  // One loading dialog, closed exactly once
-                                  // whichever way the reload ends, and before
-                                  // anything is said about the result.
-                                  var dialogOpen = true;
-                                  void closeDialog() {
-                                    if (!dialogOpen) return;
-                                    dialogOpen = false;
-                                    if (mounted &&
-                                        Navigator.of(context).canPop()) {
-                                      Navigator.of(context).pop();
-                                    }
-                                  }
-
-                                  showDialog(
+                                  // The edit screen announces the change, but
+                                  // this page reloads itself here, with the
+                                  // lines, payments and details, so the new
+                                  // figures are on screen before the message.
+                                  // [runGuardedAction] owns the popup, because
+                                  // `showDialog` pushes onto the root
+                                  // navigator while `Navigator.of(context)`
+                                  // resolves to the nearest one.
+                                  final reloaded = await runGuardedAction<bool>(
                                     context: context,
-                                    barrierDismissible: false,
-                                    builder: (dialogContext) => WillPopScope(
-                                      onWillPop: () async => false,
-
-                                      child: Center(
-                                        child: Card(
-                                          child: Padding(
-                                            padding: const EdgeInsets.all(20),
-                                            child: Column(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                CircularProgressIndicator(),
-                                                SizedBox(height: 16),
-                                                Text('Updating invoice...'),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
+                                    message: 'Updating Invoice...',
+                                    subtitle:
+                                        'Please wait while we reload your invoice',
+                                    failurePrefix:
+                                        'Could not refresh the invoice',
+                                    action: () async {
+                                      await _loadInvoiceData(
+                                        forceRefresh: true,
+                                      );
+                                      return true;
+                                    },
                                   );
 
-                                  try {
-                                    // The edit screen announced the change, but
-                                    // this page reloads itself here, with the
-                                    // lines, payments and details, so that the
-                                    // new figures are on screen before the
-                                    // message.
-                                    await _loadInvoiceData(forceRefresh: true);
-                                    closeDialog();
-
-                                    if (mounted) {
-                                      if (provider.errorMessage.isNotEmpty) {
-                                        CustomSnackbar.showError(
-                                          context,
-                                          'Failed to refresh invoice',
-                                        );
-                                      } else {
-                                        setState(() => _hasChanges = true);
-                                        CustomSnackbar.showSuccess(
-                                          context,
-                                          'Invoice updated successfully',
-                                        );
-                                        widget.onInvoiceUpdated?.call();
-                                      }
-                                    }
-                                  } catch (e) {
-                                    closeDialog();
-
-                                    if (mounted) {
-                                      CustomSnackbar.showError(
-                                        context,
-                                        'Failed to refresh invoice',
-                                      );
-                                    }
+                                  if (!mounted || reloaded != true) return;
+                                  if (provider.errorMessage.isNotEmpty) {
+                                    CustomSnackbar.showError(
+                                      context,
+                                      'Failed to refresh invoice',
+                                    );
+                                  } else {
+                                    setState(() => _hasChanges = true);
+                                    CustomSnackbar.showSuccess(
+                                      context,
+                                      'Invoice updated successfully',
+                                    );
+                                    widget.onInvoiceUpdated?.call();
                                   }
-                                } else {}
+                                }
                               },
                       ),
                     ),
@@ -3157,9 +3131,9 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                   PopupMenuButton<String>(
                     icon: Icon(
                       Icons.more_vert,
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? Colors.grey[400]
-                          : Colors.grey[600],
+                      color: _actionsAvailable(provider)
+                          ? (isDark ? Colors.grey[400] : Colors.grey[600])
+                          : (isDark ? Colors.grey[700] : Colors.grey[350]),
                       size: 20,
                     ),
                     color: Theme.of(context).brightness == Brightness.dark
@@ -3170,10 +3144,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                       borderRadius: BorderRadius.circular(16),
                     ),
                     tooltip: 'More options',
-                    enabled:
-                        !provider.isLoading &&
-                        provider.invoiceNumber.isNotEmpty &&
-                        provider.errorMessage.isEmpty,
+                    enabled: _actionsAvailable(provider),
                     itemBuilder: (context) {
                       final phone =
                           provider.invoice?.customerPhone != null &&
@@ -3449,10 +3420,21 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                 }
                                 return;
                               }
-                              final ok = await provider.postInvoice(
-                                context,
-                                widget.invoiceId,
+                              // The one loading popup, with a timeout, over
+                              // an untouched page. These three ran with no
+                              // progress shown at all.
+                              final ok = await runGuardedAction<bool>(
+                                context: context,
+                                message: 'Confirming Invoice...',
+                                subtitle:
+                                    'Please wait while we validate your invoice',
+                                failurePrefix: 'Could not confirm the invoice',
+                                action: () => provider.postInvoice(
+                                  context,
+                                  widget.invoiceId,
+                                ),
                               );
+                              if (ok == null) return;
                               if (mounted) {
                                 if (ok) {
                                   // The provider has reloaded the invoice, so
@@ -3486,10 +3468,18 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                 }
                                 return;
                               }
-                              final ok = await provider.cancelInvoice(
-                                context,
-                                widget.invoiceId,
+                              final ok = await runGuardedAction<bool>(
+                                context: context,
+                                message: 'Cancelling Invoice...',
+                                subtitle:
+                                    'Please wait while we cancel your invoice',
+                                failurePrefix: 'Could not cancel the invoice',
+                                action: () => provider.cancelInvoice(
+                                  context,
+                                  widget.invoiceId,
+                                ),
                               );
+                              if (ok == null) return;
                               if (mounted) {
                                 if (ok) {
                                   setState(() => _hasChanges = true);
@@ -3521,10 +3511,19 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                 }
                                 return;
                               }
-                              final ok = await provider.resetToDraft(
-                                context,
-                                widget.invoiceId,
+                              final ok = await runGuardedAction<bool>(
+                                context: context,
+                                message: 'Resetting Invoice...',
+                                subtitle:
+                                    'Please wait while we reset your invoice to draft',
+                                failurePrefix:
+                                    'Could not reset the invoice to draft',
+                                action: () => provider.resetToDraft(
+                                  context,
+                                  widget.invoiceId,
+                                ),
                               );
+                              if (ok == null) return;
                               if (mounted) {
                                 if (ok) {
                                   setState(() => _hasChanges = true);
@@ -3614,10 +3613,19 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                               );
 
                               if (confirmed == true) {
-                                final ok = await provider.deleteInvoice(
-                                  context,
-                                  widget.invoiceId,
+                                final ok = await runGuardedAction<bool>(
+                                  context: context,
+                                  message: 'Deleting Invoice...',
+                                  subtitle:
+                                      'Please wait while we delete your invoice',
+                                  failurePrefix:
+                                      'Could not delete the invoice',
+                                  action: () => provider.deleteInvoice(
+                                    context,
+                                    widget.invoiceId,
+                                  ),
                                 );
+                                if (ok == null) return;
                                 if (mounted) {
                                   if (ok) {
                                     // The message is not a route, so popping
@@ -3813,10 +3821,16 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                   ),
                 ],
               ),
-              body: provider.isLoading || provider.invoiceNumber.isEmpty
-                  ? ListShimmer.buildInvoiceDetailsShimmer(context)
-                  : provider.errorMessage.isNotEmpty
-                  ? _buildErrorState(provider)
+              // The skeleton and the error page are for having nothing to
+              // show, not for working on something already on screen. An
+              // action sets the same loading flag the first read uses, so
+              // both are gated on whether an invoice is on screen rather than
+              // on the flag: Odoo leaves the record visible and reports over
+              // it.
+              body: !_hasInvoiceOnScreen(provider)
+                  ? (provider.errorMessage.isNotEmpty
+                        ? _buildErrorState(provider)
+                        : ListShimmer.buildInvoiceDetailsShimmer(context))
                   : Column(
                       children: [
                         Expanded(
@@ -3864,15 +3878,9 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                     ),
             ),
 
-            if (provider.isProcessing)
-              Container(
-                color: Colors.black54,
-                child: const Center(
-                  child: LoadingCard(
-                    subtitle: 'Please wait while we process your request',
-                  ),
-                ),
-              ),
+            // No scrim here: `isProcessing` is the re-entrancy guard, not a
+            // display flag. Painting a LoadingCard on it stacks a second
+            // spinner under the one [runGuardedAction] shows.
           ],
         );
       },
@@ -4875,12 +4883,8 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
       return 'Not specified';
     }
 
-    try {
-      final date = DateTime.parse(dateStr);
-      return DateFormat('MMM dd, yyyy').format(date);
-    } catch (e) {
-      return dateStr;
-    }
+    return OdooDate.formatForDisplay(dateStr, pattern: 'MMM dd, yyyy') ??
+        dateStr;
   }
 
   String _safeStringInvoice(dynamic value) {
@@ -5256,12 +5260,8 @@ String _formatDate(String? dateString) {
       dateString == 'true') {
     return 'Not specified';
   }
-  try {
-    final date = DateTime.parse(dateString);
-    return DateFormat('MMM dd, yyyy').format(date);
-  } catch (e) {
-    return 'Not specified';
-  }
+  return OdooDate.formatForDisplay(dateString, pattern: 'MMM dd, yyyy') ??
+      'Not specified';
 }
 
 String _getInvoiceState(String? state) {

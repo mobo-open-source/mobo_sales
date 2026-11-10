@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../utils/odoo_date.dart';
 import '../utils/invoice_name.dart';
 import 'payment.dart';
 
@@ -299,11 +300,11 @@ class Invoice {
           : null,
       isMoveSent: json['is_move_sent'] is bool ? json['is_move_sent'] : null,
       invoiceDate: json['invoice_date'] != false && json['invoice_date'] != null
-          ? DateTime.parse(json['invoice_date'].toString())
+          ? OdooDate.parseDate(json['invoice_date'])
           : null,
       dueDate:
           json['invoice_date_due'] != false && json['invoice_date_due'] != null
-          ? DateTime.parse(json['invoice_date_due'].toString())
+          ? OdooDate.parseDate(json['invoice_date_due'])
           : null,
       reference: (json['ref'] != null && json['ref'] != false)
           ? json['ref'].toString()
@@ -320,10 +321,10 @@ class Invoice {
           ? json['payment_term'].toString()
           : null,
       createdAt: (json['create_date'] != null && json['create_date'] != false)
-          ? DateTime.parse(json['create_date'].toString())
+          ? OdooDate.parseDatetime(json['create_date'])
           : null,
       updatedAt: (json['write_date'] != null && json['write_date'] != false)
-          ? DateTime.parse(json['write_date'].toString())
+          ? OdooDate.parseDatetime(json['write_date'])
           : null,
       currencyId: json['currency_id'] as List<dynamic>?,
       relatedSaleOrders: json['related_sale_orders'] is List
@@ -340,7 +341,7 @@ class Invoice {
       lastPaymentSync:
           json['last_payment_sync'] != null &&
               json['last_payment_sync'] != false
-          ? DateTime.parse(json['last_payment_sync'].toString())
+          ? OdooDate.parseDatetime(json['last_payment_sync'])
           : null,
     );
   }

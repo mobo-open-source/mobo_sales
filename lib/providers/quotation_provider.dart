@@ -19,6 +19,7 @@ import '../services/odoo_compat.dart';
 import '../services/odoo_error_classifier.dart';
 import '../utils/guarded_action.dart';
 import '../utils/group_labels.dart';
+import '../utils/odoo_date.dart';
 
 class QuotationProvider with ChangeNotifier {
   final QuotationService _quotationService;
@@ -67,6 +68,13 @@ class QuotationProvider with ChangeNotifier {
   Timer? _retryTimer;
   Timer? _debounce;
   String? _errorMessage;
+
+  /// Why the order lines are missing, kept apart from [_errorMessage].
+  ///
+  /// [_errorMessage] belongs to the quotation *list* and nothing clears it
+  /// when a detail page opens, so sharing one field would have a quotation
+  /// that genuinely has no lines report a failure the list hit earlier.
+  String? _orderLinesError;
   String? _accessErrorMessage;
   List<String> _availableFields = ['invoice_status', 'delivery_status'];
   bool _isFieldsFetched = false;
@@ -706,8 +714,8 @@ class QuotationProvider with ChangeNotifier {
                 final startDate = DateTime(year, monthIndex, 1);
                 final endDate = DateTime(year, monthIndex + 1, 0, 23, 59, 59);
                 return [
-                  [groupByField, '>=', startDate.toIso8601String()],
-                  [groupByField, '<=', endDate.toIso8601String()],
+                  [groupByField, '>=', OdooDate.formatDatetime(startDate)],
+                  [groupByField, '<=', OdooDate.formatDatetime(endDate)],
                 ];
               }
             }
@@ -740,8 +748,8 @@ class QuotationProvider with ChangeNotifier {
           final startDate = DateTime(year, 1, 1);
           final endDate = DateTime(year, 12, 31, 23, 59, 59);
           return [
-            [field, '>=', startDate.toIso8601String()],
-            [field, '<=', endDate.toIso8601String()],
+            [field, '>=', OdooDate.formatDatetime(startDate)],
+            [field, '<=', OdooDate.formatDatetime(endDate)],
           ];
         case 'quarter':
           final parts = groupKey.split(' ');
@@ -753,8 +761,8 @@ class QuotationProvider with ChangeNotifier {
             final startDate = DateTime(year, startMonth, 1);
             final endDate = DateTime(year, endMonth + 1, 0, 23, 59, 59);
             return [
-              [field, '>=', startDate.toIso8601String()],
-              [field, '<=', endDate.toIso8601String()],
+              [field, '>=', OdooDate.formatDatetime(startDate)],
+              [field, '<=', OdooDate.formatDatetime(endDate)],
             ];
           }
           break;
@@ -781,8 +789,8 @@ class QuotationProvider with ChangeNotifier {
               final startDate = DateTime(year, monthIndex, 1);
               final endDate = DateTime(year, monthIndex + 1, 0, 23, 59, 59);
               return [
-                [field, '>=', startDate.toIso8601String()],
-                [field, '<=', endDate.toIso8601String()],
+                [field, '>=', OdooDate.formatDatetime(startDate)],
+                [field, '<=', OdooDate.formatDatetime(endDate)],
               ];
             }
           }
@@ -800,8 +808,8 @@ class QuotationProvider with ChangeNotifier {
               const Duration(days: 6, hours: 23, minutes: 59, seconds: 59),
             );
             return [
-              [field, '>=', startDate.toIso8601String()],
-              [field, '<=', endDate.toIso8601String()],
+              [field, '>=', OdooDate.formatDatetime(startDate)],
+              [field, '<=', OdooDate.formatDatetime(endDate)],
             ];
           }
           break;
@@ -818,8 +826,8 @@ class QuotationProvider with ChangeNotifier {
               59,
             );
             return [
-              [field, '>=', startDate.toIso8601String()],
-              [field, '<=', endDate.toIso8601String()],
+              [field, '>=', OdooDate.formatDatetime(startDate)],
+              [field, '<=', OdooDate.formatDatetime(endDate)],
             ];
           } catch (e) {}
           break;
@@ -955,6 +963,8 @@ class QuotationProvider with ChangeNotifier {
 
   bool get isLoadingOrderLines => _isLoadingOrderLines;
 
+  String? get orderLinesError => _orderLinesError;
+
   static const int _pageSize = 40;
   int _currentPage = 0;
   int _totalQuotations = 0;
@@ -1036,9 +1046,8 @@ class QuotationProvider with ChangeNotifier {
             ]);
             break;
           case 'user_quotations':
-            // The id is read before the page is fetched; without it this
-            // filter used to add no leaf at all and quietly showed everyone's
-            // quotations.
+            // The id is read before the page is fetched. Without it no leaf
+            // is added and the filter would show everyone's quotations.
             if (_sessionUserId != null) {
               domain.add(['user_id', '=', _sessionUserId]);
             }
@@ -1089,19 +1098,23 @@ class QuotationProvider with ChangeNotifier {
 
     if (_startDate != null || _endDate != null) {
       if (_startDate != null && _endDate != null) {
-        final startStr =
-            '${_startDate!.year}-${_startDate!.month.toString().padLeft(2, '0')}-${_startDate!.day.toString().padLeft(2, '0')} 00:00:00';
-        final endStr =
-            '${_endDate!.year}-${_endDate!.month.toString().padLeft(2, '0')}-${_endDate!.day.toString().padLeft(2, '0')} 23:59:59';
+        final startStr = OdooDate.formatDatetime(
+      DateTime(_startDate!.year, _startDate!.month, _startDate!.day),
+    );
+        final endStr = OdooDate.formatDatetime(
+      DateTime(_endDate!.year, _endDate!.month, _endDate!.day, 23, 59, 59),
+    );
         domain.add(['create_date', '>=', startStr]);
         domain.add(['create_date', '<=', endStr]);
       } else if (_startDate != null) {
-        final startStr =
-            '${_startDate!.year}-${_startDate!.month.toString().padLeft(2, '0')}-${_startDate!.day.toString().padLeft(2, '0')} 00:00:00';
+        final startStr = OdooDate.formatDatetime(
+      DateTime(_startDate!.year, _startDate!.month, _startDate!.day),
+    );
         domain.add(['create_date', '>=', startStr]);
       } else if (_endDate != null) {
-        final endStr =
-            '${_endDate!.year}-${_endDate!.month.toString().padLeft(2, '0')}-${_endDate!.day.toString().padLeft(2, '0')} 23:59:59';
+        final endStr = OdooDate.formatDatetime(
+      DateTime(_endDate!.year, _endDate!.month, _endDate!.day, 23, 59, 59),
+    );
         domain.add(['create_date', '<=', endStr]);
       }
     }
@@ -1321,12 +1334,10 @@ class QuotationProvider with ChangeNotifier {
   /// Empties the search and resets paging, without triggering a fetch.
   ///
   /// Clearing the controller on its own arms the debounce installed in the
-  /// constructor, which reloads 500ms later. A page that also reloaded
-  /// straight away therefore fetched twice — and the immediate fetch still
-  /// carried the old query, so the first result was the search the user had
-  /// just cleared. Setting [_searchQuery] *before* clearing the field leaves
-  /// the listener nothing to react to, so the caller's own reload is the
-  /// only one.
+  /// constructor, which reloads 500ms later. Setting [_searchQuery] *before*
+  /// clearing the field leaves the listener nothing to react to, so the
+  /// caller's own reload is the only one; otherwise the page fetches twice
+  /// and the immediate fetch still carries the query just cleared.
   void clearSearch() {
     _debounce?.cancel();
     _searchQuery = '';
@@ -1798,10 +1809,9 @@ class QuotationProvider with ChangeNotifier {
 
       await _ensureServerFacts();
 
-      // One domain builder, shared with the paged and grouped reads. The copy
-      // that used to live here drifted: it filtered by salesperson where
-      // [_buildDomain] did not, so "My Quotations" worked on whichever of the
-      // two happened to run.
+      // One domain builder, shared with the paged and grouped reads: a
+      // second copy drifts, and "My Quotations" then depends on which of the
+      // two reads runs.
       final List<dynamic> domain = _buildDomain();
 
       List<String> fields = [
@@ -1947,12 +1957,13 @@ class QuotationProvider with ChangeNotifier {
   Future<void> loadOrderLines(int quotationId) async {
     try {
       _isLoadingOrderLines = true;
+      _orderLinesError = null;
       _orderLines.clear();
       notifyListeners();
 
       final session = await OdooSessionManager.getCurrentSession();
       if (session == null) {
-        _errorMessage = 'No active Odoo session.';
+        _orderLinesError = 'Odoo Session Expired';
         _isLoadingOrderLines = false;
         notifyListeners();
         return;
@@ -2024,23 +2035,16 @@ class QuotationProvider with ChangeNotifier {
           await _loadTaxesForOrderLines();
         }
       } else {
-        _errorMessage = 'Unexpected response format for order lines';
+        _orderLinesError = 'Unexpected response format for order lines';
       }
 
       _isLoadingOrderLines = false;
       notifyListeners();
     } catch (e) {
-      if (e.toString().contains('Server returned HTML instead of JSON')) {
-        _errorMessage =
-            'Server connection issue. Please check your internet connection and try again.';
-      } else if (e.toString().contains('SocketException') ||
-          e.toString().contains('TimeoutException')) {
-        _errorMessage =
-            'Network connection failed. Please check your internet connection.';
-      } else {
-        _errorMessage = 'Failed to load order lines. Please try again.';
-      }
-
+      // Kept as the error itself rather than re-worded here: the panel runs it
+      // through the same mapping the full-screen state uses, so one dead
+      // server reads the same in both places.
+      _orderLinesError = e.toString();
       _isLoadingOrderLines = false;
       notifyListeners();
     }

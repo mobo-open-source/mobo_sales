@@ -250,7 +250,24 @@ class FieldValidationService {
     Object lastError = Exception('No attempt was made for model "$model"');
     bool triedMinimalFields = false;
 
-    while (retryCount < maxRetries) {
+    // Dropping a field is progress, not a retry, so it does not spend the
+    // budget: the list is strictly shorter afterwards and every branch below
+    // rethrows the moment it stops shrinking.
+    //
+    // Counting prunes is what killed a sale.order read with "Invalid field
+    // 'delivery_status' on 'sale.order'". That page asks for three fields an
+    // older or un-modularised server may not have (`amount_discount`,
+    // `amount_delivery`, `delivery_status`), Odoo names only one per reply,
+    // so pruning n fields costs n round trips. Spending the retry budget on
+    // them exhausts it before the pruned list is reached.
+    //
+    // [attempts] is the backstop: one call per field that can be pruned, plus
+    // the budget, plus the first attempt.
+    var attempts = 0;
+    final maxAttempts = fields.length + maxRetries + 1;
+
+    while (retryCount < maxRetries && attempts < maxAttempts) {
+      attempts++;
       try {
         return await apiCall(fields);
       } catch (e) {
@@ -273,7 +290,6 @@ class FieldValidationService {
             markFieldAsInvalid(model, field);
           }
           fields = remaining;
-          retryCount++;
           continue;
         }
 
@@ -301,8 +317,6 @@ class FieldValidationService {
         if (fields.isEmpty || !fields.contains('id')) {
           fields = _getMinimalFields(model);
         }
-
-        retryCount++;
       }
     }
 

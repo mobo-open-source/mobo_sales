@@ -1,3 +1,5 @@
+import '../utils/odoo_date.dart';
+
 /// Represents a sale order (quotation) from Odoo.
 class Quote {
   final int? id;
@@ -76,20 +78,20 @@ class Quote {
           ? json['state'].toString()
           : 'draft',
       dateOrder: (json['date_order'] != null && json['date_order'] != false)
-          ? DateTime.parse(json['date_order'].toString())
+          ? OdooDate.parseDatetime(json['date_order'])
           : null,
       validityDate:
           (json['validity_date'] != null && json['validity_date'] != false)
-          ? DateTime.parse(json['validity_date'].toString())
+          ? OdooDate.parseDate(json['validity_date'])
           : null,
       notes: (json['note'] != null && json['note'] != false)
           ? json['note'].toString()
           : null,
       createdAt: (json['create_date'] != null && json['create_date'] != false)
-          ? DateTime.parse(json['create_date'].toString())
+          ? OdooDate.parseDatetime(json['create_date'])
           : null,
       updatedAt: (json['write_date'] != null && json['write_date'] != false)
-          ? DateTime.parse(json['write_date'].toString())
+          ? OdooDate.parseDatetime(json['write_date'])
           : null,
       relatedInvoices: json['related_invoices'] is List
           ? (json['related_invoices'] as List)

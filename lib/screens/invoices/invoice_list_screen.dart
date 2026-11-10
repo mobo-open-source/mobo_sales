@@ -1906,17 +1906,20 @@ class InvoiceListScreenState extends State<InvoiceListScreen>
           Expanded(
             child: Consumer2<ConnectivityService, SessionService>(
               builder: (context, connectivityService, sessionService, child) {
-                final isErrorWithNoData =
-                    _isServerUnreachable && (_invoices?.isEmpty ?? true);
-
-                if (_isServerUnreachable && !isErrorWithNoData) {
+                // A server that cannot be reached is an error, not an empty
+                // list, so it gets the connection illustration here and never
+                // the empty-state ghost further down. Products, quotations,
+                // customers, deliveries and stock check all guard it this way.
+                if (_isServerUnreachable ||
+                    (_loadErrorMessage != null &&
+                        _isServerUnreachableError(_loadErrorMessage!))) {
                   return ConnectionStatusWidget(
                     serverUnreachable: true,
-                    serverErrorMessage:
-                        'Unable to load invoices from server/database. Please check your server or try again.',
+                    serverErrorMessage: _loadErrorMessage,
                     onRetry: () {
                       setState(() {
                         _isServerUnreachable = false;
+                        _loadErrorMessage = null;
                       });
                       _fetchInvoices();
                     },

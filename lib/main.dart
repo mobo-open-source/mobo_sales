@@ -15,6 +15,7 @@ import 'screens/others/webview_screen.dart';
 import 'screens/others/get_started_screen.dart';
 import 'services/connectivity_service.dart';
 import 'services/database_expiry_guard.dart';
+import 'services/app_lock_guard.dart';
 import 'services/sales_access_guard.dart';
 import 'services/session_service.dart';
 import 'package:provider/provider.dart';
@@ -43,6 +44,9 @@ void main() {
   DatabaseExpiryGuard.instance.start();
   // ... and the Sales app or the user's Sales access removed meanwhile does too.
   SalesAccessGuard.instance.start();
+  // ... and the app lock is asked for again, which it never was once the app
+  // had started.
+  AppLockGuard.instance.start();
   runApp(
     MultiProvider(
       providers: [

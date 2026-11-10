@@ -4,6 +4,7 @@ import 'package:hugeicons/hugeicons.dart';
 import 'package:intl/intl.dart';
 import '../utils/quantity_format.dart';
 import '../models/contact.dart';
+import '../utils/odoo_date.dart';
 
 class OrderDetailsTopSection extends StatelessWidget {
   final Map<String, dynamic> orderData;
@@ -257,11 +258,11 @@ class OrderDetailsTopSection extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      orderData['date_order'] != null
-                          ? DateFormat(
-                              'MMM dd, yyyy',
-                            ).format(DateTime.parse(orderData['date_order']))
-                          : 'N/A',
+                      OdooDate.formatForDisplay(
+                            orderData['date_order'],
+                            pattern: 'MMM dd, yyyy',
+                          ) ??
+                          'N/A',
                       style: GoogleFonts.inter(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
@@ -271,7 +272,11 @@ class OrderDetailsTopSection extends StatelessWidget {
                   ],
                 ),
               ),
-              if (orderData['validity_date'] != null) ...[
+              if (OdooDate.formatDateForDisplay(
+                    orderData['validity_date'],
+                    pattern: 'MMM dd, yyyy',
+                  ) !=
+                  null) ...[
                 const SizedBox(width: 16),
                 Expanded(
                   child: Column(
@@ -289,9 +294,10 @@ class OrderDetailsTopSection extends StatelessWidget {
                       Row(
                         children: [
                           Text(
-                            DateFormat('MMM dd, yyyy').format(
-                              DateTime.parse(orderData['validity_date']),
-                            ),
+                            OdooDate.formatDateForDisplay(
+                              orderData['validity_date'],
+                              pattern: 'MMM dd, yyyy',
+                            )!,
                             style: GoogleFonts.inter(
                               fontSize: 14,
                               fontWeight: FontWeight.w600,

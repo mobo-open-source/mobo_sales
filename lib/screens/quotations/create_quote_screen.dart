@@ -36,6 +36,7 @@ import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import '../../shared/widgets/mobo/mobo_select_field.dart';
 import '../../services/review_service.dart';
 import '../../services/data_change_bus.dart';
+import '../../utils/odoo_date.dart';
 
 /// What the edit screen hands back to the screen that opened it when the
 /// quotation was saved. [note] is something the user must still be told about
@@ -416,7 +417,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
       if (quotation['validity_date'] != null &&
           quotation['validity_date'] != false) {
         try {
-          _validityDate = DateTime.parse(quotation['validity_date'].toString());
+          _validityDate = OdooDate.parseDate(quotation['validity_date']);
           _initialValidityDate = _validityDate;
         } catch (e) {}
       }
@@ -1412,10 +1413,8 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
     setState(() => _isLoading = true);
 
     // The loading card, closed exactly once whichever path gets there first.
-    // This used to be a `pop` in a `finally` that ran after the success path had
-    // already closed the card AND this screen, and that second pop took the
-    // screen underneath (the quotation's details) with it — so the details never
-    // refreshed and never showed their "updated" message.
+    // A `pop` in a `finally` runs after the success path has closed both the
+    // card and this screen, and takes the quotation's details with it.
     final loading = LoadingDialog.open(
       context,
       message: widget.quotationToEdit != null

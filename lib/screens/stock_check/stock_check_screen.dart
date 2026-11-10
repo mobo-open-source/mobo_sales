@@ -45,9 +45,8 @@ class _StockCheckPageState extends State<StockCheckPage> {
 
   final ScrollController _scrollController = ScrollController();
   int _currentPage = 0;
-  static const int _pageSize = 20;
-  bool _hasMoreData = true;
-  bool _isLoadingMore = false;
+  /// Forty a page, as every other list in the app uses.
+  static const int _pageSize = 40;
   int _totalProducts = 0;
   int? _companyId;
   bool _hasSearched = false;
@@ -210,7 +209,6 @@ class _StockCheckPageState extends State<StockCheckPage> {
       });
     });
 
-    _scrollController.addListener(_scrollListener);
     _initializeAndLoadStock();
   }
 
@@ -240,188 +238,164 @@ class _StockCheckPageState extends State<StockCheckPage> {
     super.dispose();
   }
 
-  void _scrollListener() {
-    if (_scrollController.position.pixels >=
-        _scrollController.position.maxScrollExtent - 200) {
-      if (!_isLoadingMore && _hasMoreData && !_isLoading) {
-        _loadMoreData();
-      }
+  /// The "1-40/137" reading and the arrows, as the product, quotation,
+  /// customer and invoice lists all show above their rows.
+  Widget _buildTopPaginationBar(bool isDark) {
+    // Hidden while a load failure is on screen: a "0-0/0" pagination row
+    // above an error reads as a real, empty result. The product list hides
+    // its own for the same reason.
+    if (_productTemplates.isEmpty &&
+        (_isLoading || _loadErrorMessage != null || _isServerUnreachable)) {
+      return const SizedBox.shrink();
     }
-  }
 
-  Future<void> _loadMoreData() async {
-    if (_isLoading || !_hasMoreData || _isLoadingMore) return;
-    setState(() {
-      _isLoadingMore = true;
-    });
-    try {
-      final client = await OdooSessionManager.getClient();
-      if (client == null) {
-        throw Exception('No active Odoo session found. Please log in again.');
-      }
-      final offset = (_currentPage + 1) * _pageSize;
-
-      List<dynamic> domain = [
-        ['active', '=', true],
-        [
-          'type',
-          'in',
-          ['product', 'consu'],
-        ],
-      ];
-      final templateResult = await client.callKw({
-        'model': 'product.template',
-        'method': 'search_read',
-        'args': [
-          domain,
-          [
-            'id',
-            'name',
-            'default_code',
-            'categ_id',
-            'list_price',
-            'image_1920',
-            'type',
-          ],
-        ],
-        'kwargs': {'offset': offset, 'limit': _pageSize},
-        'context': _companyId != null ? {'company_id': _companyId} : {},
-      });
-      if (templateResult.isEmpty) {
-        setState(() {
-          _hasMoreData = false;
-          _isLoadingMore = false;
-        });
-        return;
-      }
-      List<Map<String, dynamic>> newTemplates = [];
-      for (var template in templateResult) {
-        String? imageUrl;
-        final imageData = template['image_1920'];
-        if (imageData != false && imageData is String && imageData.isNotEmpty) {
-          try {
-            final base64String = imageData.replaceAll(RegExp(r'\s+'), '');
-            base64Decode(base64String);
-            imageUrl = base64String.contains(',')
-                ? base64String
-                : 'data:image/png;base64,$base64String';
-          } catch (e) {
-            imageUrl = 'https://dummyimage.com/150x150/000/fff';
-          }
-        }
-        final variants = await _fetchVariantsSafe(
-          client,
-          template['id'],
-          _companyId,
-        );
-
-        double qtyAvailable = 0.0;
-        double virtualAvailable = 0.0;
-        List<Map<String, dynamic>> variantList = [];
-        for (var variant in variants) {
-          final variantQtyAvailable =
-              (variant['qty_available'] as num?)?.toDouble() ?? 0.0;
-          final variantVirtualAvailable =
-              (variant['virtual_available'] as num?)?.toDouble() ?? 0.0;
-          qtyAvailable += variantQtyAvailable;
-          virtualAvailable += variantVirtualAvailable;
-          String? variantImageUrl = imageUrl;
-          final vImageData = variant['image_1920'];
-          if (vImageData != false &&
-              vImageData is String &&
-              vImageData.isNotEmpty) {
-            try {
-              final base64String = vImageData.replaceAll(RegExp(r'\s+'), '');
-              base64Decode(base64String);
-              variantImageUrl = base64String.contains(',')
-                  ? base64String
-                  : 'data:image/png;base64,$base64String';
-            } catch (e) {
-              variantImageUrl = imageUrl;
-            }
-          }
-          variantList.add({
-            'id': variant['id'],
-            'name': variant['name'] ?? 'N/A',
-            'default_code': variant['default_code'] ?? 'N/A',
-            'barcode': variant['barcode'] ?? 'N/A',
-            'qty_available': variantQtyAvailable,
-            'virtual_available': variantVirtualAvailable,
-            'image_url': variantImageUrl,
-            'price': (variant['list_price'] as num?)?.toDouble() ?? 0.0,
-            'attribute_value_ids':
-                variant['product_template_attribute_value_ids'] ?? [],
-            'selected_attributes': <String, String>{},
-            'type': variant['type'] ?? 'product',
-          });
-        }
-        newTemplates.add({
-          'id': template['id'],
-          'name': template['name'] ?? 'N/A',
-          'default_code': template['default_code'] ?? 'N/A',
-          'barcode': '',
-          'qty_available': qtyAvailable,
-          'virtual_available': virtualAvailable,
-          'image_url': imageUrl,
-          'price': (template['list_price'] as num?)?.toDouble() ?? 0.0,
-          'category': template['categ_id'] is List
-              ? template['categ_id'][1] ?? 'N/A'
-              : 'N/A',
-          'variants': variantList,
-          'variant_count': variantList.length,
-          'attributes': <Map<String, String>>[],
-          'type': template['type'] ?? 'product',
-        });
-      }
-      newTemplates.sort(
-        (a, b) => a['name'].toString().toLowerCase().compareTo(
-          b['name'].toString().toLowerCase(),
+    Widget arrow({
+      required IconData icon,
+      required bool enabled,
+      required VoidCallback onTap,
+    }) => Container(
+      margin: const EdgeInsets.symmetric(horizontal: 4.0),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 4),
+            child: HugeIcon(
+              icon: icon,
+              size: 20,
+              color: enabled
+                  ? (isDark ? Colors.white : Colors.black87)
+                  : (isDark ? Colors.grey[600]! : Colors.grey[400]!),
+            ),
+          ),
         ),
-      );
-      if (!mounted) return;
-      setState(() {
-        _productTemplates.addAll(newTemplates);
-        _filteredProductTemplates = _productTemplates;
-        _currentPage++;
-        _hasMoreData = _productTemplates.length < _totalProducts;
-        _isLoadingMore = false;
-      });
-    } catch (e) {
-      if (_isServerUnreachableError(e)) {
-        if (mounted) {
-          setState(() {
-            _isServerUnreachable = true;
-            _isLoadingMore = false;
-          });
-        }
-        return;
-      } else {
-        if (mounted) {
-          setState(() {
-            _isServerUnreachable = false;
-            _isLoadingMore = false;
-          });
+      ),
+    );
 
-          CustomSnackbar.showError(
-            context,
-            'Error loading more products: ${e.toString()}',
-          );
-        }
-      }
-    }
+    return Container(
+      padding: const EdgeInsets.only(right: 0, top: 4, bottom: 4),
+      decoration: BoxDecoration(
+        color: Theme.of(context).scaffoldBackgroundColor,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: isDark ? Colors.grey[800] : Colors.grey[100],
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: isDark ? Colors.grey[700]! : Colors.grey[300]!,
+                width: 1,
+              ),
+            ),
+            child: Text(
+              _paginationText(),
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: isDark ? Colors.grey[300] : Colors.grey[700],
+              ),
+            ),
+          ),
+          arrow(
+            icon: HugeIcons.strokeRoundedArrowLeft01,
+            enabled: _canGoToPreviousPage && !_isLoading,
+            onTap: _goToPreviousPage,
+          ),
+          arrow(
+            icon: HugeIcons.strokeRoundedArrowRight01,
+            enabled: _canGoToNextPage && !_isLoading,
+            onTap: _goToNextPage,
+          ),
+        ],
+      ),
+    );
   }
 
-  Future<void> _loadStockData() async {
+  /// The domain for the page: active stockable products, narrowed by the
+  /// search box.
+  ///
+  /// The search is sent to the server, as the product list sends it, so a
+  /// match on a page that has not been loaded is still found; searching the
+  /// rows already on screen cannot do that.
+  Future<List<dynamic>> _stockDomain() async {
+    final base = <dynamic>[
+      ['active', '=', true],
+      [
+        'type',
+        'in',
+        ['product', 'consu'],
+      ],
+    ];
+    final query = _currentSearchQuery.trim();
+    if (query.isEmpty) return base;
+
+    // From Odoo 20 a template's own barcode no longer covers its variants,
+    // so the search domain asks for them explicitly there.
+    final generation = await OdooSessionManager.serverGeneration();
+    return [
+      '&',
+      '&',
+      ...base,
+      ...productSearchDomain(
+        query,
+        generation: generation,
+        includeCategory: true,
+      ),
+    ];
+  }
+
+  bool get _canGoToPreviousPage => _currentPage > 0;
+
+  bool get _canGoToNextPage =>
+      (_currentPage + 1) * _pageSize < _totalProducts;
+
+  /// "1-40/137", the same reading every other list shows.
+  String _paginationText() {
+    if (_totalProducts == 0) return '0-0/0';
+    final start = (_currentPage * _pageSize) + 1;
+    final end = ((_currentPage + 1) * _pageSize).clamp(0, _totalProducts);
+    return '$start-$end/$_totalProducts';
+  }
+
+  Future<void> _goToNextPage() async {
+    if (!_canGoToNextPage || _isLoading) return;
+    await _loadStockData(page: _currentPage + 1, clearSearch: false);
+    _scrollToTop();
+  }
+
+  Future<void> _goToPreviousPage() async {
+    if (!_canGoToPreviousPage || _isLoading) return;
+    await _loadStockData(page: _currentPage - 1, clearSearch: false);
+    _scrollToTop();
+  }
+
+  void _scrollToTop() {
+    if (!_scrollController.hasClients) return;
+    _scrollController.jumpTo(0);
+  }
+
+  /// Loads one page of products, replacing what is on screen.
+  ///
+  /// One page at a time and one loader for all of them, so the count is known
+  /// and the arrows above the list go back as well as forward — the way every
+  /// other list in the app pages.
+  Future<void> _loadStockData({int page = 0, bool clearSearch = true}) async {
     if (!mounted) return;
     setState(() {
       _isLoading = true;
       _hasSearched = false;
       _loadErrorMessage = null;
-      _currentPage = 0;
-      _hasMoreData = true;
+      _currentPage = page;
       _productTemplates = [];
       _filteredProductTemplates = [];
-      _searchController.clear();
+      if (clearSearch) {
+        _searchController.clear();
+        _currentSearchQuery = '';
+      }
     });
 
     try {
@@ -432,14 +406,7 @@ class _StockCheckPageState extends State<StockCheckPage> {
       }
       _sessionId = client.sessionId;
 
-      List<dynamic> domain = [
-        ['active', '=', true],
-        [
-          'type',
-          'in',
-          ['product', 'consu'],
-        ],
-      ];
+      final domain = await _stockDomain();
 
       final templateResult = await client.callKw({
         'model': 'product.template',
@@ -452,11 +419,11 @@ class _StockCheckPageState extends State<StockCheckPage> {
             'default_code',
             'categ_id',
             'list_price',
-            'image_1920',
+            'image_128',
             'type',
           ],
         ],
-        'kwargs': {'offset': 0, 'limit': _pageSize},
+        'kwargs': {'offset': page * _pageSize, 'limit': _pageSize},
         'context': _companyId != null ? {'company_id': _companyId} : {},
       });
 
@@ -470,10 +437,17 @@ class _StockCheckPageState extends State<StockCheckPage> {
       _totalProducts = countResult as int;
 
       if (templateResult.isNotEmpty) {
+        // One query for every variant on this page, instead of one per
+        // product awaited inside the loop below.
+        final variantsByTemplate = await _fetchVariantsSafe(
+          client,
+          [for (final t in templateResult) t['id'] as int],
+          _companyId,
+        );
         List<Map<String, dynamic>> newTemplates = [];
         for (var template in templateResult) {
           String? imageUrl;
-          final imageData = template['image_1920'];
+          final imageData = template['image_128'];
           if (imageData != false &&
               imageData is String &&
               imageData.isNotEmpty) {
@@ -488,11 +462,7 @@ class _StockCheckPageState extends State<StockCheckPage> {
             }
           }
 
-          final variants = await _fetchVariantsSafe(
-            client,
-            template['id'],
-            _companyId,
-          );
+          final variants = variantsByTemplate[template['id']] ?? const [];
 
           double qtyAvailable = 0.0;
           double virtualAvailable = 0.0;
@@ -505,7 +475,7 @@ class _StockCheckPageState extends State<StockCheckPage> {
             qtyAvailable += variantQtyAvailable;
             virtualAvailable += variantVirtualAvailable;
             String? variantImageUrl = imageUrl;
-            final vImageData = variant['image_1920'];
+            final vImageData = variant['image_128'];
             if (vImageData != false &&
                 vImageData is String &&
                 vImageData.isNotEmpty) {
@@ -562,14 +532,12 @@ class _StockCheckPageState extends State<StockCheckPage> {
         setState(() {
           _productTemplates = newTemplates;
           _filteredProductTemplates = newTemplates;
-          _hasMoreData = _productTemplates.length < _totalProducts;
           _isLoading = false;
         });
       } else {
         setState(() {
           _productTemplates = [];
           _filteredProductTemplates = [];
-          _hasMoreData = false;
           _isLoading = false;
         });
       }
@@ -580,7 +548,6 @@ class _StockCheckPageState extends State<StockCheckPage> {
             _isServerUnreachable = true;
             _productTemplates = [];
             _filteredProductTemplates = [];
-            _hasMoreData = false;
             _isLoading = false;
           });
         }
@@ -592,7 +559,6 @@ class _StockCheckPageState extends State<StockCheckPage> {
             _loadErrorMessage = OdooErrorHandler.toSnackbarMessage(e);
             _productTemplates = [];
             _filteredProductTemplates = [];
-            _hasMoreData = false;
             _isLoading = false;
           });
         }
@@ -607,12 +573,18 @@ class _StockCheckPageState extends State<StockCheckPage> {
     }
   }
 
-  Future<List<dynamic>> _fetchVariantsSafe(
+  /// Every variant of [templateIds], grouped by template.
+  ///
+  /// One query for the whole page. One query per product, awaited inside the
+  /// loop that builds the rows, costs a round trip per product.
+  Future<Map<int, List<dynamic>>> _fetchVariantsSafe(
     dynamic client,
-    int templateId,
+    List<int> templateIds,
     int? companyId,
   ) async {
-    return await FieldValidationService.executeWithFieldValidation<
+    if (templateIds.isEmpty) return const {};
+
+    final rows = await FieldValidationService.executeWithFieldValidation<
       List<dynamic>
     >(
       model: 'product.product',
@@ -623,10 +595,14 @@ class _StockCheckPageState extends State<StockCheckPage> {
         'barcode',
         'qty_available',
         'virtual_available',
-        'image_1920',
+        // The stored 128px thumbnail. `image_1920` is the original upload,
+        // often megabytes, and a page of twenty of them is what made this
+        // screen take so long to open.
+        'image_128',
         'list_price',
         'product_template_attribute_value_ids',
         'type',
+        'product_tmpl_id',
       ],
       apiCall: (fields) async {
         return await client.callKw({
@@ -634,7 +610,7 @@ class _StockCheckPageState extends State<StockCheckPage> {
           'method': 'search_read',
           'args': [
             [
-              ['product_tmpl_id', '=', templateId],
+              ['product_tmpl_id', 'in', templateIds],
             ],
             fields,
           ],
@@ -643,6 +619,14 @@ class _StockCheckPageState extends State<StockCheckPage> {
         });
       },
     );
+
+    final byTemplate = <int, List<dynamic>>{for (final id in templateIds) id: []};
+    for (final row in rows) {
+      final tmpl = row['product_tmpl_id'];
+      final id = tmpl is List && tmpl.isNotEmpty ? tmpl[0] as int : null;
+      if (id != null) byTemplate[id]?.add(row);
+    }
+    return byTemplate;
   }
 
   Future<void> _scanBarcode() async {
@@ -668,7 +652,7 @@ class _StockCheckPageState extends State<StockCheckPage> {
       }
     } catch (e) {
       if (mounted) {
-        CustomSnackbar.showError(context, 'Error scanning barcode: $e');
+        CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not read that barcode.'));
       }
     } finally {
       if (mounted) {
@@ -1002,37 +986,20 @@ class _StockCheckPageState extends State<StockCheckPage> {
     };
   }
 
+  /// Runs the search against the server, from the first page.
   Future<void> _performSearch(String searchQuery) async {
     if (!mounted) return;
+    _currentSearchQuery = searchQuery.trim();
+    await _loadStockData(page: 0, clearSearch: false);
+  }
 
-    _currentSearchQuery = searchQuery.toLowerCase();
+  static final Map<String, List<Map<String, String>>> _attributeCache = {};
+  static final Map<String, DateTime> _cacheTimestamps = {};
+  static const Duration _cacheDuration = Duration(minutes: 30);
 
-    if (searchQuery.isEmpty) {
-      setState(() {
-        _filteredProductTemplates = List.from(_productTemplates);
-        _isSearching = false;
-      });
-      return;
-    }
-
-    final clientSideResults = _performClientSideSearch(
-      searchQuery,
-      _productTemplates,
-    );
-
-    if (clientSideResults.isNotEmpty) {
-      setState(() {
-        _filteredProductTemplates = clientSideResults;
-        _isSearching = false;
-      });
-    } else if (searchQuery.length >= 2) {
-      await _performServerSearch(searchQuery);
-    } else {
-      setState(() {
-        _filteredProductTemplates = [];
-        _isSearching = false;
-      });
-    }
+  static void clearCache() {
+    _attributeCache.clear();
+    _cacheTimestamps.clear();
   }
 
   List<Map<String, dynamic>> _performClientSideSearch(
@@ -1069,230 +1036,6 @@ class _StockCheckPageState extends State<StockCheckPage> {
           category.contains(lowerQuery) ||
           hasVariantMatch;
     }).toList();
-  }
-
-  Future<void> _performServerSearch(String searchQuery) async {
-    if (!mounted) return;
-
-    setState(() {
-      _isSearching = true;
-    });
-
-    try {
-      final client = await OdooSessionManager.getClient();
-      if (!mounted || client == null) {
-        throw Exception('No active Odoo session found. Please log in again.');
-      }
-
-      // From Odoo 20 a template's own barcode no longer covers its variants,
-      // so the search domain also looks through them.
-      final generation = await OdooSessionManager.serverGeneration();
-      List<dynamic> domain = [
-        '&',
-        '&',
-        ['active', '=', true],
-        [
-          'type',
-          'in',
-          ['product', 'consu'],
-        ],
-        ...productSearchDomain(
-          searchQuery,
-          generation: generation,
-          includeCategory: true,
-        ),
-      ];
-      final templateResult = await client.callKw({
-        'model': 'product.template',
-        'method': 'search_read',
-        'args': [
-          domain,
-          [
-            'id',
-            'name',
-            'default_code',
-            'categ_id',
-            'list_price',
-            'image_1920',
-            'type',
-          ],
-        ],
-        'kwargs': {'offset': 0, 'limit': _pageSize},
-        'context': _companyId != null ? {'company_id': _companyId} : {},
-      });
-
-      final countResult = await client.callKw({
-        'model': 'product.template',
-        'method': 'search_count',
-        'args': [domain],
-        'kwargs': {},
-        'context': _companyId != null ? {'company_id': _companyId} : {},
-      });
-
-      _totalProducts = countResult as int;
-
-      if (templateResult.isNotEmpty) {
-        List<Map<String, dynamic>> newTemplates = [];
-        for (var template in templateResult) {
-          String? imageUrl;
-          final imageData = template['image_1920'];
-          if (imageData != false &&
-              imageData is String &&
-              imageData.isNotEmpty) {
-            try {
-              final base64String = imageData.replaceAll(RegExp(r'\s+'), '');
-              base64Decode(base64String);
-              imageUrl = base64String.contains(',')
-                  ? base64String
-                  : 'data:image/png;base64,$base64String';
-            } catch (e) {
-              imageUrl = 'https://dummyimage.com/150x150/000/fff';
-            }
-          }
-          final variants = await client.callKw({
-            'model': 'product.product',
-            'method': 'search_read',
-            'args': [
-              [
-                ['product_tmpl_id', '=', template['id']],
-              ],
-              [
-                'id',
-                'name',
-                'default_code',
-                'barcode',
-                'qty_available',
-                'virtual_available',
-                'image_1920',
-                'list_price',
-                'product_template_attribute_value_ids',
-                'type',
-              ],
-            ],
-            'kwargs': {},
-            'context': _companyId != null ? {'company_id': _companyId} : {},
-          });
-          double qtyAvailable = 0.0;
-          double virtualAvailable = 0.0;
-          List<Map<String, dynamic>> variantList = [];
-          for (var variant in variants) {
-            final variantQtyAvailable =
-                (variant['qty_available'] as num?)?.toDouble() ?? 0.0;
-            final variantVirtualAvailable =
-                (variant['virtual_available'] as num?)?.toDouble() ?? 0.0;
-            qtyAvailable += variantQtyAvailable;
-            virtualAvailable += variantVirtualAvailable;
-            String? variantImageUrl = imageUrl;
-            final vImageData = variant['image_1920'];
-            if (vImageData != false &&
-                vImageData is String &&
-                vImageData.isNotEmpty) {
-              try {
-                final base64String = vImageData.replaceAll(RegExp(r'\s+'), '');
-                base64Decode(base64String);
-                variantImageUrl = base64String.contains(',')
-                    ? base64String
-                    : 'data:image/png;base64,$base64String';
-              } catch (e) {
-                variantImageUrl = imageUrl;
-              }
-            }
-            variantList.add({
-              'id': variant['id'],
-              'name': variant['name'] ?? 'N/A',
-              'default_code': variant['default_code'] ?? 'N/A',
-              'barcode': variant['barcode'] ?? 'N/A',
-              'qty_available': variantQtyAvailable,
-              'virtual_available': variantVirtualAvailable,
-              'image_url': variantImageUrl,
-              'price': (variant['list_price'] as num?)?.toDouble() ?? 0.0,
-              'attribute_value_ids':
-                  variant['product_template_attribute_value_ids'] ?? [],
-              'selected_attributes': <String, String>{},
-              'type': variant['type'] ?? 'product',
-            });
-          }
-          newTemplates.add({
-            'id': template['id'],
-            'name': template['name'] ?? 'N/A',
-            'default_code': template['default_code'] ?? 'N/A',
-            'barcode': '',
-            'qty_available': qtyAvailable,
-            'virtual_available': virtualAvailable,
-            'image_url': imageUrl,
-            'price': (template['list_price'] as num?)?.toDouble() ?? 0.0,
-            'category': template['categ_id'] is List
-                ? template['categ_id'][1] ?? 'N/A'
-                : 'N/A',
-            'variants': variantList,
-            'variant_count': variantList.length,
-            'attributes': <Map<String, String>>[],
-            'type': template['type'] ?? 'product',
-          });
-        }
-        newTemplates.sort(
-          (a, b) => a['name'].toString().toLowerCase().compareTo(
-            b['name'].toString().toLowerCase(),
-          ),
-        );
-        if (!mounted) return;
-        setState(() {
-          _filteredProductTemplates = newTemplates;
-          _currentPage = 1;
-          _hasMoreData = newTemplates.length < _totalProducts;
-          _isSearching = false;
-        });
-      } else {
-        if (!mounted) return;
-        setState(() {
-          _filteredProductTemplates = [];
-          _hasMoreData = false;
-          _isSearching = false;
-        });
-      }
-    } catch (e) {
-      if (_isServerUnreachableError(e)) {
-        if (mounted) {
-          setState(() {
-            _isServerUnreachable = true;
-            _filteredProductTemplates = [];
-            _hasMoreData = false;
-            _isSearching = false;
-          });
-        }
-        return;
-      } else {
-        if (mounted) {
-          setState(() {
-            _isServerUnreachable = false;
-            _filteredProductTemplates = [];
-            _hasMoreData = false;
-            _isSearching = false;
-          });
-
-          CustomSnackbar.showError(
-            context,
-            'Error searching products: ${e.toString()}',
-          );
-        }
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _hasSearched = true;
-        });
-      }
-    }
-  }
-
-  static final Map<String, List<Map<String, String>>> _attributeCache = {};
-  static final Map<String, DateTime> _cacheTimestamps = {};
-  static const Duration _cacheDuration = Duration(minutes: 30);
-
-  static void clearCache() {
-    _attributeCache.clear();
-    _cacheTimestamps.clear();
   }
 
   Future<List<Map<String, String>>> _fetchVariantAttributes(
@@ -1723,6 +1466,7 @@ class _StockCheckPageState extends State<StockCheckPage> {
                         size: 20,
                       ),
               ),
+              _buildTopPaginationBar(isDark),
               Expanded(
                 child: Consumer2<ConnectivityService, SessionService>(
                   builder: (context, connectivityService, sessionService, child) {
@@ -1754,8 +1498,7 @@ class _StockCheckPageState extends State<StockCheckPage> {
                     if (_isServerUnreachable) {
                       return ConnectionStatusWidget(
                         serverUnreachable: true,
-                        serverErrorMessage:
-                            'Cannot connect to Odoo server. Please check your server configuration or try again later.',
+                        serverErrorMessage: _loadErrorMessage,
                         onRetry: () {
                           setState(() {
                             _isServerUnreachable = false;
@@ -1834,33 +1577,8 @@ class _StockCheckPageState extends State<StockCheckPage> {
                           horizontal: 16,
                           vertical: 8,
                         ),
-                        itemCount: _filteredProductTemplates.length + 1,
+                        itemCount: _filteredProductTemplates.length,
                         itemBuilder: (context, index) {
-                          if (index == _filteredProductTemplates.length) {
-                            if (_isLoadingMore) {
-                              return const Center(
-                                child: Padding(
-                                  padding: EdgeInsets.all(16.0),
-                                  child: CircularProgressIndicator(),
-                                ),
-                              );
-                            } else if (!_hasMoreData) {
-                              return Center(
-                                child: Padding(
-                                  padding: const EdgeInsets.all(16.0),
-                                  child: Text(
-                                    'All products are loaded',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      color: subtitleColor,
-                                      fontStyle: FontStyle.italic,
-                                    ),
-                                  ),
-                                ),
-                              );
-                            }
-                            return const SizedBox.shrink();
-                          }
                           final template = _filteredProductTemplates[index];
 
                           final variants = template['variants'] as List;

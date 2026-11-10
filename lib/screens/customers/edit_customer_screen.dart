@@ -6,6 +6,7 @@ import '../../models/contact.dart';
 import '../../services/customer_service.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../widgets/confetti_dialogs.dart';
+import '../../utils/business_card.dart';
 import '../../utils/data_loss_warning_mixin.dart';
 import '../../utils/form_change_tracker.dart';
 import '../../utils/odoo_version.dart';
@@ -2523,10 +2524,6 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
       final textBlocks = recognizedText.blocks;
       final lines = fullText.split('\n').map((e) => e.trim()).toList();
 
-      final nameRegex = RegExp(
-        r'^[A-Za-z\s\-\.]{2,}(\s[A-Za-z\s\-\.]+){1,}$',
-        multiLine: true,
-      );
       final phoneRegex = RegExp(
         r'(\+?\d{1,4}[\s-]?)?(\(?\d{2,5}\)?[\s-]?)?[\d\s\-\.]{6,15}\b',
         multiLine: true,
@@ -2541,10 +2538,6 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
       );
       final positionRegex = RegExp(
         r'\b(CEO|CTO|COO|CFO|Founder|Co-Founder|CoFounder|President|Vice President|VP|Managing Director|Director|Head|Team Lead|Manager|Supervisor|Engineer|Developer|Software Engineer|Consultant|Executive|Designer|UI/UX Designer|Product Manager|Project Manager|Marketing Manager|Sales Executive|Business Analyst|HR|Human Resources|Accountant|Intern|Trainee|Associate|Administrator|Creative Director|Data Scientist|Machine Learning Engineer|Support Engineer|Tech Lead|QA Engineer|Tester|Operations Manager|Architect|Analyst|Scrum Master|Agent|Representative|Specialist|Coordinator|Assistant|Officer)\b',
-        caseSensitive: false,
-      );
-      final companyRegex = RegExp(
-        r'\b[A-Za-z0-9\s\-\.]{5,}\s*(?:Technologies|Technology|Solutions|Systems|Software|Corporation|Corp\.?|Inc\.?|LLC|LLP|Limited|Ltd\.?|Pvt\.? Ltd\.?|Private Limited|Group|Associates|Consultancy|Studio|Agency|Labs|Networks|Partners|Holdings|Enterprise|Company|SAS|PLC|GmbH|BV|Co\.?|Real Estate|Realty|Properties|Services)?\b',
         caseSensitive: false,
       );
       final addressRegex = RegExp(
@@ -2566,7 +2559,9 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
       String? city;
       String? zipCode;
 
-      name = nameRegex.firstMatch(fullText)?.group(0);
+      // Line by line, so the job title printed under the name cannot be
+      // swept into it, and written as a name rather than shouted.
+      name = businessCardName(lines);
       phone = phoneRegex
           .firstMatch(fullText)
           ?.group(0)
@@ -2577,7 +2572,12 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
         (line) => positionRegex.hasMatch(line),
         orElse: () => '',
       );
-      company = companyRegex.firstMatch(fullText)?.group(0);
+      // A line that says it is an organisation, not any run of letters:
+      // a looser match fills this field with leftover text.
+      company = businessCardCompany(
+        lines,
+        skip: [if (name != null) name, position],
+      );
 
       final addressMatch = addressRegex.firstMatch(fullText);
       if (addressMatch != null) {
@@ -2633,7 +2633,7 @@ class _EditCustomerScreenState extends State<EditCustomerScreen>
           website = blockText;
         }
         if (company == null &&
-            companyRegex.hasMatch(blockText) &&
+            looksLikeCompanyLine(blockText) &&
             !phoneRegex.hasMatch(blockText) &&
             !emailRegex.hasMatch(blockText) &&
             !websiteRegex.hasMatch(blockText) &&

@@ -1,3 +1,4 @@
+import 'odoo_date.dart';
 /// The `account.move` domain behind the invoice list: the move types it lists,
 /// the scope it was opened for, the status filters, the dates and the search.
 ///
@@ -94,7 +95,7 @@ List<dynamic>? _statusDomain(String filter) {
       ];
     case 'posted':
       // Posted, whatever its payment: Odoo's own "Posted" filter. "Not Paid"
-      // below is the narrower one; both used to be the same domain.
+      // below is the narrower one.
       return [
         ['state', '=', 'posted'],
       ];
@@ -132,7 +133,6 @@ List<dynamic>? _statusDomain(String filter) {
   return null;
 }
 
-String _day(DateTime d) =>
-    '${d.year.toString().padLeft(4, '0')}-'
-    '${d.month.toString().padLeft(2, '0')}-'
-    '${d.day.toString().padLeft(2, '0')}';
+/// `invoice_date` and `invoice_date_due` are Odoo `Date` fields, so the day is
+/// sent exactly as the user picked it — [OdooDate.formatDate] does not shift.
+String _day(DateTime d) => OdooDate.formatDate(d);

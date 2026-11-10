@@ -1,3 +1,5 @@
+import '../utils/odoo_date.dart';
+
 /// Represents a file attachment linked to an Odoo record.
 class Attachment {
   final int id;
@@ -22,9 +24,9 @@ class Attachment {
   ///
   /// `/web/content/<id>/<name>` streams the attachment's `raw` content and is
   /// the same route on Odoo 17 to 20. The longer
-  /// `/web/content/ir.attachment/<id>/datas/<name>` this used to build names
-  /// the `datas` field, which Odoo 20 removed from `ir.attachment` (only `raw`
-  /// remains): there it answers 404.
+  /// `/web/content/ir.attachment/<id>/datas/<name>` names the `datas` field,
+  /// which Odoo 20 removed from `ir.attachment` (only `raw` remains), so
+  /// there it answers 404.
   static String contentUrl(Object? id, String name) =>
       '/web/content/$id/${Uri.encodeComponent(name)}';
 
@@ -47,11 +49,7 @@ class Attachment {
       if (createDateRaw is DateTime) {
         parsedCreateDate = createDateRaw;
       } else if (createDateRaw is String) {
-        try {
-          parsedCreateDate = DateTime.parse(createDateRaw);
-        } catch (e) {
-          parsedCreateDate = null;
-        }
+        parsedCreateDate = OdooDate.parseDatetime(createDateRaw);
       }
     }
 

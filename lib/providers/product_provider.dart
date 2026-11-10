@@ -9,6 +9,7 @@ import '../services/field_validation_service.dart';
 import '../services/product_service.dart';
 import '../services/odoo_error_classifier.dart';
 import '../utils/group_labels.dart';
+import '../utils/odoo_date.dart';
 
 /// Manages the product list with pagination, filtering, grouping, category selection, and search.
 class ProductProvider with ChangeNotifier {
@@ -421,21 +422,25 @@ class ProductProvider with ChangeNotifier {
         if (filters['startDate'] != null && filters['endDate'] != null) {
           final start = filters['startDate'] as DateTime;
           final end = filters['endDate'] as DateTime;
-          final startStr =
-              '${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')} 00:00:00';
-          final endStr =
-              '${end.year}-${end.month.toString().padLeft(2, '0')}-${end.day.toString().padLeft(2, '0')} 23:59:59';
+          final startStr = OdooDate.formatDatetime(
+      DateTime(start.year, start.month, start.day),
+    );
+          final endStr = OdooDate.formatDatetime(
+      DateTime(end.year, end.month, end.day, 23, 59, 59),
+    );
           domain.add(['create_date', '>=', startStr]);
           domain.add(['create_date', '<=', endStr]);
         } else if (filters['startDate'] != null) {
           final start = filters['startDate'] as DateTime;
-          final startStr =
-              '${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')} 00:00:00';
+          final startStr = OdooDate.formatDatetime(
+      DateTime(start.year, start.month, start.day),
+    );
           domain.add(['create_date', '>=', startStr]);
         } else if (filters['endDate'] != null) {
           final end = filters['endDate'] as DateTime;
-          final endStr =
-              '${end.year}-${end.month.toString().padLeft(2, '0')}-${end.day.toString().padLeft(2, '0')} 23:59:59';
+          final endStr = OdooDate.formatDatetime(
+      DateTime(end.year, end.month, end.day, 23, 59, 59),
+    );
           domain.add(['create_date', '<=', endStr]);
         }
       }
@@ -461,9 +466,9 @@ class ProductProvider with ChangeNotifier {
     String? category,
     Map<String, dynamic>? filters,
   }) async {
-    // A call that names a search, category or filters is a new question, so it
-    // supersedes one still running (see [_fetchToken]) instead of being
-    // dropped, which left the old filters' rows under the new filters.
+    // A call that names a search, category or filters is a new question, so
+    // it supersedes one still running (see [_fetchToken]) rather than being
+    // dropped, which would leave the previous filters' rows on screen.
     final isNewQuery =
         forceRefresh ||
         searchQuery != null ||
@@ -811,11 +816,10 @@ class ProductProvider with ChangeNotifier {
   /// Delegates to [OdooErrorClassifier] so this screen agrees with the rest
   /// of the app on what "unreachable" means.
   ///
-  /// This used to keep its own copy of the marker list, which still counted a
-  /// bare `Odoo Server Error` as a transport failure. Odoo returns that phrase
-  /// for every server-side Python exception — access rights, validation, a
-  /// missing field — so an ordinary application error sent the user off to
-  /// check a network that was working fine.
+  /// A local copy of the marker list counts a bare `Odoo Server Error` as a
+  /// transport failure. Odoo returns that phrase for every server-side Python
+  /// exception — access rights, validation, a missing field — so an ordinary
+  /// application error would send the user to check a working network.
   bool _isServerUnreachableError(dynamic error) =>
       OdooErrorClassifier.isServerUnreachable(error);
 
@@ -886,18 +890,8 @@ class ProductProvider with ChangeNotifier {
     }
   }
 
-  String _getGroupKeyFromReadGroup(Map group, String groupByField) {
-    final groupValue = group[groupByField];
-    if (groupValue == null || groupValue == false) {
-      return kEmptyGroupLabel;
-    }
-
-    if (groupValue is List && groupValue.isNotEmpty) {
-      return groupValue[1]?.toString() ?? kEmptyGroupLabel;
-    }
-
-    return groupValue.toString();
-  }
+  String _getGroupKeyFromReadGroup(Map group, String groupByField) =>
+      groupKeyForValue(group[groupByField]);
 
   List<dynamic> _buildGroupDomain(String groupKey, String groupByField) {
     if (groupKey == kEmptyGroupLabel) {

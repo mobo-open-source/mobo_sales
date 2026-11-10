@@ -47,3 +47,37 @@ String groupByDisplayLabel(String? field, [Map<String, String> known = const {}]
       .map((w) => w[0].toUpperCase() + w.substring(1))
       .join(' ');
 }
+
+/// What Odoo calls the two groups of a boolean field.
+///
+/// Its web client renders a boolean group as "Yes" or "No" and keeps
+/// [kEmptyGroupLabel] for a group with no value at all — `list_renderer.js`
+/// on 17 and 18, `relational_model/utils.js` on 19 and 20, the same rule in
+/// all four. `false` is a value, so it reads "No", not "None".
+const String kBooleanTrueGroupLabel = 'Yes';
+const String kBooleanFalseGroupLabel = 'No';
+
+/// The group name for one value of a `read_group` row.
+///
+/// Handles the three shapes Odoo answers with: a many2one `[id, name]` pair,
+/// a plain scalar, and nothing at all. A boolean is a scalar, so without the
+/// case below `true` came out as "true" and `false` was mistaken for an empty
+/// group and labelled "None".
+String groupKeyForValue(dynamic value) {
+  if (value == null) return kEmptyGroupLabel;
+  if (value is bool) {
+    return value ? kBooleanTrueGroupLabel : kBooleanFalseGroupLabel;
+  }
+  if (value is List) {
+    if (value.length < 2) return kEmptyGroupLabel;
+    final name = value[1]?.toString() ?? '';
+    return name.isEmpty || name.toLowerCase() == 'false'
+        ? kEmptyGroupLabel
+        : name;
+  }
+  // Odoo sends an unset non-boolean field as `false`, which is the one place
+  // a `false` really does mean "no value".
+  if (value == false) return kEmptyGroupLabel;
+  final text = value.toString();
+  return text.isEmpty ? kEmptyGroupLabel : text;
+}

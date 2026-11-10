@@ -14,6 +14,7 @@ import 'delivery_details_screen.dart';
 import '../../services/odoo_error_classifier.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import '../../utils/group_labels.dart';
+import '../../utils/odoo_date.dart';
 
 class DeliveryListScreen extends StatefulWidget {
   final String? saleOrderName;
@@ -126,10 +127,10 @@ class _DeliveryListScreenState extends State<DeliveryListScreen>
       }
 
       if (_startDate != null) {
-        domain.add(['scheduled_date', '>=', _startDate!.toIso8601String()]);
+        domain.add(['scheduled_date', '>=', OdooDate.formatDatetime(_startDate!)]);
       }
       if (_endDate != null) {
-        domain.add(['scheduled_date', '<=', _endDate!.toIso8601String()]);
+        domain.add(['scheduled_date', '<=', OdooDate.formatDatetime(_endDate!)]);
       }
 
       final client = await OdooSessionManager.getClient();
@@ -699,12 +700,10 @@ class _DeliveryListScreenState extends State<DeliveryListScreen>
           groupKey = delivery.partnerName ?? kEmptyGroupLabel;
           break;
         case 'scheduled_date':
-          if (delivery.scheduledDate != null) {
-            final date = DateTime.parse(delivery.scheduledDate!);
-            groupKey = DateFormat('MMM yyyy').format(date);
-          } else {
-            groupKey = kEmptyGroupLabel;
-          }
+          final date = OdooDate.parseDatetime(delivery.scheduledDate);
+          groupKey = date == null
+              ? kEmptyGroupLabel
+              : DateFormat('MMM yyyy').format(date);
           break;
         default:
           groupKey = 'Other';
@@ -721,11 +720,10 @@ class _DeliveryListScreenState extends State<DeliveryListScreen>
   /// Delegates to [OdooErrorClassifier] so this screen agrees with the rest
   /// of the app on what "unreachable" means.
   ///
-  /// This used to keep its own copy of the marker list, which still counted a
-  /// bare `Odoo Server Error` as a transport failure. Odoo returns that phrase
-  /// for every server-side Python exception — access rights, validation, a
-  /// missing field — so an ordinary application error sent the user off to
-  /// check a network that was working fine.
+  /// A local copy of the marker list counts a bare `Odoo Server Error` as a
+  /// transport failure. Odoo returns that phrase for every server-side Python
+  /// exception — access rights, validation, a missing field — so an ordinary
+  /// application error would send the user to check a working network.
   bool _isServerUnreachableError(dynamic error) =>
       OdooErrorClassifier.isServerUnreachable(error);
 
@@ -1164,22 +1162,26 @@ class _DeliveryListScreenState extends State<DeliveryListScreen>
   Widget _buildDeliveryCard(Delivery delivery, bool isDark) {
     final stateColor = _getStateColor(delivery.state);
 
-    String mainDate = delivery.scheduledDate != null
-        ? DateFormat(
-            'MMM dd, yyyy',
-          ).format(DateTime.parse(delivery.scheduledDate!))
-        : '';
+    String mainDate =
+        OdooDate.formatForDisplay(
+          delivery.scheduledDate,
+          pattern: 'MMM dd, yyyy',
+        ) ??
+        '';
 
     String infoLine = mainDate.isNotEmpty
         ? 'Scheduled: $mainDate'
         : 'No scheduled date';
 
     String? extraInfoLine;
+    final deadline = OdooDate.formatForDisplay(
+      delivery.dateDeadline,
+      pattern: 'MMM dd, yyyy',
+    );
     if (delivery.origin != null) {
       extraInfoLine = 'Source: ${delivery.origin}';
-    } else if (delivery.dateDeadline != null) {
-      extraInfoLine =
-          'Deadline: ${DateFormat('MMM dd, yyyy').format(DateTime.parse(delivery.dateDeadline!))}';
+    } else if (deadline != null) {
+      extraInfoLine = 'Deadline: $deadline';
     }
 
     return OrderLikeListTile(

@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../models/attachment.dart';
 import '../services/odoo_session_manager.dart';
 import '../utils/odoo_version.dart';
+import '../utils/odoo_date.dart';
 
 class AttachmentCard extends StatelessWidget {
   final Attachment attachment;
@@ -63,12 +64,8 @@ class AttachmentCard extends StatelessWidget {
     if (createDate is DateTime) {
       return dateFormat.format(createDate);
     } else if (createDate is String) {
-      try {
-        final parsedDate = DateTime.parse(createDate);
-        return dateFormat.format(parsedDate);
-      } catch (e) {
-        return '-';
-      }
+      final parsed = OdooDate.parseDatetime(createDate);
+      return parsed == null ? '-' : dateFormat.format(parsed);
     } else {
       return '-';
     }

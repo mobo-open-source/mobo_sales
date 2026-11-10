@@ -16,6 +16,7 @@ import '../../models/contact.dart';
 import '../../services/customer_service.dart';
 import '../../services/data_change_bus.dart';
 import '../../services/field_validation_service.dart';
+import '../../services/odoo_error_handler.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../services/session_service.dart';
 import '../../utils/odoo_version.dart';
@@ -1315,10 +1316,10 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
     } catch (e) {
       if (!mounted) return;
 
-      CustomSnackbar.showError(
-        context,
-        'Error loading customer data: ${e.toString()}',
-      );
+      // e.toString() put "Exception: ClientException with SocketException..."
+      // in front of the user. The same formatter the rest of the app uses
+      // turns it into a sentence.
+      CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e));
     } finally {
       if (!mounted) return;
       setState(() {
@@ -1339,10 +1340,10 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
         return;
       }
 
-      // The fields this server has: Odoo 19 dropped `mobile` and `title`, and
-      // Odoo 20 `company_type` and `company_name`, and asking for a field that
-      // is gone fails the whole read, which used to leave this screen with the
-      // thin contact it was opened with.
+      // The fields this server has: Odoo 19 dropped `mobile` and `title`,
+      // Odoo 20 `company_type` and `company_name`. Asking for a field that is
+      // gone fails the whole read, leaving this screen with only the thin
+      // contact it was opened with.
       final generation = await OdooSessionManager.serverGeneration();
       final result =
           await FieldValidationService.executeWithFieldValidation<dynamic>(
@@ -4427,7 +4428,7 @@ class _CustomerDetailsScreenState extends State<CustomerDetailsScreen>
     } catch (e) {
       closeLoadingDialog();
       if (context.mounted) {
-        CustomSnackbar.showError(context, 'Error checking dependencies: $e');
+        CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not check what this customer is linked to.'));
       }
       return;
     }

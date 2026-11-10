@@ -14,6 +14,9 @@ import 'package:mobo_sales/widgets/custom_snackbar.dart';
 import 'package:mobo_sales/utils/navigation_helper.dart';
 import 'package:shimmer/shimmer.dart';
 import '../../widgets/list_shimmer.dart';
+import '../../services/odoo_error_classifier.dart';
+import '../../widgets/connection_status_widget.dart';
+import '../../widgets/section_error_state.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
@@ -38,6 +41,7 @@ import '../../services/quotation_service.dart';
 import '../../shared/widgets/mobo/mobo_field_label.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
 import '../../widgets/attachment_card.dart';
+import '../../utils/guarded_action.dart';
 import '../../widgets/loading_dialog.dart';
 import '../../widgets/pdf_widget.dart';
 import '../../widgets/full_image_screen.dart';
@@ -49,6 +53,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:open_file/open_file.dart';
 import 'package:mobo_sales/widgets/loading_skeletons.dart';
 import '../../services/data_change_bus.dart';
+import '../../utils/odoo_date.dart';
 
 String _safeString(dynamic value) {
   if (value == null || value == false) return '';
@@ -236,40 +241,34 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     }
   }
 
+  /// Deletes the order the way Odoo's own form does: ask the server and
+  /// repeat what it says.
+  ///
+  /// Odoo allows `unlink` only on a draft or cancelled order
+  /// (`_unlink_except_draft_or_cancel`, the same rule in 17, 18, 19 and 20)
+  /// and raises "You can not delete a sent quotation or a confirmed sales
+  /// order. You must first cancel it." otherwise. The backend still offers
+  /// the action and lets that message explain why, so the app does too
+  /// rather than greying the entry out with no reason given.
   Future<void> _deleteQuotation() async {
     final quotationProvider = Provider.of<QuotationProvider>(
       context,
       listen: false,
     );
 
-    showDialog(
+    final deleted = await runGuardedAction<bool>(
       context: context,
-      barrierDismissible: false,
-      builder: (context) => const LoadingDialog(
-        message: 'Deleting Quotation...',
-        subtitle: 'Please wait while we process your request',
-      ),
+      message: 'Deleting Quotation...',
+      failurePrefix: 'Could not delete the quotation',
+      action: () async {
+        await quotationProvider.deleteQuotation(widget.quotation.id!);
+        return true;
+      },
     );
 
-    try {
-      await quotationProvider.deleteQuotation(widget.quotation.id!);
-      if (!mounted) return;
-
-      Navigator.pop(context);
-      Navigator.pop(context, true);
-
-      CustomSnackbar.showSuccess(context, 'Quotation deleted successfully');
-    } catch (e) {
-      if (!mounted) return;
-      Navigator.pop(context);
-      CustomSnackbar.showError(
-        context,
-        OdooErrorHandler.toSnackbarMessage(
-          e,
-          fallback: 'Could not delete the quotation. Please try again.',
-        ),
-      );
-    }
+    if (deleted != true || !mounted) return;
+    Navigator.pop(context, true);
+    CustomSnackbar.showSuccess(context, 'Quotation deleted successfully');
   }
 
   Future<void> _navigateToCreateInvoice(Quote saleOrder) async {
@@ -1136,6 +1135,37 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
 
   bool _isLoadingInitialData = true;
 
+  /// Why the page has nothing of its own to show, or null once it has read.
+  ///
+  /// Whatever opened this page handed it a copy of the order, so a header and
+  /// a total can always be drawn. That copy carries no lines, no customer
+  /// address, no deliveries, and not even the answer to whether there is a
+  /// Signature tab — all of that is this page's own read. When that read
+  /// fails, a header above three empty tabs reads as a quotation with nothing
+  /// in it rather than as a failure, so the page says so outright instead.
+  String? _detailLoadError;
+
+  /// Whether the page is showing its own failure instead of the order.
+  bool get _showingDetailError =>
+      _detailLoadError != null && !_hasLoadedDetails;
+
+  /// Whether the app bar's actions can be offered.
+  ///
+  /// Edit, Cancel, Delete, Create Invoice, Send by Email — every one of them
+  /// reads or writes the order on the server that has just refused to answer,
+  /// so each would end in a second failure. Edit is the worst of them: it
+  /// opens a prefilled form built from the stale copy this page was handed,
+  /// and saving it would write that staleness back. The invoice page already
+  /// gates its own Edit and menu this way.
+  bool get _actionsAvailable => !_isLoadingCustomer && !_showingDetailError;
+
+  /// Whether this page has ever read the order itself.
+  ///
+  /// Once it has, a later failure leaves what is on screen alone: replacing a
+  /// quotation the user is reading with an error page is the mistake the
+  /// invoice page already made.
+  bool _hasLoadedDetails = false;
+
   String? _serverBaseUrl;
   final GlobalKey<RefreshIndicatorState> _refreshKey =
       GlobalKey<RefreshIndicatorState>();
@@ -1214,7 +1244,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     // for that read. If the read fails the page falls back to the copy it was
     // given.
     _lastReloadStartedAt = DateTime.now();
-    final header = _refreshQuotationData().then<void>((_) {}, onError: (_) {});
+    final header = _refreshQuotationData().then<void>(
+      (_) {
+        _detailLoadError = null;
+        _hasLoadedDetails = true;
+      },
+      onError: (Object e) => _detailLoadError = e.toString(),
+    );
 
     try {
       await Future.wait([
@@ -1246,6 +1282,16 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
         }
       }
     }
+  }
+
+  /// The full-page error's Retry: read the page again from the top.
+  Future<void> _retryDetailLoad() async {
+    if (!mounted) return;
+    setState(() {
+      _detailLoadError = null;
+      _isLoadingInitialData = true;
+    });
+    await _loadInitialData();
   }
 
   Future<void> _loadAttachments() async {
@@ -2794,12 +2840,8 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       return 'Not specified';
     }
 
-    try {
-      final date = DateTime.parse(dateStr);
-      return DateFormat('MMM dd, yyyy').format(date);
-    } catch (e) {
-      return dateStr;
-    }
+    return OdooDate.formatForDisplay(dateStr, pattern: 'MMM dd, yyyy') ??
+        dateStr;
   }
 
   bool _isExpired(Quote quotation) {
@@ -3422,7 +3464,9 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
   /// cannot be found leaves the page as it was.
   Future<void> _refreshQuotationData() async {
     final client = await OdooSessionManager.getClient();
-    if (client == null) return;
+    // Documented above as throwing when the order cannot be read. Returning
+    // quietly here instead reported a dead session as a successful read.
+    if (client == null) throw Exception('Odoo Session Expired');
 
     // Fields a server may not have (`amount_discount`, `amount_delivery` and
     // `delivery_status` come from optional modules) are dropped by the
@@ -3709,7 +3753,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                 child: Row(
                   children: [
                     _buildTabItem(
-                      'Order Lines ${provider.orderLines.length}',
+                      // No count while the lines are unknown: "Order Lines 0"
+                      // beside a total of $20.00 states a fact the app does
+                      // not have.
+                      provider.isLoadingOrderLines ||
+                              provider.orderLinesError != null
+                          ? 'Order Lines'
+                          : 'Order Lines ${provider.orderLines.length}',
                       0,
                       isDark,
                     ),
@@ -3950,13 +4000,15 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
               child: IconButton(
                 icon: Icon(
                   HugeIcons.strokeRoundedPencilEdit02,
-
-                  color: Theme.of(context).brightness == Brightness.dark
-                      ? Colors.grey[400]
-                      : Colors.grey[600],
+                  // Its enabled colour is already grey, so without this a
+                  // switched-off Edit looks exactly like a working one and
+                  // simply stops answering taps.
+                  color: _actionsAvailable
+                      ? (isDark ? Colors.grey[400] : Colors.grey[600])
+                      : (isDark ? Colors.grey[700] : Colors.grey[350]),
                 ),
                 tooltip: 'Edit Quotation',
-                onPressed: _isLoadingCustomer
+                onPressed: !_actionsAvailable
                     ? null
                     : () async {
                         Map<String, dynamic>? completeQuotation;
@@ -4023,9 +4075,9 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
           PopupMenuButton<String>(
             icon: Icon(
               Icons.more_vert,
-              color: Theme.of(context).brightness == Brightness.dark
-                  ? Colors.grey[400]
-                  : Colors.grey[600],
+              color: _actionsAvailable
+                  ? (isDark ? Colors.grey[400] : Colors.grey[600])
+                  : (isDark ? Colors.grey[700] : Colors.grey[350]),
               size: 20,
             ),
             color: Theme.of(context).brightness == Brightness.dark
@@ -4035,7 +4087,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
             ),
-            enabled: !_isLoadingCustomer,
+            enabled: _actionsAvailable,
             itemBuilder: (context) {
               final canCreateInvoice = _canCreateInvoice(quotation);
               return [
@@ -4132,31 +4184,23 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                     ],
                   ),
                 ),
+                // Offered in every state, as Odoo's own form offers it: the
+                // server owns the rule and gives the reason when it refuses,
+                // which a greyed-out entry cannot.
                 PopupMenuItem<String>(
                   value: 'delete',
-                  enabled:
-                      _localQuotation.status == 'draft' ||
-                      _localQuotation.status == 'cancel',
                   child: Row(
                     children: [
                       Icon(
                         HugeIcons.strokeRoundedDelete02,
-                        color:
-                            (_localQuotation.status == 'draft' ||
-                                _localQuotation.status == 'cancel')
-                            ? Colors.red[400]
-                            : Colors.grey[500],
+                        color: Colors.red[400],
                         size: 20,
                       ),
                       const SizedBox(width: 12),
                       Text(
                         'Delete',
                         style: TextStyle(
-                          color:
-                              (_localQuotation.status == 'draft' ||
-                                  _localQuotation.status == 'cancel')
-                              ? Colors.red[400]
-                              : Colors.grey[500],
+                          color: Colors.red[400],
                           fontWeight: FontWeight.w500,
                           fontSize: 15,
                         ),
@@ -4209,7 +4253,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
               ];
             },
             onSelected: (value) async {
-              if (!_isLoadingCustomer) {
+              if (_actionsAvailable) {
                 if (value == 'convert_to_order') {
                   await _convertToOrder();
                   return;
@@ -4331,6 +4375,21 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
       ),
       body: _isLoadingCustomer
           ? ListShimmer.buildQuotationDetailsShimmer(context)
+          // One failure, one message, covering all three tabs at once —
+          // rather than the same thing repeated inside each of them, with
+          // the Signature tab missing entirely because the read that decides
+          // whether it exists is the one that failed.
+          : _showingDetailError
+          ? (OdooErrorClassifier.isServerUnreachable(_detailLoadError)
+                ? ConnectionStatusWidget(
+                    serverUnreachable: true,
+                    serverErrorMessage: _detailLoadError,
+                    onRetry: _retryDetailLoad,
+                  )
+                : SectionErrorState(
+                    error: _detailLoadError,
+                    onRetry: _retryDetailLoad,
+                  ))
           : Column(
               children: [
                 Expanded(
@@ -5373,6 +5432,27 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
   }
 
   Widget _buildOrderLinesTable(QuotationProvider provider, bool isDark) {
+    // Three different facts, three different panels: still fetching, failed
+    // to fetch, and genuinely has no lines.
+    if (provider.isLoadingOrderLines) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(20),
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
+
+    if (provider.orderLinesError != null) {
+      return SectionErrorState(
+        error: provider.orderLinesError,
+        onRetry: () {
+          final id = _localQuotation.id;
+          if (id != null) provider.loadOrderLines(id);
+        },
+      );
+    }
+
     if (provider.orderLines.isEmpty) {
       return Center(
         child: Padding(

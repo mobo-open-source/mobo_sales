@@ -41,6 +41,7 @@ import '../../utils/invoice_name.dart';
 import '../../models/product.dart';
 import '../../models/quote.dart';
 import '../../services/odoo_session_manager.dart';
+import '../../utils/odoo_date.dart';
 
 class CreateInvoiceScreen extends StatefulWidget {
   final Contact? customer;
@@ -287,9 +288,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
 
       if (invoice['invoice_date'] != null && invoice['invoice_date'] != false) {
         try {
-          invoiceProvider.setInvoiceDate(
-            DateTime.parse(invoice['invoice_date'].toString()),
-          );
+          final parsed = OdooDate.parseDate(invoice['invoice_date']);
+          if (parsed != null) invoiceProvider.setInvoiceDate(parsed);
         } catch (e) {}
       }
 
@@ -299,9 +299,8 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
       if (invoice['invoice_date_due'] != null &&
           invoice['invoice_date_due'] != false) {
         try {
-          invoiceProvider.setDueDate(
-            DateTime.parse(invoice['invoice_date_due'].toString()),
-          );
+          final parsed = OdooDate.parseDate(invoice['invoice_date_due']);
+          if (parsed != null) invoiceProvider.setDueDate(parsed);
         } catch (e) {}
       }
       final term = invoice['invoice_payment_term_id'];
@@ -3173,8 +3172,6 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
                 } catch (_) {}
               },
               serverUnreachable: true,
-              serverErrorMessage:
-                  'Unable to load customers from server/database. Please check your server or try again.',
             ),
           );
         }
@@ -3772,7 +3769,7 @@ class _ProductSelectionSheetState extends State<_ProductSelectionSheet> {
       }
     } catch (e) {
       if (mounted && _currentRequestId == requestId) {
-        CustomSnackbar.showError(context, 'Failed to load products: $e');
+        CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not load products.'));
       }
     } finally {
       if (mounted && _currentRequestId == requestId) {

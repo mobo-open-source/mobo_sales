@@ -1323,12 +1323,7 @@ class OdooSessionManager {
           final retryData = jsonDecode(response.body);
           if (retryData.containsKey('error')) {
             final error = retryData['error'];
-            final msg = error['message']?.toString() ?? 'RPC Error';
-            final dataMsg =
-                error['data']?['message']?.toString() ??
-                error['data']?.toString() ??
-                '';
-            throw Exception('$msg${dataMsg.isNotEmpty ? ': $dataMsg' : ''}');
+            throw Exception(describeRpcError(error));
           }
           return retryData['result'];
         } catch (_) {
@@ -1344,27 +1339,43 @@ class OdooSessionManager {
               final retryData = jsonDecode(response.body);
               if (retryData.containsKey('error')) {
                 final error = retryData['error'];
-                final msg = error['message']?.toString() ?? 'RPC Error';
-                final dataMsg =
-                    error['data']?['message']?.toString() ??
-                    error['data']?.toString() ??
-                    '';
-                throw Exception(
-                  '$msg${dataMsg.isNotEmpty ? ': $dataMsg' : ''}',
-                );
+                throw Exception(describeRpcError(error));
               }
               return retryData['result'];
             }
           } catch (_) {}
         }
       }
-      final dataMsg = data['error']['data']?['message']?.toString() ?? '';
-      throw Exception('$message${dataMsg.isNotEmpty ? ': $dataMsg' : ''}');
+      throw Exception(describeRpcError(data['error']));
     }
     return data['result'];
   }
 
-  /// Executes a safe RPC call with company context injected (alias for [callKwWithCompany]).
+  /// The message for an exception raised from an Odoo JSON-RPC `error`
+  /// object.
+  ///
+  /// Odoo puts the sentence it wants the user to read in `data.message` and
+  /// the exception's class in `data.name`. Keeping only the sentence leaves
+  /// nothing downstream able to tell a rule Odoo enforces on purpose from the
+  /// app falling over, so the class name goes in front; [OdooErrorHandler]
+  /// strips it again before anything is shown.
+  static String describeRpcError(dynamic error) {
+    if (error is! Map) return error?.toString() ?? 'RPC Error';
+    final data = error['data'];
+    final name = data is Map ? data['name']?.toString() : null;
+    final sentence = data is Map
+        ? (data['message']?.toString() ?? '')
+        : (data?.toString() ?? '');
+    final fallback = error['message']?.toString() ?? 'RPC Error';
+
+    if (sentence.trim().isEmpty) {
+      return name == null || name.isEmpty ? fallback : '$name: $fallback';
+    }
+    return name == null || name.isEmpty
+        ? '$fallback: $sentence'
+        : '$name: $sentence';
+  }
+
   static Future<dynamic> safeCallKw(Map<String, dynamic> payload) {
     return callKwWithCompany(payload);
   }
@@ -1458,23 +1469,12 @@ class OdooSessionManager {
           final retryData = jsonDecode(response.body);
           if (retryData.containsKey('error')) {
             final retryError = retryData['error'];
-            final retryMsg = retryError['message']?.toString() ?? 'RPC Error';
-            final retryDataMsg =
-                retryError['data']?['message']?.toString() ??
-                retryError['data']?.toString() ??
-                '';
-            throw Exception(
-              '$retryMsg${retryDataMsg.isNotEmpty ? ': $retryDataMsg' : ''}',
-            );
+            throw Exception(describeRpcError(retryError));
           }
           return retryData['result'];
         }
       }
-      final dataMsg =
-          error['data']?['message']?.toString() ??
-          error['data']?.toString() ??
-          '';
-      throw Exception('$message${dataMsg.isNotEmpty ? ': $dataMsg' : ''}');
+      throw Exception(describeRpcError(error));
     }
     return data['result'];
   }

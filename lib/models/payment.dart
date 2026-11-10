@@ -1,3 +1,5 @@
+import '../utils/odoo_date.dart';
+
 /// The app's view of an `account.payment` state.
 ///
 /// Odoo does not use one vocabulary for it. 17 has `draft`, `posted`,
@@ -40,7 +42,7 @@ class ReconciliationLine {
       amount: (json['amount'] ?? 0.0).toDouble(),
       reconcileDate:
           json['reconcile_date'] != null && json['reconcile_date'] != false
-          ? DateTime.parse(json['reconcile_date'])
+          ? OdooDate.parseDatetime(json['reconcile_date'])
           : null,
       isFullReconciliation: json['is_full_reconciliation'] ?? false,
     );
@@ -165,7 +167,7 @@ class Payment {
           ? json['payment_method_line_id'][1]
           : null,
       paymentDate: json['date'] != null && json['date'] != false
-          ? DateTime.parse(json['date'])
+          ? OdooDate.parseDate(json['date'])
           : null,
       communication:
           (json['communication'] != null && json['communication'] != false)
@@ -179,10 +181,10 @@ class Payment {
           : json['company_id'],
       currencyId: json['currency_id'] as List<dynamic>?,
       createdAt: json['create_date'] != null
-          ? DateTime.parse(json['create_date'])
+          ? OdooDate.parseDatetime(json['create_date'])
           : null,
       updatedAt: json['write_date'] != null
-          ? DateTime.parse(json['write_date'])
+          ? OdooDate.parseDatetime(json['write_date'])
           : null,
       isReconciled: isReconciled,
       reconciledInvoiceIds: json['reconciled_invoice_ids'] != null
@@ -196,7 +198,7 @@ class Payment {
       reconciliationDate:
           json['reconciliation_date'] != null &&
               json['reconciliation_date'] != false
-          ? DateTime.parse(json['reconciliation_date'])
+          ? OdooDate.parseDatetime(json['reconciliation_date'])
           : null,
       requiresManualReconciliation:
           json['requires_manual_reconciliation'] ?? false,

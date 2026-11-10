@@ -597,6 +597,7 @@ class _TotpPageState extends State<TotpPage> {
 
       await Future.delayed(const Duration(seconds: 2));
 
+      var signedIn = false;
       for (int i = 0; i < 20; i++) {
         final isLoggedIn = await _webController!.evaluateJavascript(
           source: """
@@ -611,15 +612,30 @@ class _TotpPageState extends State<TotpPage> {
           """,
         );
         if (isLoggedIn == 'error') {
-          setState(
-            () => _error = "Invalid code or login failed. Please try again.",
-          );
+          if (mounted) {
+            setState(() {
+              _error = 'Invalid code or login failed. Please try again.';
+              _verifying = false;
+            });
+          }
           return;
+        }
+        // Odoo is in: stop waiting. Without this the loop ran all twenty
+        // turns whatever the answer was, so a correct code sat under the
+        // spinner for twelve seconds and then four more before the app
+        // moved on.
+        if (isLoggedIn == true) {
+          signedIn = true;
+          break;
         }
         await Future.delayed(const Duration(milliseconds: 500));
       }
 
-      await Future.delayed(const Duration(seconds: 4));
+      // Only worth waiting for the page to settle when the loop gave up
+      // without ever seeing Odoo.
+      if (!signedIn) {
+        await Future.delayed(const Duration(seconds: 4));
+      }
 
       final currentUrl = await _webController!.getUrl();
       final urlStr = currentUrl?.toString() ?? '';
@@ -833,7 +849,7 @@ class _TotpPageState extends State<TotpPage> {
           _isSessionExtracted = true;
           return true;
         } else {
-          if (mounted && !_verifying) {
+          if (mounted) {
             setState(() {
               _error = 'Invalid code or login failed. Please try again.';
             });
@@ -841,7 +857,7 @@ class _TotpPageState extends State<TotpPage> {
           return false;
         }
       } else {
-        if (mounted && !_verifying) {
+        if (mounted) {
           setState(() {
             _error = 'Invalid code or login failed. Please try again.';
           });
@@ -857,7 +873,7 @@ class _TotpPageState extends State<TotpPage> {
         await _blockAccess(e);
         return false;
       }
-      if (mounted && !_verifying) {
+      if (mounted) {
         setState(() {
           _error = 'Invalid code or login failed. Please try again.';
         });

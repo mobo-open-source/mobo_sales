@@ -170,7 +170,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
       if (mounted) {
         CustomSnackbar.showError(
           context,
-          'Failed to check inventory module: $e',
+          OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not check which modules are installed.'),
         );
       }
     }
@@ -532,8 +532,8 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
               break;
             } catch (e) {
               if (e.toString().contains('Invalid field')) {
-                // Odoo 19 and later word the error "on 'model'", without the
-                // word "model" this used to match on.
+                // Odoo 19 and later word the error "on 'model'", so a match
+                // on the bare word "model" misses it.
                 final invalidField = FieldValidationService.extractInvalidField(
                   e.toString(),
                 );
@@ -685,9 +685,14 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
             'topCustomer': topCustomer,
           };
 
-          await _loadSalesAnalytics(client, int.parse(id));
-
-          await _ensureAttributesResolved();
+          // Independent of each other and of everything already read, and
+          // both only fill in detail before the single setState below. Run
+          // one after the other they were two more round trips the page
+          // waited on in turn.
+          await Future.wait([
+            _loadSalesAnalytics(client, int.parse(id)),
+            _ensureAttributesResolved(),
+          ]);
 
           if (mounted) {
             setState(() {
@@ -2432,7 +2437,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
         await _shareViaSystem(product);
       }
     } catch (e) {
-      CustomSnackbar.showError(context, 'Failed to open email app: $e');
+      CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not open the email app.'));
     }
   }
 
@@ -2447,7 +2452,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
         await _shareViaSystem(product);
       }
     } catch (e) {
-      CustomSnackbar.showError(context, 'Failed to open WhatsApp: $e');
+      CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not open WhatsApp.'));
     }
   }
 
@@ -2456,7 +2461,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
       final text = _generateProductShareText(product);
       await Share.share(text, subject: 'Product Information: ${product.name}');
     } catch (e) {
-      CustomSnackbar.showError(context, 'Failed to share product: $e');
+      CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not share this product.'));
     }
   }
 
@@ -4029,7 +4034,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
       if (mounted) {
         CustomSnackbar.showError(
           context,
-          'Failed to generate barcode image: $e',
+          OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not generate the barcode image.'),
         );
       }
     }
@@ -4114,7 +4119,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
       }
     } catch (e) {
       if (mounted) {
-        CustomSnackbar.showError(context, 'Failed to generate barcode PDF: $e');
+        CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not generate the barcode PDF.'));
       }
     }
   }
@@ -4261,7 +4266,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
       await Share.share(qrData, subject: 'Product QR Code: ${product.name}');
     } catch (e) {
       if (mounted) {
-        CustomSnackbar.showError(context, 'Failed to share QR code: $e');
+        CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not share the QR code.'));
       }
     }
   }
@@ -4279,7 +4284,7 @@ class _ProductDetailsPageState extends State<ProductDetailsPage>
       }
     } catch (e) {
       if (mounted) {
-        CustomSnackbar.showError(context, 'Failed to save QR code: $e');
+        CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not save the QR code.'));
       }
     }
   }

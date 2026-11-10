@@ -18,6 +18,7 @@ import '../../widgets/enhanced_payment_status_badge.dart';
 import '../../widgets/custom_snackbar.dart';
 import '../../utils/date_picker_utils.dart';
 import '../../utils/invoice_payment_rules.dart';
+import '../../utils/odoo_date.dart';
 
 class EnhancedPaymentScreen extends StatefulWidget {
   final Invoice invoice;
@@ -391,9 +392,8 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
 
       for (var paymentData in paymentResults) {
         try {
-          final createDate = paymentData['create_date'] != null
-              ? DateTime.parse(paymentData['create_date'])
-              : now;
+          final createDate =
+              OdooDate.parseDatetime(paymentData['create_date']) ?? now;
 
           final daysDiff = now.difference(createDate).inDays;
           final paymentName = paymentData['name']?.toString() ?? '';

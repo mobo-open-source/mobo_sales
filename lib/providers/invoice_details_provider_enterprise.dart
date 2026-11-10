@@ -388,7 +388,11 @@ class InvoiceDetailsProvider extends ChangeNotifier {
       await fetchInvoiceDetails(context, invoiceId);
       return true;
     } catch (e) {
-      _errorMessage = OdooErrorHandler.toUserMessage(e);
+      // The snackbar that shows this already says "Error", so the message
+      // is the sentence alone. `toUserMessage` adds its own "❌ Operation
+      // Failed" heading, which belongs on a full page, not stacked under a
+      // title saying the same thing.
+      _errorMessage = OdooErrorHandler.toSnackbarMessage(e);
       return false;
     } finally {
       _isProcessing = false;
@@ -421,10 +425,9 @@ class InvoiceDetailsProvider extends ChangeNotifier {
         return false;
       }
 
-      // `button_draft` takes a posted invoice straight back to draft; it does
-      // not need cancelling first. (Calling [cancelInvoice] from here used to
-      // return false at once, because this method is already processing, so
-      // resetting a posted invoice always failed.)
+      // `button_draft` takes a posted invoice straight back to draft; it
+      // does not need cancelling first. Calling [cancelInvoice] from here
+      // returns false at once, because this method is already processing.
 
       final canWriteMove = await _permissionService.canWrite('account.move');
       if (!canWriteMove) {
@@ -443,7 +446,7 @@ class InvoiceDetailsProvider extends ChangeNotifier {
       await fetchInvoiceDetails(context, invoiceId);
       return true;
     } catch (e) {
-      _errorMessage = OdooErrorHandler.toUserMessage(e);
+      _errorMessage = OdooErrorHandler.toSnackbarMessage(e);
       return false;
     } finally {
       _isProcessing = false;
@@ -492,7 +495,7 @@ class InvoiceDetailsProvider extends ChangeNotifier {
       await fetchInvoiceDetails(context, invoiceId);
       return true;
     } catch (e) {
-      _errorMessage = OdooErrorHandler.toUserMessage(e);
+      _errorMessage = OdooErrorHandler.toSnackbarMessage(e);
       return false;
     } finally {
       _isProcessing = false;
@@ -527,7 +530,7 @@ class InvoiceDetailsProvider extends ChangeNotifier {
 
       return true;
     } catch (e) {
-      _errorMessage = OdooErrorHandler.toUserMessage(e);
+      _errorMessage = OdooErrorHandler.toSnackbarMessage(e);
       return false;
     } finally {
       _isLoading = false;

@@ -36,6 +36,7 @@ import 'package:mobo_sales/widgets/circular_image_widget.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:mobo_sales/services/odoo_error_classifier.dart';
 import 'package:mobo_sales/widgets/connection_status_widget.dart';
+import '../../utils/avatar_cache.dart';
 import '../../widgets/dispose_when_unmounted.dart';
 import 'package:mobo_sales/widgets/loading_skeletons.dart';
 import 'package:mobo_sales/widgets/loading_dialog.dart';
@@ -199,8 +200,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
     // settings provider refreshes itself on the same event.
     _profileChangeSubscription = DataChangeBus.instance.listen(
       where: (change) => change.isProfile,
-      onChange: (_) =>
-          unawaited(_fetchUserProfile(forceRefresh: true, syncSettings: false)),
+      onChange: (_) {
+        // The photo may be the thing that changed, so stop trusting the
+        // copy already in the image cache.
+        AvatarCache.invalidate();
+        if (mounted) setState(() {});
+        unawaited(_fetchUserProfile(forceRefresh: true, syncSettings: false));
+      },
     );
 
     _loadCachedUser();
@@ -2468,8 +2474,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final rowDatabase = account?['database']?.toString() ?? '';
 
     return CachedNetworkImage(
-      imageUrl: avatarUrl,
-      cacheKey: '${serverUrl}_${rowDatabase}_${userId}_avatar',
+      imageUrl: AvatarCache.versioned(avatarUrl),
+      // The database is in the key as well as the server: two databases on
+      // one server can hand out the same user id.
+      cacheKey: AvatarCache.keyFor(
+        serverUrl: serverUrl,
+        database: rowDatabase,
+        userId: userId,
+      ),
       httpHeaders: (rowSessionId != null && rowSessionId.isNotEmpty)
           ? {'Cookie': 'session_id=$rowSessionId'}
           : null,
@@ -3052,8 +3064,9 @@ class _AccountDrawer extends StatelessWidget {
     String? avatarUrl;
     if (account['url'] != null && account['userId'] != null) {
       final baseUrl = account['url'].toString().replaceAll(RegExp(r'\/+$'), '');
-      avatarUrl =
-          '$baseUrl/web/image/res.users/${account['userId']}/image_1920';
+      avatarUrl = AvatarCache.versioned(
+        '$baseUrl/web/image/res.users/${account['userId']}/image_1920',
+      );
     }
 
     return Container(

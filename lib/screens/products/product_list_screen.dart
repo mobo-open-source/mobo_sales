@@ -34,9 +34,11 @@ import 'create_product_screen.dart';
 import '../../widgets/list_search_bar.dart';
 import '../../widgets/voice_search_dialog.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
+import '../../services/odoo_error_classifier.dart';
 import '../../services/odoo_error_handler.dart';
 import '../../widgets/create_action_gate.dart';
 import '../../utils/group_labels.dart';
+import '../../utils/odoo_date.dart';
 
 class ProductListScreen extends StatefulWidget {
   const ProductListScreen({super.key});
@@ -1187,7 +1189,7 @@ class ProductListScreenState extends State<ProductListScreen>
         setState(() {
           _isLoadingMore = false;
         });
-        CustomSnackbar.showError(context, 'Failed to load more products: $e');
+        CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not load more products.'));
       }
     }
   }
@@ -1475,12 +1477,8 @@ class ProductListScreenState extends State<ProductListScreen>
                         _loadProducts();
                       }
                     },
-                    customMessage:
-                        'Unable to load products from server/database. Please check your server or try again.',
                     serverUnreachable: productProvider.isServerUnreachable,
-                    serverErrorMessage: productProvider.isServerUnreachable
-                        ? 'Unable to load products from server/database. Please check your server or try again.'
-                        : null,
+                    serverErrorMessage: productProvider.error,
                   );
                 }
 
@@ -3019,7 +3017,10 @@ class ProductListScreenState extends State<ProductListScreen>
               'list_price',
               'product_variant_count',
               'categ_id',
-              'image_1920',
+              // The stored thumbnail. `image_1920` is the original upload and
+              // a page of them is megabytes of base64 for pictures drawn at
+              // list-tile size.
+              'image_128',
               'qty_available',
               'barcode',
               'product_tmpl_id',
@@ -3194,17 +3195,13 @@ class ProductListScreenState extends State<ProductListScreen>
               59,
               59,
             );
+            // `create_date` and `write_date` are Odoo `Datetime` columns, so
+            // the month's local boundaries have to be converted before they
+            // are sent — the local wall clock read as UTC lands the window
+            // hours off.
             return [
-              [
-                groupByField,
-                '>=',
-                DateFormat('yyyy-MM-dd HH:mm:ss').format(startDate),
-              ],
-              [
-                groupByField,
-                '<=',
-                DateFormat('yyyy-MM-dd HH:mm:ss').format(endDate),
-              ],
+              [groupByField, '>=', OdooDate.formatDatetime(startDate)],
+              [groupByField, '<=', OdooDate.formatDatetime(endDate)],
             ];
           } catch (e) {}
           return [];
@@ -3327,28 +3324,16 @@ class ProductListScreenState extends State<ProductListScreen>
     return 'An unexpected error occurred';
   }
 
-  bool _isServerUnreachableError(String error) {
-    final errorString = error.toLowerCase();
-    return errorString.contains('socketexception') ||
-        errorString.contains('connection refused') ||
-        errorString.contains('connection timeout') ||
-        errorString.contains('host unreachable') ||
-        errorString.contains('no route to host') ||
-        errorString.contains('network is unreachable') ||
-        errorString.contains('failed to connect') ||
-        errorString.contains('connection failed') ||
-        errorString.contains('server returned html instead of json') ||
-        errorString.contains('server may be down') ||
-        errorString.contains('url incorrect') ||
-        errorString.contains('odoo server error') ||
-        errorString.contains('unexpected response') ||
-        errorString.contains('404') ||
-        errorString.contains('not found') ||
-        errorString.contains('500') ||
-        errorString.contains('502') ||
-        errorString.contains('503') ||
-        errorString.contains('504');
-  }
+  /// The shared test, which the other five list screens already use.
+  ///
+  /// This screen carried its own copy that matched a bare `404`, `not found`,
+  /// `500`..`504` or `Odoo Server Error` anywhere in the text. Amounts and
+  /// record ids routinely contain 500, and Odoo uses `Odoo Server Error` for
+  /// access and validation failures, so a business error could be reported as
+  /// an unreachable server and send the user off to check a network that was
+  /// working. [OdooErrorClassifier] excludes exactly those cases.
+  bool _isServerUnreachableError(String error) =>
+      OdooErrorClassifier.isServerUnreachable(error);
 
   void _showErrorSnackBar(String message) {
     if (!mounted) return;
@@ -3700,7 +3685,7 @@ class ProductListScreenState extends State<ProductListScreen>
       }
     } catch (e) {
       if (mounted) {
-        CustomSnackbar.showError(context, 'Error scanning barcode: $e');
+        CustomSnackbar.showError(context, OdooErrorHandler.toSnackbarMessage(e, fallback: 'Could not read that barcode.'));
       }
     } finally {
       if (mounted) {
@@ -3736,12 +3721,18 @@ class ProductListScreenState extends State<ProductListScreen>
   }
 
   Widget _buildFilterIndicator(bool isDark, bool hasGroupBy) {
+    // The search text counts, the way it does on Customers, Quotations and
+    // Invoices. This screen was the only one leaving it out, so a search that
+    // had plainly narrowed the list still read "No filters applied" — and
+    // `hasActiveFilters` in this same file already counted it, so the screen
+    // disagreed with itself.
     final count =
         (_showServicesOnly ? 1 : 0) +
         (_showConsumablesOnly ? 1 : 0) +
         (_showStorableOnly ? 1 : 0) +
         (_showAvailableOnly ? 1 : 0) +
-        (_showArchivedOnly ? 1 : 0);
+        (_showArchivedOnly ? 1 : 0) +
+        (_searchController.text.trim().isEmpty ? 0 : 1);
 
     if (count == 0) {
       if (hasGroupBy) {

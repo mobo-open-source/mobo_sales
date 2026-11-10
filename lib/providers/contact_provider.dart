@@ -12,6 +12,7 @@ import '../services/field_validation_service.dart';
 import '../services/odoo_error_classifier.dart';
 import '../utils/quiet_reload_gate.dart';
 import '../utils/group_labels.dart';
+import '../utils/odoo_date.dart';
 
 /// Manages the customer/contact list with pagination, filtering, grouping, and search.
 class ContactProvider with ChangeNotifier {
@@ -448,22 +449,26 @@ class ContactProvider with ChangeNotifier {
         if (filters['startDate'] != null && filters['endDate'] != null) {
           final start = filters['startDate'] as DateTime;
           final end = filters['endDate'] as DateTime;
-          final startStr =
-              '${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')} 00:00:00';
-          final endStr =
-              '${end.year}-${end.month.toString().padLeft(2, '0')}-${end.day.toString().padLeft(2, '0')} 23:59:59';
+          final startStr = OdooDate.formatDatetime(
+      DateTime(start.year, start.month, start.day),
+    );
+          final endStr = OdooDate.formatDatetime(
+      DateTime(end.year, end.month, end.day, 23, 59, 59),
+    );
 
           domain.add(['create_date', '>=', startStr]);
           domain.add(['create_date', '<=', endStr]);
         } else if (filters['startDate'] != null) {
           final start = filters['startDate'] as DateTime;
-          final startStr =
-              '${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')} 00:00:00';
+          final startStr = OdooDate.formatDatetime(
+      DateTime(start.year, start.month, start.day),
+    );
           domain.add(['create_date', '>=', startStr]);
         } else if (filters['endDate'] != null) {
           final end = filters['endDate'] as DateTime;
-          final endStr =
-              '${end.year}-${end.month.toString().padLeft(2, '0')}-${end.day.toString().padLeft(2, '0')} 23:59:59';
+          final endStr = OdooDate.formatDatetime(
+      DateTime(end.year, end.month, end.day, 23, 59, 59),
+    );
           domain.add(['create_date', '<=', endStr]);
         }
       }
