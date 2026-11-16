@@ -35,6 +35,7 @@ import '../customers/customer_details_screen.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'dart:async';
 import '../../services/session_service.dart';
+import '../../providers/company_provider.dart';
 import '../../utils/tap_prevention.dart';
 import 'package:mobo_sales/widgets/circular_image_widget.dart';
 import '../../services/odoo_compat.dart';
@@ -4115,6 +4116,16 @@ class _DashboardScreenState extends State<DashboardScreen>
 
     try {
       final sessionService = context.read<SessionService>();
+
+      // The company pill sits in the shared app bar above every tab, and it is
+      // loaded once per account — so a cold start that failed left it wrong
+      // until the app was restarted, however often the page was pulled down.
+      // A pull is the user saying "try again"; only worth a call when it is
+      // actually empty.
+      final companyProvider = context.read<CompanyProvider>();
+      if (companyProvider.companies.isEmpty) {
+        unawaited(companyProvider.retry());
+      }
 
       final results = await Future.wait([
         _fetchUserInfo(forceRefresh: true).catchError((e) {

@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/odoo_session_manager.dart';
 import '../services/company_local_datasource.dart';
 import '../services/session_service.dart';
+import '../utils/session_companies.dart';
 
 /// Manages the list of available companies and the active company selection.
 class CompanyProvider extends ChangeNotifier {
@@ -16,6 +17,12 @@ class CompanyProvider extends ChangeNotifier {
   bool _switching = false;
   String? _error;
 
+  // Whether the last attempt ended without an answer from the server, as
+  // opposed to an answer saying the user has no companies. The pill reads it,
+  // because "No companies" shown for a failed load is what made a perfectly
+  // good account look empty.
+  bool _lastLoadFailed = false;
+
   // initialize() requested while one is in flight: run it again afterwards
   // instead of dropping it.
   bool _rerunQueued = false;
@@ -23,6 +30,17 @@ class CompanyProvider extends ChangeNotifier {
   // network / server is usable).
   Timer? _retryTimer;
   int _retryAttempt = 0;
+
+  /// How long the pill stays in its loading state at minimum.
+  ///
+  /// An attempt can finish in a couple of milliseconds — the no-session path
+  /// below never touches the network, and a refused request comes back almost
+  /// as fast — and a spinner shown for less than one frame is a spinner nobody
+  /// sees. That is why tapping "Tap to retry" or pulling the page down looked
+  /// like it did nothing at all: the work ran and finished between two frames.
+  /// Holding the state briefly is the difference the user reads as "it tried".
+  static const Duration _minVisibleLoading = Duration(milliseconds: 450);
+
   static const _retryDelays = [
     Duration(seconds: 2),
     Duration(seconds: 5),
@@ -36,6 +54,9 @@ class CompanyProvider extends ChangeNotifier {
   bool get isLoading => _loading;
   bool get isSwitching => _switching;
   String? get error => _error;
+
+  /// Whether the companies could not be loaded, rather than there being none.
+  bool get loadFailed => _lastLoadFailed;
 
   Map<String, dynamic>? get selectedCompany {
     if (_selectedCompanyId == null) return null;
@@ -78,6 +99,7 @@ class CompanyProvider extends ChangeNotifier {
     _selectedCompanyId = null;
     _selectedAllowedCompanyIds = [];
     _error = null;
+    _lastLoadFailed = false;
     notifyListeners();
   }
 
@@ -111,7 +133,9 @@ class CompanyProvider extends ChangeNotifier {
     _retryTimer?.cancel();
     _loading = true;
     _error = null;
+    _lastLoadFailed = false;
     notifyListeners();
+    final startedAt = DateTime.now();
     const local = CompanyLocalDataSource();
     try {
       await Future(() async {
@@ -122,8 +146,14 @@ class CompanyProvider extends ChangeNotifier {
         if (session == null || session.userId == null) {
           _companies = await local.getAllCompanies(userId: uid, database: db);
           _selectedCompanyId = null;
-          _loading = false;
-          notifyListeners();
+          // No session yet is not an account without companies — nothing was
+          // determined at all. A cold start reaches here before the session is
+          // restored, so say "could not load" and try again rather than
+          // settling on "none" and stopping.
+          if (_companies.isEmpty) {
+            _lastLoadFailed = true;
+            _scheduleRetry();
+          }
           return;
         }
 
@@ -176,18 +206,45 @@ class CompanyProvider extends ChangeNotifier {
           }
         }
 
-        final userRes = await OdooSessionManager.safeCallKwWithoutCompany({
-          'model': 'res.users',
-          'method': 'read',
-          'args': [
-            [effectiveUserId],
-            ['company_id', 'company_ids'],
-          ],
-          'kwargs': {},
-        });
-
         List<int> companyIds = [];
         int? currentCompanyId;
+
+        // Ask the server what the web client asks: `session_info` carries
+        // `user_companies`, built for the logged-in user and — on 19 and 20 —
+        // through `.sudo()`. The `res.users` read below is the older path and
+        // loses to Odoo's own field-access rules, because `company_ids` is not
+        // a field a user may read on themselves.
+        SessionCompanies? fromSession;
+        try {
+          final info = await OdooSessionManager.getSessionInfo(
+            session.serverUrl,
+            session.sessionId,
+          );
+          fromSession = parseSessionCompanies(info);
+        } catch (_) {
+          // Fall through to the read below.
+        }
+
+        if (fromSession != null) {
+          companyIds = fromSession.ids;
+          currentCompanyId = fromSession.currentId;
+          _companies = fromSession.companies;
+          await local.putAllCompanies(_companies, userId: uid, database: db);
+          _retryAttempt = 0;
+        }
+
+        final userRes = companyIds.isNotEmpty
+            ? null
+            : await OdooSessionManager.safeCallKwWithoutCompany({
+                'model': 'res.users',
+                'method': 'read',
+                'args': [
+                  [effectiveUserId],
+                  ['company_id', 'company_ids'],
+                ],
+                'kwargs': {},
+              });
+
         if (userRes is List && userRes.isNotEmpty && userRes.first != null) {
           final row = userRes.first as Map<String, dynamic>;
           if (row['company_ids'] is List) {
@@ -205,29 +262,30 @@ class CompanyProvider extends ChangeNotifier {
         if (companyIds.isEmpty) {
           // Usually a failed/partial reply, not "no companies": keep the
           // cached list and try again shortly.
+          _lastLoadFailed = true;
           if (_companies.isEmpty) {
             _companies = await local.getAllCompanies(userId: uid, database: db);
           }
           _selectedCompanyId = restoredId ?? currentCompanyId;
           _scheduleRetry();
-          _loading = false;
-          notifyListeners();
           return;
         }
 
-        final companiesRes = await OdooSessionManager.safeCallKwWithoutCompany({
-          'model': 'res.company',
-          'method': 'search_read',
-          'args': [
-            [
-              ['id', 'in', companyIds],
-            ],
-          ],
-          'kwargs': {
-            'fields': ['id', 'name'],
-            'order': 'name asc',
-          },
-        });
+        final companiesRes = fromSession != null
+            ? null
+            : await OdooSessionManager.safeCallKwWithoutCompany({
+                'model': 'res.company',
+                'method': 'search_read',
+                'args': [
+                  [
+                    ['id', 'in', companyIds],
+                  ],
+                ],
+                'kwargs': {
+                  'fields': ['id', 'name'],
+                  'order': 'name asc',
+                },
+              });
 
         final serverCompanies = (companiesRes is List)
             ? companiesRes.cast<Map<String, dynamic>>()
@@ -237,7 +295,7 @@ class CompanyProvider extends ChangeNotifier {
           _companies = serverCompanies;
           await local.putAllCompanies(_companies, userId: uid, database: db);
           _retryAttempt = 0;
-        } else {
+        } else if (fromSession == null) {
           _companies = await local.getAllCompanies(userId: uid, database: db);
         }
 
@@ -337,8 +395,15 @@ class CompanyProvider extends ChangeNotifier {
       } catch (_) {
         _error = e.toString();
       }
+      _lastLoadFailed = true;
       _scheduleRetry();
     } finally {
+      // The one place the load ends, so every path — including the two that
+      // return early above — is held on screen long enough to be seen.
+      final elapsed = DateTime.now().difference(startedAt);
+      if (elapsed < _minVisibleLoading) {
+        await Future.delayed(_minVisibleLoading - elapsed);
+      }
       _loading = false;
       notifyListeners();
       if (_rerunQueued) {

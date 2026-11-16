@@ -57,6 +57,20 @@ class SessionService extends ChangeNotifier {
 
   bool get isRefreshing => _isLoading;
 
+  /// Replaces the in-memory account list. Tests only — it seeds rows an
+  /// already-affected device carries, which the public API deliberately can
+  /// no longer create.
+  @visibleForTesting
+  void seedStoredAccountsForTesting(List<Map<String, dynamic>> accounts) {
+    _storedAccounts = accounts;
+  }
+
+  /// Sets the session account matching is done against. Tests only.
+  @visibleForTesting
+  void setCurrentSessionForTesting(OdooSessionModel? session) {
+    _currentSession = session;
+  }
+
   String? get _sessionKey {
     if (_currentSession == null) return null;
     final key =
@@ -123,7 +137,11 @@ class SessionService extends ChangeNotifier {
           if (_isServerUnreachableError(e) || _isHtmlResponseError(e)) {
             _isServerUnreachable = true;
           } else if (_isAuthenticationError(e)) {
-            await logout();
+            // Credentials the server no longer accepts end this session and
+            // nothing else. Calling `logout()` here deleted every saved
+            // account and every cached password on the device because one of
+            // them had a stale password.
+            await endSessionKeepingAccounts();
           } else {}
         }
       } else {}
@@ -172,8 +190,41 @@ class SessionService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Ends the current account's session — the other saved accounts stay.
+  ///
+  /// This is the only way the app ends a session the user did not ask to end.
+  /// `SalesAccessGuard` and `DatabaseExpiryGuard` already sign people out
+  /// exactly this way; this gives the two automatic checks in this file the
+  /// same contract instead of a second, heavier one.
+  ///
+  /// Saved accounts and their passwords belong to the person using the phone,
+  /// not to the session that happened to fail. Nothing automatic deletes
+  /// them — only [logout], which the user asks for by name.
+  Future<void> endSessionKeepingAccounts() async {
+    try {
+      await OdooSessionManager.logout();
+    } catch (e) {
+      // The server-side sign-out is best effort; the local session goes
+      // either way, or the app is stuck holding one it cannot use.
+    }
+
+    await _clearAllProviderData(clearCompanies: true);
+    await clearSession();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final context = navigatorKey.currentContext;
+      if (context != null && context.mounted) {
+        CustomSnackbar.showInfo(context, 'Please sign in again');
+      }
+    });
+  }
+
   /// [showNotice] shows the "Logged out" snackbar; pass false when the
   /// caller presents its own logout feedback (e.g. settings/profile screens).
+  ///
+  /// This is the user asking, from Settings or Profile, and it clears every
+  /// saved account on the device. Nothing calls it on the user's behalf —
+  /// an automatic sign-out goes through [endSessionKeepingAccounts].
   Future<void> logout({bool showNotice = true}) async {
     _isLoggingOut = true;
     notifyListeners();
@@ -487,7 +538,8 @@ class SessionService extends ChangeNotifier {
       }
 
       if (_isAuthenticationError(e)) {
-        await logout();
+        // Same as in `checkSession`: end this session, keep the accounts.
+        await endSessionKeepingAccounts();
         return null;
       }
 
@@ -531,17 +583,20 @@ class SessionService extends ChangeNotifier {
   }
 
   Future<void> _autoStoreCurrentSession() async {
-    if (_currentSession == null) return;
+    final session = _currentSession;
+    if (session == null) return;
+    // A session whose user id is not known yet has no identity to be stored
+    // under. Storing it anyway is what minted the phantom `userId: "0"` row;
+    // the next pass stores it properly, once the id is in.
+    if (!isUsableUserId(session.userId)) return;
 
+    final key = sessionAccountKey(session);
     final currentExists = _storedAccounts.any(
-      (account) =>
-          account['userId'] == _currentSession!.userId.toString() &&
-          account['serverUrl'] == _currentSession!.serverUrl &&
-          account['database'] == _currentSession!.database,
+      (account) => storedAccountKey(account) == key,
     );
 
     if (!currentExists) {
-      await storeAccount(_currentSession!, '');
+      await storeAccount(session, '');
     }
   }
 
@@ -560,21 +615,49 @@ class SessionService extends ChangeNotifier {
     return '${userId}_${serverUrl}_$database';
   }
 
+  /// The same identity, read off a live session.
+  ///
+  /// Session and stored account are compared through one function, because
+  /// a session carries the server URL exactly as it was typed while storage
+  /// holds the normalised one — so a direct `==` between the two reads as a
+  /// different account and quietly stores a second copy.
+  static String sessionAccountKey(OdooSessionModel session) =>
+      storedAccountKey({
+        'userId': session.userId?.toString(),
+        'serverUrl': session.serverUrl,
+        'database': session.database,
+      });
+
+  /// Whether [userId] names a real Odoo user.
+  ///
+  /// Odoo user ids start at 1, so `0` is not a user — it is what this app
+  /// wrote when it stored a session before the id was known, through
+  /// `(session.userId ?? 0)`. The row that results is a second identity for
+  /// an account the list already holds: keyed `0_<server>_<db>`, invisible to
+  /// de-duplication, with no password, and impossible to switch into. It is
+  /// why an account list shows two rows for one login.
+  static bool isUsableUserId(Object? userId) {
+    final text = userId?.toString().trim() ?? '';
+    if (text.isEmpty || text == 'null') return false;
+    return (int.tryParse(text) ?? 0) > 0;
+  }
+
   Future<void> _cleanupDuplicateAccounts() async {
     final uniqueAccounts = <String, Map<String, dynamic>>{};
 
     for (final account in _storedAccounts) {
-      final userId = account['userId']?.toString() ?? '';
       final serverUrl = normalizeServerUrl(
         (account['serverUrl'] ?? account['url'])?.toString(),
       );
       final database = account['database']?.toString() ?? '';
 
-      if (userId.isEmpty || serverUrl.isEmpty || database.isEmpty) {
+      if (!isUsableUserId(account['userId']) ||
+          serverUrl.isEmpty ||
+          database.isEmpty) {
         continue;
       }
 
-      final key = '${userId}_${serverUrl}_$database';
+      final key = storedAccountKey(account);
 
       if (!uniqueAccounts.containsKey(key)) {
         uniqueAccounts[key] = account;
@@ -600,9 +683,21 @@ class SessionService extends ChangeNotifier {
   }
 
   Future<void> storeAccount(OdooSessionModel session, String password) async {
+    // Without a real user id there is nothing to key this account on, and a
+    // fabricated `0` becomes a second, un-switchable copy of an account the
+    // list already holds. [isUsableUserId] says why 0 is not a user.
+    if (!isUsableUserId(session.userId)) return;
+
     try {
-      String? imageBase64;
-      String userDisplayName = session.userLogin;
+      final incomingKey = sessionAccountKey(session);
+      final existing = _storedAccounts.firstWhere(
+        (account) => storedAccountKey(account) == incomingKey,
+        orElse: () => <String, dynamic>{},
+      );
+
+      String? imageBase64 = existing['imageBase64']?.toString();
+      String userDisplayName =
+          existing['userName']?.toString() ?? session.userLogin;
 
       final identity = await _fetchUserIdentity(
         url: session.serverUrl,
@@ -614,8 +709,20 @@ class SessionService extends ChangeNotifier {
         imageBase64 = identity.imageBase64;
       }
 
+      // An auto-store passes no password — `storeAccount(session, '')` — and
+      // this method replaces the stored row wholesale. Letting that empty
+      // string through erased the saved password, turning a working account
+      // into one that asks to be logged in again on every switch.
+      final effectivePassword = password.isNotEmpty
+          ? password
+          : (existing['password']?.toString() ?? '');
+
+      // Non-null: the guard at the top of this method already refused a
+      // session without a usable id, so there is no `?? 0` fallback to take.
+      final userId = session.userId!.toString();
+
       final accountData = {
-        'id': (session.userId ?? 0).toString(),
+        'id': userId,
         'name': userDisplayName,
         'email': session.userLogin,
         'url': normalizeServerUrl(session.serverUrl),
@@ -625,10 +732,10 @@ class SessionService extends ChangeNotifier {
         'lastLogin': DateTime.now().toIso8601String(),
         'imageBase64': imageBase64?.isNotEmpty == true ? imageBase64 : null,
 
-        'userId': (session.userId ?? 0).toString(),
+        'userId': userId,
         'userName': userDisplayName,
         'serverUrl': normalizeServerUrl(session.serverUrl),
-        'password': password,
+        'password': effectivePassword,
         'sessionId': session.sessionId,
       };
 
@@ -636,7 +743,6 @@ class SessionService extends ChangeNotifier {
         account['isCurrent'] = false;
       }
 
-      final incomingKey = storedAccountKey(accountData);
       _storedAccounts.removeWhere(
         (account) => storedAccountKey(account) == incomingKey,
       );
@@ -918,20 +1024,15 @@ class SessionService extends ChangeNotifier {
     notifyListeners();
 
     try {
-      if (_currentSession != null &&
-          (_currentSession!.userId != newSession.userId ||
-              _currentSession!.serverUrl != newSession.serverUrl ||
-              _currentSession!.database != newSession.database)) {
+      final outgoing = _currentSession;
+      final outgoingKey = outgoing == null ? null : sessionAccountKey(outgoing);
+      if (outgoing != null && outgoingKey != sessionAccountKey(newSession)) {
         final currentExists = _storedAccounts.any(
-          (account) =>
-              account['userId']?.toString() ==
-                  _currentSession!.userId?.toString() &&
-              account['serverUrl'] == _currentSession!.serverUrl &&
-              account['database'] == _currentSession!.database,
+          (account) => storedAccountKey(account) == outgoingKey,
         );
 
         if (!currentExists) {
-          await storeAccount(_currentSession!, '');
+          await storeAccount(outgoing, '');
         }
       }
 
@@ -1293,15 +1394,13 @@ class SessionService extends ChangeNotifier {
   Future<void> cleanupCorruptedAccounts() async {
     final originalCount = _storedAccounts.length;
 
-    _storedAccounts.removeWhere((account) {
-      final userId = account['userId'];
-      final isCorrupted =
-          userId == null ||
-          userId.toString().isEmpty ||
-          userId.toString() == 'null';
-      if (isCorrupted) {}
-      return isCorrupted;
-    });
+    // `0` belongs here as much as null does: it is the id this app wrote for
+    // a session it had not identified yet, and installs already carry those
+    // rows. Dropping them on the next launch is what clears the duplicate
+    // account an affected device shows.
+    _storedAccounts.removeWhere(
+      (account) => !isUsableUserId(account['userId']),
+    );
 
     final cleanedCount = _storedAccounts.length;
 
@@ -1326,20 +1425,34 @@ class SessionService extends ChangeNotifier {
           _currentSession = updatedSession;
 
           bool changed = false;
+          final session = _currentSession!;
+          final serverUrl = normalizeServerUrl(session.serverUrl);
           for (var account in _storedAccounts) {
-            final accUserIdStr = account['userId']?.toString();
-            if ((accUserIdStr == null ||
-                    accUserIdStr == '0' ||
-                    accUserIdStr == 'null') &&
-                account['userName'] == _currentSession!.userLogin &&
-                account['serverUrl'] == _currentSession!.serverUrl &&
-                account['database'] == _currentSession!.database) {
+            // `userName` holds the display name Odoo returned, not the login,
+            // so matching it against `userLogin` alone never fired and the
+            // identity-less row was never repaired. Any of the three spellings
+            // the app writes identifies the same user.
+            final namesThisUser =
+                account['userName'] == session.userLogin ||
+                account['username'] == session.userLogin ||
+                account['email'] == session.userLogin;
+            if (!isUsableUserId(account['userId']) &&
+                namesThisUser &&
+                normalizeServerUrl(
+                      (account['serverUrl'] ?? account['url'])?.toString(),
+                    ) ==
+                    serverUrl &&
+                account['database'] == session.database) {
               account['userId'] = revealedUserId.toString();
+              account['id'] = revealedUserId.toString();
               changed = true;
             }
           }
 
           if (changed) {
+            // The repaired row now carries the same identity as the account's
+            // real row, if it had one, so collapse them before saving.
+            await _cleanupDuplicateAccounts();
             await _saveStoredAccountsWithRetry();
           }
           notifyListeners();
@@ -1351,24 +1464,18 @@ class SessionService extends ChangeNotifier {
   Future<void> _storeCurrentSessionIfNeeded(
     Map<String, dynamic> targetAccount,
   ) async {
-    if (_currentSession == null) return;
+    final session = _currentSession;
+    if (session == null) return;
 
-    final isDifferentAccount =
-        _currentSession!.userId.toString() != targetAccount['userId'] ||
-        _currentSession!.serverUrl != targetAccount['serverUrl'] ||
-        _currentSession!.database != targetAccount['database'];
-
-    if (!isDifferentAccount) return;
+    final currentKey = sessionAccountKey(session);
+    if (currentKey == storedAccountKey(targetAccount)) return;
 
     final currentExists = _storedAccounts.any(
-      (account) =>
-          account['userId'] == _currentSession!.userId.toString() &&
-          account['serverUrl'] == _currentSession!.serverUrl &&
-          account['database'] == _currentSession!.database,
+      (account) => storedAccountKey(account) == currentKey,
     );
 
     if (!currentExists) {
-      await storeAccount(_currentSession!, '');
+      await storeAccount(session, '');
     }
   }
 
@@ -1377,20 +1484,19 @@ class SessionService extends ChangeNotifier {
 
     for (int i = 0; i < _storedAccounts.length; i++) {
       final account = _storedAccounts[i];
-      final key =
-          '${account['userId']}_${account['serverUrl']}_${account['database']}';
-      uniqueAccounts[key] = Map<String, dynamic>.from(account);
+      uniqueAccounts[storedAccountKey(account)] = Map<String, dynamic>.from(
+        account,
+      );
     }
 
-    if (_currentSession != null) {
-      final currentKey =
-          '${_currentSession!.userId}_${_currentSession!.serverUrl}_${_currentSession!.database}';
+    if (_currentSession != null && isUsableUserId(_currentSession!.userId)) {
+      final currentKey = sessionAccountKey(_currentSession!);
 
       if (!uniqueAccounts.containsKey(currentKey)) {
         uniqueAccounts[currentKey] = {
           'userId': _currentSession!.userId.toString(),
           'userName': _currentSession!.userLogin,
-          'serverUrl': _currentSession!.serverUrl,
+          'serverUrl': normalizeServerUrl(_currentSession!.serverUrl),
           'database': _currentSession!.database,
           'sessionId': _currentSession!.sessionId,
         };
@@ -1404,11 +1510,9 @@ class SessionService extends ChangeNotifier {
   }
 
   bool isCurrentAccount(Map<String, dynamic> account) {
-    if (_currentSession == null) return false;
-
-    return account['userId'] == _currentSession!.userId.toString() &&
-        account['serverUrl'] == _currentSession!.serverUrl &&
-        account['database'] == _currentSession!.database;
+    final session = _currentSession;
+    if (session == null) return false;
+    return storedAccountKey(account) == sessionAccountKey(session);
   }
 
   Future<void> updateAccountCredentials(
@@ -1417,11 +1521,9 @@ class SessionService extends ChangeNotifier {
   ) async {
     if (_currentSession == null) return;
 
+    final currentKey = sessionAccountKey(_currentSession!);
     final accountIndex = _storedAccounts.indexWhere(
-      (account) =>
-          account['userId'] == _currentSession!.userId.toString() &&
-          account['serverUrl'] == _currentSession!.serverUrl &&
-          account['database'] == _currentSession!.database,
+      (account) => storedAccountKey(account) == currentKey,
     );
 
     if (accountIndex != -1) {
@@ -1443,11 +1545,13 @@ class SessionService extends ChangeNotifier {
     String serverUrl,
     String database,
   ) async {
+    final key = storedAccountKey({
+      'userId': userId,
+      'serverUrl': serverUrl,
+      'database': database,
+    });
     final accountIndex = _storedAccounts.indexWhere(
-      (account) =>
-          account['userId'] == userId &&
-          account['serverUrl'] == serverUrl &&
-          account['database'] == database,
+      (account) => storedAccountKey(account) == key,
     );
 
     if (accountIndex != -1) {

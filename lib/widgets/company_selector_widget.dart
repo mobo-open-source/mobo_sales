@@ -24,7 +24,7 @@ class CompanySelectorWidget extends StatelessWidget {
         }
 
         if (provider.companies.isEmpty) {
-          return _buildEmptyState(context);
+          return _buildEmptyState(context, provider);
         }
 
         return _buildCompactDropdown(context, provider);
@@ -71,17 +71,27 @@ class CompanySelectorWidget extends StatelessWidget {
     );
   }
 
-  Widget _buildEmptyState(BuildContext context) {
+  Widget _buildEmptyState(BuildContext context, CompanyProvider provider) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     // Tap to try loading the companies again.
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: () => context.read<CompanyProvider>().retry(),
-      child: _emptyPill(isDark),
+      child: Tooltip(
+        message: provider.loadFailed
+            ? 'Companies could not be loaded. Tap to try again.'
+            : 'This account has no companies.',
+        child: _emptyPill(isDark, failed: provider.loadFailed),
+      ),
     );
   }
 
-  Widget _emptyPill(bool isDark) {
+  /// Two different empty states, said differently.
+  ///
+  /// A load that never got an answer is not an account without companies, and
+  /// showing "No companies" for both left the user with nothing to act on —
+  /// the list was there on the server the whole time.
+  Widget _emptyPill(bool isDark, {bool failed = false}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
@@ -97,13 +107,13 @@ class CompanySelectorWidget extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            Icons.apartment_rounded,
+            failed ? Icons.refresh_rounded : Icons.apartment_rounded,
             size: 14,
             color: isDark ? Colors.white70 : Colors.black54,
           ),
           const SizedBox(width: 8),
           Text(
-            'No companies',
+            failed ? 'Tap to retry' : 'No companies',
             style: TextStyle(
               fontSize: 12,
               color: isDark ? Colors.white70 : Colors.black87,

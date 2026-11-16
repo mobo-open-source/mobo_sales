@@ -81,3 +81,28 @@ bool odooUsesFormattedReadGroup(int generation) => generation >= 19;
 /// `check_access_rights` was deprecated in 19 and removed in 20; `has_access`
 /// arrived in 18. 17 and unknown servers keep `check_access_rights`.
 bool odooUsesHasAccess(int generation) => generation >= 18;
+
+/// The `create` values for Odoo's send-invoice-by-email wizard, or null when
+/// [wizardModel] is not one this app knows how to drive.
+///
+/// Keyed on the model Odoo itself opened rather than on a generation, because
+/// `action_invoice_sent` names the wizard in its own reply — which is true even
+/// for a server whose version string could not be read.
+///
+/// Odoo 17 opens `account.move.send`, which links invoices through the
+/// many2many `move_ids` and only emails when `checkbox_send_mail` is set.
+/// Odoo 18 split the single-invoice case out into `account.move.send.wizard`,
+/// which takes one `move_id` and emails without a flag; 19 and 20 keep it.
+Map<String, dynamic>? odooInvoiceSendWizardValues(
+  Object? wizardModel,
+  int moveId,
+) => switch (wizardModel) {
+  'account.move.send' => {
+    'move_ids': [
+      [6, 0, <int>[moveId]],
+    ],
+    'checkbox_send_mail': true,
+  },
+  'account.move.send.wizard' => {'move_id': moveId},
+  _ => null,
+};

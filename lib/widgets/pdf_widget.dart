@@ -10,6 +10,8 @@ import 'package:share_plus/share_plus.dart';
 import '../services/odoo_session_manager.dart';
 import 'custom_snackbar.dart';
 
+import '../utils/cancellation_token.dart';
+
 class PDFGenerator {
   static const bool _debugMode = true;
   static const Duration _requestTimeout = Duration(minutes: 8);
@@ -26,6 +28,7 @@ class PDFGenerator {
     BuildContext context,
     Invoice invoice, {
     VoidCallback? onBeforeOpen,
+    CancellationToken? cancelToken,
   }) async {
     const methodName = 'generateInvoicePdf';
     _log('Starting Invoice PDF generation', method: methodName);
@@ -69,7 +72,9 @@ class PDFGenerator {
       );
 
       for (final reportName in reportNames) {
+        if (cancelToken?.isCancelled ?? false) break;
         for (int attempt = 1; attempt <= _maxRetryAttempts; attempt++) {
+          if (cancelToken?.isCancelled ?? false) break;
           try {
             final timestamp = DateTime.now().millisecondsSinceEpoch;
             final pdfUrl =
@@ -132,6 +137,10 @@ class PDFGenerator {
         }
         if (successfulResponse != null) break;
       }
+
+      // The user cancelled. Nothing failed, and they already know
+      // what happened, so leave the screen as it is.
+      if (cancelToken?.isCancelled ?? false) return;
 
       if (successfulResponse == null) {
         _log(
@@ -215,8 +224,9 @@ class PDFGenerator {
 
   static Future<void> sendInvoiceViaWhatsApp(
     BuildContext context,
-    Invoice invoice,
-  ) async {
+    Invoice invoice, {
+    CancellationToken? cancelToken,
+  }) async {
     const methodName = 'sendInvoiceViaWhatsApp';
     _log('Starting invoice sharing via WhatsApp', method: methodName);
 
@@ -253,7 +263,13 @@ class PDFGenerator {
         invoiceId,
         invoiceName,
         reportNames,
+        cancelToken: cancelToken,
       );
+
+      // Cancelled while the document was being built: no share sheet, no
+      // error. Opening a share sheet over a screen the user has gone back to
+      // is worse than doing nothing.
+      if (cancelToken?.isCancelled ?? false) return;
 
       if (filePath == null) {
         throw Exception('Failed to generate PDF');
@@ -344,8 +360,9 @@ class PDFGenerator {
     String odooUrl,
     int invoiceId,
     String invoiceName,
-    List<String> reportNames,
-  ) async {
+    List<String> reportNames, {
+    CancellationToken? cancelToken,
+  }) async {
     http.Response? successfulResponse;
     bool isLocalEnvironment = _isLocalEnvironment(odooUrl);
     Duration timeoutDuration = isLocalEnvironment
@@ -353,7 +370,9 @@ class PDFGenerator {
         : _requestTimeout;
 
     for (final reportName in reportNames) {
+      if (cancelToken?.isCancelled ?? false) break;
       for (int attempt = 1; attempt <= _maxRetryAttempts; attempt++) {
+        if (cancelToken?.isCancelled ?? false) break;
         try {
           final timestamp = DateTime.now().millisecondsSinceEpoch;
           final pdfUrl =
@@ -377,6 +396,10 @@ class PDFGenerator {
       }
       if (successfulResponse != null) break;
     }
+
+    // The user cancelled. Nothing failed, and they already know
+    // what happened, so leave the screen as it is.
+    if (cancelToken?.isCancelled ?? false) return null;
 
     if (successfulResponse == null) return null;
 
@@ -422,8 +445,9 @@ class PDFGenerator {
     String odooUrl,
     int saleOrderId,
     String quotationName,
-    List<String> reportNames,
-  ) async {
+    List<String> reportNames, {
+    CancellationToken? cancelToken,
+  }) async {
     http.Response? successfulResponse;
     bool isLocalEnvironment = _isLocalEnvironment(odooUrl);
     Duration timeoutDuration = isLocalEnvironment
@@ -431,7 +455,9 @@ class PDFGenerator {
         : _requestTimeout;
 
     for (final reportName in reportNames) {
+      if (cancelToken?.isCancelled ?? false) break;
       for (int attempt = 1; attempt <= _maxRetryAttempts; attempt++) {
+        if (cancelToken?.isCancelled ?? false) break;
         try {
           final timestamp = DateTime.now().millisecondsSinceEpoch;
           final pdfUrl =
@@ -455,6 +481,10 @@ class PDFGenerator {
       }
       if (successfulResponse != null) break;
     }
+
+    // The user cancelled. Nothing failed, and they already know
+    // what happened, so leave the screen as it is.
+    if (cancelToken?.isCancelled ?? false) return null;
 
     if (successfulResponse == null) return null;
 
@@ -497,8 +527,9 @@ class PDFGenerator {
 
   static Future<void> sendQuotationViaWhatsApp(
     BuildContext context,
-    Quote quotation,
-  ) async {
+    Quote quotation, {
+    CancellationToken? cancelToken,
+  }) async {
     const methodName = 'sendQuotationViaWhatsApp';
     _log('Starting quotation sharing via WhatsApp', method: methodName);
 
@@ -531,7 +562,11 @@ class PDFGenerator {
         saleOrderId,
         quotationName,
         reportNames,
+        cancelToken: cancelToken,
       );
+
+      // See the note in [sendInvoiceViaWhatsApp].
+      if (cancelToken?.isCancelled ?? false) return;
 
       if (filePath == null) {
         throw Exception('Failed to generate PDF');
@@ -559,6 +594,7 @@ class PDFGenerator {
     BuildContext context,
     Quote quotation, {
     VoidCallback? onBeforeOpen,
+    CancellationToken? cancelToken,
   }) async {
     const methodName = 'generateAndSavePdf';
     _log('Starting PDF generation', method: methodName);
@@ -595,7 +631,9 @@ class PDFGenerator {
       );
 
       for (final reportName in reportNames) {
+        if (cancelToken?.isCancelled ?? false) break;
         for (int attempt = 1; attempt <= _maxRetryAttempts; attempt++) {
+          if (cancelToken?.isCancelled ?? false) break;
           try {
             final timestamp = DateTime.now().millisecondsSinceEpoch;
             final pdfUrl =
@@ -658,6 +696,10 @@ class PDFGenerator {
         }
         if (successfulResponse != null) break;
       }
+
+      // The user cancelled. Nothing failed, and they already know
+      // what happened, so leave the screen as it is.
+      if (cancelToken?.isCancelled ?? false) return;
 
       if (successfulResponse == null) {
         _log(
@@ -734,6 +776,7 @@ class PDFGenerator {
     BuildContext context,
     Quote quotation, {
     VoidCallback? onBeforeOpen,
+    CancellationToken? cancelToken,
   }) async {
     const methodName = 'generatePdfQuote';
     _log('Starting PDF Quote generation', method: methodName);
@@ -772,7 +815,9 @@ class PDFGenerator {
       Exception? lastError;
 
       for (final reportName in reportNames) {
+        if (cancelToken?.isCancelled ?? false) break;
         for (int attempt = 1; attempt <= _maxRetryAttempts; attempt++) {
+          if (cancelToken?.isCancelled ?? false) break;
           try {
             final pdfUrl =
                 '$odooUrl/report/pdf/$reportName/$saleOrderId?t=$timestamp';
@@ -834,6 +879,10 @@ class PDFGenerator {
         }
         if (successfulResponse != null) break;
       }
+
+      // The user cancelled. Nothing failed, and they already know
+      // what happened, so leave the screen as it is.
+      if (cancelToken?.isCancelled ?? false) return;
 
       if (successfulResponse == null) {
         _log(
@@ -916,8 +965,9 @@ class PDFGenerator {
 
   static Future<String?> generatePdfForSharing(
     BuildContext context,
-    Quote quotation,
-  ) async {
+    Quote quotation, {
+    CancellationToken? cancelToken,
+  }) async {
     const methodName = 'generatePdfForSharing';
     _log('Starting PDF generation for sharing', method: methodName);
 
@@ -947,7 +997,9 @@ class PDFGenerator {
       http.Response? successfulResponse;
 
       for (final reportName in reportNames) {
+        if (cancelToken?.isCancelled ?? false) break;
         for (int attempt = 1; attempt <= _maxRetryAttempts; attempt++) {
+          if (cancelToken?.isCancelled ?? false) break;
           try {
             final timestamp = DateTime.now().millisecondsSinceEpoch;
             final pdfUrl =
@@ -1001,6 +1053,10 @@ class PDFGenerator {
         }
         if (successfulResponse != null) break;
       }
+
+      // The user cancelled. Nothing failed, and they already know
+      // what happened, so leave the screen as it is.
+      if (cancelToken?.isCancelled ?? false) return null;
 
       if (successfulResponse == null) {
         _log(

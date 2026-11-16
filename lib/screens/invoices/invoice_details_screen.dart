@@ -44,6 +44,7 @@ import 'package:mobo_sales/widgets/loading_skeletons.dart';
 import 'package:mobo_sales/widgets/loading_dialog.dart';
 import '../../utils/odoo_date.dart';
 import '../../utils/guarded_action.dart';
+import '../../utils/cancellation_token.dart';
 
 class InvoiceDetailsPage extends StatefulWidget {
   final String invoiceId;
@@ -559,6 +560,20 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
     }
   }
 
+  /// Reloads the invoice and its payment list together.
+  ///
+  /// The two read different things from Odoo and neither needs the other's
+  /// answer, so awaiting them one after the other doubled the time the page
+  /// spent showing the state it had *before* the action — which is what made
+  /// a just-paid invoice sit there looking unpaid under a "Payment recorded"
+  /// message. Run together, the wait is one round trip instead of two.
+  Future<void> _reloadInvoiceAndPayments() async {
+    await Future.wait([
+      _loadInvoiceData(forceRefresh: true),
+      _loadInvoicePayments(),
+    ]);
+  }
+
   Future<void> _loadInvoicePayments() async {
     if (!mounted || _isLoadingPayments) return;
 
@@ -997,9 +1012,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
       await PaymentStatusSynchronizer.syncInvoicePaymentStatus(invoiceId);
 
       if (mounted) {
-        await _loadInvoiceData(forceRefresh: true);
-
-        await _loadInvoicePayments();
+        await _reloadInvoiceAndPayments();
       }
 
       if (mounted && message != null) {
@@ -1783,46 +1796,36 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                 isPrimary: true,
 
                 onPressed: () async {
-                  bool dialogDismissed = false;
-
-                  showDialog(
-                    context: context,
-                    barrierDismissible: false,
-                    builder: (dialogContext) {
-                      return const LoadingDialog(
-                        message: 'Generating PDF...',
-                        subtitle: 'Please wait while we prepare your document',
-                      );
-                    },
+                  // A report can take minutes of server time, so the wait has
+                  // to be escapable. Cancel closes the popup at once and tells
+                  // the generator to stop trying.
+                  final cancelToken = CancellationToken();
+                  final loading = LoadingDialog.open(
+                    context,
+                    message: 'Generating PDF...',
+                    subtitle: 'Please wait while we prepare your document',
+                    onCancel: cancelToken.cancel,
                   );
-
-                  void dismissDialog() {
-                    if (!dialogDismissed && mounted) {
-                      try {
-                        final navigator = Navigator.of(
-                          context,
-                          rootNavigator: true,
-                        );
-                        if (navigator.canPop()) {
-                          navigator.pop();
-                          dialogDismissed = true;
-                        }
-                      } catch (e) {}
-                    }
-                  }
+                  cancelToken.addListener(loading.close);
 
                   try {
                     await PDFGenerator.generateInvoicePdf(
                       context,
                       provider.invoice!,
-                      onBeforeOpen: dismissDialog,
+                      onBeforeOpen: loading.close,
+                      cancelToken: cancelToken,
                     );
                   } catch (e) {
-                    dismissDialog();
-                    _showSafeSnackBar(
-                      describeActionFailure(e, 'PDF generation failed'),
-                      backgroundColor: Colors.red,
-                    );
+                    // Cancelling is not a failure, and the user knows they did
+                    // it: no error on top of their own decision.
+                    if (!cancelToken.isCancelled) {
+                      _showSafeSnackBar(
+                        describeActionFailure(e, 'PDF generation failed'),
+                        backgroundColor: Colors.red,
+                      );
+                    }
+                  } finally {
+                    loading.close();
                   }
                 },
               ),
@@ -1946,9 +1949,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                     _lastManualRefreshTime = DateTime.now();
                                   });
 
-                                  await _loadInvoiceData(forceRefresh: true);
-
-                                  await _loadInvoicePayments();
+                                  await _reloadInvoiceAndPayments();
                                 }
                               } else if (result is Invoice) {
                                 _showSafeSnackBar(
@@ -1972,9 +1973,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                   _lastManualRefreshTime = DateTime.now();
                                 });
 
-                                await _loadInvoiceData(forceRefresh: true);
-
-                                await _loadInvoicePayments();
+                                await _reloadInvoiceAndPayments();
                               } else if (result == true) {
                                 _showSafeSnackBar(
                                   'Payment recorded successfully!',
@@ -1996,9 +1995,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                     );
                                   }
 
-                                  await _loadInvoiceData(forceRefresh: true);
-
-                                  await _loadInvoicePayments();
+                                  await _reloadInvoiceAndPayments();
                                 }
                               }
 
@@ -2070,8 +2067,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                 message: 'Resetting Invoice...',
                 subtitle: 'Please wait while we reset your invoice to draft',
                 failurePrefix: 'Could not reset the invoice to draft',
-                action: () =>
-                    provider.resetToDraft(context, widget.invoiceId),
+                action: () => provider.resetToDraft(context, widget.invoiceId),
               );
               if (context.mounted) {
                 if (success == true) {
@@ -2101,8 +2097,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                 message: 'Cancelling Invoice...',
                 subtitle: 'Please wait while we cancel your invoice',
                 failurePrefix: 'Could not cancel the invoice',
-                action: () =>
-                    provider.cancelInvoice(context, widget.invoiceId),
+                action: () => provider.cancelInvoice(context, widget.invoiceId),
               );
               if (context.mounted) {
                 if (success == true) {
@@ -2888,8 +2883,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
       return ConnectionStatusWidget(
         serverUnreachable: true,
         serverErrorMessage: provider.errorMessage,
-        onRetry: () =>
-            provider.fetchInvoiceDetails(context, widget.invoiceId),
+        onRetry: () => provider.fetchInvoiceDetails(context, widget.invoiceId),
       );
     }
 
@@ -3024,9 +3018,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                           // working one and simply stops answering taps.
                           color: _actionsAvailable(provider)
                               ? (isDark ? Colors.grey[400] : Colors.grey[600])
-                              : (isDark
-                                    ? Colors.grey[700]
-                                    : Colors.grey[350]),
+                              : (isDark ? Colors.grey[700] : Colors.grey[350]),
                         ),
                         tooltip: 'Edit Invoice',
                         onPressed: !_actionsAvailable(provider)
@@ -3618,8 +3610,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                   message: 'Deleting Invoice...',
                                   subtitle:
                                       'Please wait while we delete your invoice',
-                                  failurePrefix:
-                                      'Could not delete the invoice',
+                                  failurePrefix: 'Could not delete the invoice',
                                   action: () => provider.deleteInvoice(
                                     context,
                                     widget.invoiceId,
@@ -3725,6 +3716,14 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                           if (navigator.canPop()) navigator.pop();
                         }
 
+                        // Building or sending a report can take minutes of
+                        // server time. Cancel closes the popup at once and
+                        // tells the generator to stop; sending an invoice goes
+                        // through Odoo in one call, so it keeps no Cancel it
+                        // could not honour.
+                        final cancelToken = CancellationToken();
+                        final canCancel = value != 'send_invoice';
+
                         showDialog(
                           context: context,
                           barrierDismissible: false,
@@ -3740,6 +3739,12 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                   : value == 'send_whatsapp'
                                   ? 'Please wait while we send your invoice via WhatsApp'
                                   : 'Please wait while we prepare your document',
+                              onCancel: canCancel
+                                  ? () {
+                                      cancelToken.cancel();
+                                      closeLoading();
+                                    }
+                                  : null,
                             );
                           },
                         );
@@ -3785,6 +3790,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                               await PDFGenerator.sendInvoiceViaWhatsApp(
                                 dialogContext,
                                 provider.invoice!,
+                                cancelToken: cancelToken,
                               );
                             } finally {
                               closeLoading();
@@ -3794,13 +3800,19 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                               await PDFGenerator.generateInvoicePdf(
                                 dialogContext,
                                 provider.invoice!,
+                                cancelToken: cancelToken,
                               );
                             } catch (e) {
                               closeLoading();
-                              if (mounted) {
+                              // Cancelling is the user's own doing, not a
+                              // failure to report back to them.
+                              if (mounted && !cancelToken.isCancelled) {
                                 CustomSnackbar.showError(
                                   context,
-                                  'PDF generation failed: ${e.toString()}',
+                                  describeActionFailure(
+                                    e,
+                                    'PDF generation failed',
+                                  ),
                                 );
                               }
                             } finally {
@@ -3809,10 +3821,10 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                           }
                         } catch (e) {
                           closeLoading();
-                          if (mounted) {
+                          if (mounted && !cancelToken.isCancelled) {
                             CustomSnackbar.showError(
                               context,
-                              'Operation failed: ${e.toString()}',
+                              describeActionFailure(e, 'Operation failed'),
                             );
                           }
                         }

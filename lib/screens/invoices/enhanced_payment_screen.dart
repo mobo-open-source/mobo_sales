@@ -16,6 +16,7 @@ import '../../shared/widgets/mobo/mobo_select_form_field.dart';
 import '../../widgets/custom_text_field.dart';
 import '../../widgets/enhanced_payment_status_badge.dart';
 import '../../widgets/custom_snackbar.dart';
+import '../../widgets/loading_dialog.dart';
 import '../../utils/date_picker_utils.dart';
 import '../../utils/invoice_payment_rules.dart';
 import '../../utils/odoo_date.dart';
@@ -485,7 +486,18 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
 
     if (!confirmed) return;
 
-    setState(() => _isLoading = true);
+    if (_isLoading) return;
+    _isLoading = true;
+
+    // The app's one loading popup — the same card Confirm, Reset and Delete
+    // show. It is pushed on the root navigator, so it has to be closed before
+    // this screen pops: a `Navigator.pop` taken with the dialog still up would
+    // close the dialog and leave the user on the payment form.
+    final loading = LoadingDialog.open(
+      context,
+      message: 'Recording payment...',
+      subtitle: 'Please wait while we record your payment.',
+    );
 
     try {
       if (_paymentDifferenceHandling == 'reconcile') {
@@ -540,6 +552,9 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
           options: options,
         );
 
+        // Before any `Navigator.pop` below.
+        loading.close();
+
         if (mounted && !_isDisposed) {
           HapticFeedback.lightImpact();
 
@@ -579,6 +594,7 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
           }
         }
       } catch (paymentError) {
+        loading.close();
         if (mounted && !_isDisposed) {
           String errorMessage;
           if (paymentError is PaymentError) {
@@ -594,6 +610,7 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
         }
       }
     } catch (e) {
+      loading.close();
       if (mounted && !_isDisposed) {
         String errorMessage;
         if (e is PaymentError) {
@@ -607,9 +624,9 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
         } catch (snackBarError) {}
       }
     } finally {
-      if (mounted && !_isDisposed) {
-        setState(() => _isLoading = false);
-      }
+      // Idempotent: whichever path got here, the popup is gone.
+      loading.close();
+      _isLoading = false;
     }
   }
 
@@ -703,77 +720,60 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
         top: false,
         left: false,
         right: false,
-        child: _isLoading
-            ? _buildLoadingScreen()
-            : FadeTransition(
-                opacity: _fadeAnimation,
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(20),
-                  child: Form(
-                    key: _formKey,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _buildInvoiceInfoCard(isDark),
-                        const SizedBox(height: 20),
+        child: FadeTransition(
+          opacity: _fadeAnimation,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildInvoiceInfoCard(isDark),
+                  const SizedBox(height: 20),
 
-                        if (_isLoadingExistingPayments) ...[
-                          _buildExistingPaymentsShimmer(isDark),
-                          const SizedBox(height: 20),
-                        ] else if (_existingPayments.isNotEmpty) ...[
-                          _buildExistingPaymentsCard(isDark),
-                          const SizedBox(height: 20),
-                        ],
+                  if (_isLoadingExistingPayments) ...[
+                    _buildExistingPaymentsShimmer(isDark),
+                    const SizedBox(height: 20),
+                  ] else if (_existingPayments.isNotEmpty) ...[
+                    _buildExistingPaymentsCard(isDark),
+                    const SizedBox(height: 20),
+                  ],
 
-                        _buildPaymentDetailsCard(isDark),
-                        const SizedBox(height: 20),
+                  _buildPaymentDetailsCard(isDark),
+                  const SizedBox(height: 20),
 
-                        if (_showPaymentDifference)
-                          _buildPaymentDifferenceCard(isDark),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-      ),
-      bottomNavigationBar: _isLoading
-          ? null
-          : MoboBottomActionBar(
-              child: SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton.icon(
-                  onPressed: _recordQuickPayment,
-                  icon: const Icon(HugeIcons.strokeRoundedPayment02),
-                  label: Text(
-                    'Record Payment',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      color: isDark ? Colors.white70 : Colors.white,
-                    ),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: theme.primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                ),
+                  if (_showPaymentDifference)
+                    _buildPaymentDifferenceCard(isDark),
+                ],
               ),
             ),
-    );
-  }
-
-  Widget _buildLoadingScreen() {
-    return const Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          CircularProgressIndicator(),
-          SizedBox(height: 16),
-          Text('Recording payment...'),
-        ],
+          ),
+        ),
+      ),
+      bottomNavigationBar: MoboBottomActionBar(
+        child: SizedBox(
+          width: double.infinity,
+          height: 50,
+          child: ElevatedButton.icon(
+            onPressed: _recordQuickPayment,
+            icon: const Icon(HugeIcons.strokeRoundedPayment02),
+            label: Text(
+              'Record Payment',
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                color: isDark ? Colors.white70 : Colors.white,
+              ),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: theme.primaryColor,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

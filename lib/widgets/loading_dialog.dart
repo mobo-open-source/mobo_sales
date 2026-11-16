@@ -21,6 +21,8 @@ class LoadingCard extends StatelessWidget {
     this.message = defaultMessage,
     this.subtitle = defaultSubtitle,
     this.framed = true,
+    this.onCancel,
+    this.cancelLabel = 'Cancel',
   });
 
   static const String defaultMessage = 'Processing...';
@@ -37,6 +39,15 @@ class LoadingCard extends StatelessWidget {
   /// one.
   final bool framed;
 
+  /// Lets the user give up. When null the card shows no way out, which is right
+  /// for work that finishes in a second or two; anything that can run for
+  /// minutes — generating a document, sending one — should pass one, because a
+  /// popup with no exit is indistinguishable from a frozen app.
+  final VoidCallback? onCancel;
+
+  /// The wording on that button.
+  final String cancelLabel;
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -47,19 +58,26 @@ class LoadingCard extends StatelessWidget {
       label: line == null ? message : '$message $line',
       liveRegion: true,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
+        // Unchanged without an action. With one, the foot comes in to 24 so
+        // the button is not left sitting in a deep margin.
+        padding: EdgeInsets.fromLTRB(28, 32, 28, onCancel == null ? 32 : 24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
+          // Dialog content is stretched (MOBO_UI §5.10), which is what gives
+          // the action its full width; the circle keeps its own size.
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Container(
-              decoration: BoxDecoration(
-                color: Theme.of(context).primaryColor.withValues(alpha: 0.08),
-                shape: BoxShape.circle,
-              ),
-              padding: const EdgeInsets.all(16),
-              child: LoadingAnimationWidget.fourRotatingDots(
-                color: primary,
-                size: 50,
+            Center(
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).primaryColor.withValues(alpha: 0.08),
+                  shape: BoxShape.circle,
+                ),
+                padding: const EdgeInsets.all(16),
+                child: LoadingAnimationWidget.fourRotatingDots(
+                  color: primary,
+                  size: 50,
+                ),
               ),
             ),
             const SizedBox(height: 24),
@@ -80,6 +98,40 @@ class LoadingCard extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 14,
                   color: isDark ? Colors.grey[300] : Colors.grey[700],
+                ),
+              ),
+            ],
+            if (onCancel != null) ...[
+              const SizedBox(height: 24),
+              // The outlined secondary of MOBO_UI §5.1 — height 48, radius 12,
+              // a 1.5 primary border and a 16/w700 primary label — built to
+              // the same numbers as `MoboDialogButtons`, so this Cancel reads
+              // as the same control as every other Cancel in the app. A grey
+              // text link read as a caption, not something to press.
+              SizedBox(
+                height: 48,
+                child: OutlinedButton(
+                  onPressed: onCancel,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: primary,
+                    side: BorderSide(color: primary, width: 1.5),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                  ),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      cancelLabel,
+                      maxLines: 1,
+                      softWrap: false,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ],
@@ -109,10 +161,20 @@ class LoadingDialog extends StatelessWidget {
     super.key,
     this.message = LoadingCard.defaultMessage,
     this.subtitle = LoadingCard.defaultSubtitle,
+    this.onCancel,
+    this.cancelLabel = 'Cancel',
   });
 
   final String message;
   final String? subtitle;
+
+  /// Shows a Cancel button, and makes the system back gesture mean the same
+  /// thing. Null keeps the old behaviour: no way out until the caller closes
+  /// it.
+  final VoidCallback? onCancel;
+
+  /// The wording on that button.
+  final String cancelLabel;
 
   /// Shows it above the current screen and returns the dialog's future.
   /// Dismiss with `Navigator.of(context, rootNavigator: true).pop()`, or
@@ -121,11 +183,18 @@ class LoadingDialog extends StatelessWidget {
     BuildContext context, {
     String message = LoadingCard.defaultMessage,
     String? subtitle = LoadingCard.defaultSubtitle,
+    VoidCallback? onCancel,
+    String cancelLabel = 'Cancel',
   }) {
     return showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => LoadingDialog(message: message, subtitle: subtitle),
+      builder: (_) => LoadingDialog(
+        message: message,
+        subtitle: subtitle,
+        onCancel: onCancel,
+        cancelLabel: cancelLabel,
+      ),
     );
   }
 
@@ -145,12 +214,19 @@ class LoadingDialog extends StatelessWidget {
     BuildContext context, {
     String message = LoadingCard.defaultMessage,
     String? subtitle = LoadingCard.defaultSubtitle,
+    VoidCallback? onCancel,
+    String cancelLabel = 'Cancel',
   }) {
     final navigator = Navigator.of(context, rootNavigator: true);
     final route = DialogRoute<void>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => LoadingDialog(message: message, subtitle: subtitle),
+      builder: (_) => LoadingDialog(
+        message: message,
+        subtitle: subtitle,
+        onCancel: onCancel,
+        cancelLabel: cancelLabel,
+      ),
     );
     navigator.push(route);
     return LoadingDialogHandle._(navigator, route);
@@ -160,13 +236,27 @@ class LoadingDialog extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
+    final cancel = onCancel;
+
+    // Still `canPop: false`: the dialog is never dismissed behind the work's
+    // back. But when there is a Cancel, the back gesture has to mean it —
+    // pressing back and having nothing happen is what makes this feel stuck.
     return PopScope(
       canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) cancel?.call();
+      },
       child: Dialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         backgroundColor: isDark ? Colors.grey[900] : Colors.white,
         elevation: 8,
-        child: LoadingCard(message: message, subtitle: subtitle, framed: false),
+        child: LoadingCard(
+          message: message,
+          subtitle: subtitle,
+          framed: false,
+          onCancel: cancel,
+          cancelLabel: cancelLabel,
+        ),
       ),
     );
   }

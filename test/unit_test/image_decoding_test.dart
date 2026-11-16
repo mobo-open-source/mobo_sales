@@ -21,8 +21,9 @@ Future<Uint8List?> decodeBase64Image(String imageUrl) async {
     }
 
     return bytes;
-  } catch (e) {
-    print('Error decoding: $e');
+  } catch (_) {
+    // Not decodable base64. The caller reads null as "no image", which is
+    // what the two tests below assert.
     return null;
   }
 }

@@ -65,24 +65,7 @@ class Delivery {
   }
 
   /// Returns a human-readable label for the current [state] (e.g. 'Ready', 'Done').
-  String getStateLabel() {
-    switch (state) {
-      case 'draft':
-        return 'Draft';
-      case 'waiting':
-        return 'Waiting';
-      case 'confirmed':
-        return 'Confirmed';
-      case 'assigned':
-        return 'Ready';
-      case 'done':
-        return 'Done';
-      case 'cancel':
-        return 'Cancelled';
-      default:
-        return state;
-    }
-  }
+  String getStateLabel() => deliveryStateLabel(state);
 
   /// Returns a human-readable label for the picking type (e.g. 'Delivery', 'Receipt').
   String getTypeLabel() {
@@ -98,6 +81,39 @@ class Delivery {
     }
   }
 }
+
+/// Odoo's own label for each `stock.picking.state`, in Odoo's own order.
+///
+/// Taken from the `state` selection on `stock.picking`, which reads the same in
+/// 17, 18, 19 and 20:
+///
+/// ```python
+/// ('draft', 'Draft'),
+/// ('waiting', 'Waiting Another Operation'),
+/// ('confirmed', 'Waiting'),
+/// ('assigned', 'Ready'),
+/// ('done', 'Done'),
+/// ('cancel', 'Cancelled'),
+/// ```
+///
+/// The two that read wrongly if guessed from the technical name are the ones
+/// that matter: `confirmed` is *not* "Confirmed" — it means the transfer is
+/// waiting for stock to become available, and Odoo shows it as "Waiting".
+/// `waiting` is narrower still: it waits on another operation. Calling
+/// `confirmed` "Confirmed" tells the user someone validated the delivery when
+/// nobody has.
+const Map<String, String> kDeliveryStateLabels = {
+  'draft': 'Draft',
+  'waiting': 'Waiting Another Operation',
+  'confirmed': 'Waiting',
+  'assigned': 'Ready',
+  'done': 'Done',
+  'cancel': 'Cancelled',
+};
+
+/// Odoo's label for a `stock.picking` [state], or the raw state when it is one
+/// this app has not seen.
+String deliveryStateLabel(String state) => kDeliveryStateLabels[state] ?? state;
 
 // ---------------------------------------------------------------------------
 // Field names that differ between Odoo versions. Plain functions of an Odoo

@@ -308,4 +308,180 @@ void main() {
       expect(find.text('ON TOP'), findsOneWidget, reason: 'untouched');
     });
   });
+
+  group('a way out of a long wait', () {
+    testWidgets('no Cancel unless one is given', (tester) async {
+      await pumpHost(tester);
+      LoadingDialog.show(host, message: 'Saving...');
+      await tester.pump();
+
+      expect(find.text('Cancel'), findsNothing);
+    });
+
+    testWidgets('shows Cancel and reports the tap', (tester) async {
+      var cancelled = false;
+      await pumpHost(tester);
+      LoadingDialog.show(
+        host,
+        message: 'Generating PDF...',
+        onCancel: () => cancelled = true,
+      );
+      await tester.pump();
+
+      expect(find.text('Cancel'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pump();
+      expect(cancelled, isTrue);
+    });
+
+    testWidgets('the wording can be changed', (tester) async {
+      await pumpHost(tester);
+      LoadingDialog.show(
+        host,
+        message: 'Sending...',
+        onCancel: () {},
+        cancelLabel: 'Stop',
+      );
+      await tester.pump();
+
+      expect(find.text('Stop'), findsOneWidget);
+      expect(find.text('Cancel'), findsNothing);
+    });
+
+    testWidgets(
+      'the back gesture means Cancel, and still never pops the dialog',
+      (tester) async {
+        // The reported complaint was that back did nothing at all. It must now
+        // reach the cancel, while the dialog itself stays put until the caller
+        // takes it down.
+        var cancelled = false;
+        await pumpHost(tester);
+        final handle = LoadingDialog.open(
+          host,
+          message: 'Generating PDF...',
+          onCancel: () => cancelled = true,
+        );
+        await tester.pump();
+        expect(handle.isOpen, isTrue);
+
+        await tester.binding.handlePopRoute();
+        await tester.pump();
+
+        expect(cancelled, isTrue);
+        expect(
+          handle.isOpen,
+          isTrue,
+          reason: 'back asks to cancel; the caller decides when it closes',
+        );
+      },
+    );
+
+    testWidgets('back does nothing when there is no Cancel', (tester) async {
+      await pumpHost(tester);
+      final handle = LoadingDialog.open(host, message: 'Saving...');
+      await tester.pump();
+
+      await tester.binding.handlePopRoute();
+      await tester.pump();
+
+      expect(handle.isOpen, isTrue);
+    });
+  });
+
+  group('the Cancel is the app\'s secondary button, not a text link', () {
+    // MOBO_UI §5.1: Cancel is the outlined secondary — height 48, radius 12,
+    // a 1.5 primary border, a 16/w700 primary label. §5.10: dialog content is
+    // stretched. Built to the same numbers as MoboDialogButtons so every
+    // Cancel in the app reads the same.
+    testWidgets(
+      'is an OutlinedButton, 48 high, radius 12, 1.5 primary border',
+      (tester) async {
+        await pumpHost(tester);
+        LoadingDialog.show(host, message: 'Generating PDF...', onCancel: () {});
+        await tester.pump();
+
+        final button = find.byType(OutlinedButton);
+        expect(button, findsOneWidget);
+        expect(tester.getSize(button).height, 48);
+
+        final style = tester.widget<OutlinedButton>(button).style!;
+        const states = <WidgetState>{};
+
+        final side = style.side!.resolve(states)!;
+        expect(side.width, 1.5);
+        expect(
+          side.color,
+          ThemeData.light().colorScheme.primary,
+          reason: 'Cancel carries the brand colour, not grey',
+        );
+        expect(
+          style.foregroundColor!.resolve(states),
+          ThemeData.light().colorScheme.primary,
+        );
+
+        final shape = style.shape!.resolve(states) as RoundedRectangleBorder;
+        expect(shape.borderRadius, BorderRadius.circular(12));
+      },
+    );
+
+    testWidgets('fills the width of the card, rather than floating centred', (
+      tester,
+    ) async {
+      await pumpHost(tester);
+      LoadingDialog.show(
+        host,
+        message: 'Sending via WhatsApp...',
+        subtitle: 'Please wait while we send your invoice via WhatsApp',
+        onCancel: () {},
+      );
+      await tester.pump();
+
+      final buttonWidth = tester.getSize(find.byType(OutlinedButton)).width;
+      final textWidth = tester
+          .getSize(
+            find.text('Please wait while we send your invoice via WhatsApp'),
+          )
+          .width;
+
+      expect(
+        buttonWidth,
+        greaterThanOrEqualTo(textWidth - 1),
+        reason: 'a stretched action is as wide as the content above it',
+      );
+    });
+
+    testWidgets('the label never loses its end', (tester) async {
+      await pumpHost(tester);
+      LoadingDialog.show(
+        host,
+        message: 'Generating PDF...',
+        onCancel: () {},
+        cancelLabel: 'Stop generating this document',
+      );
+      await tester.pump();
+
+      expect(find.text('Stop generating this document'), findsOneWidget);
+      expect(find.byType(FittedBox), findsWidgets);
+    });
+
+    testWidgets('the dots stay a circle though the column stretches', (
+      tester,
+    ) async {
+      await pumpHost(tester);
+      LoadingDialog.show(host, message: 'Working...', onCancel: () {});
+      await tester.pump();
+
+      final circle = find.descendant(
+        of: find.byType(LoadingCard),
+        matching: find.byWidgetPredicate(
+          (w) =>
+              w is Container &&
+              w.decoration is BoxDecoration &&
+              (w.decoration as BoxDecoration).shape == BoxShape.circle,
+        ),
+      );
+      final size = tester.getSize(circle.first);
+      expect(size.width, size.height, reason: 'stretch must not flatten it');
+    });
+  });
 }

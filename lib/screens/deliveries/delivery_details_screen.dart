@@ -870,24 +870,9 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
     }
   }
 
-  String _getStateLabel(String state) {
-    switch (state) {
-      case 'draft':
-        return 'Draft';
-      case 'waiting':
-        return 'Waiting';
-      case 'confirmed':
-        return 'Confirmed';
-      case 'assigned':
-        return 'Ready';
-      case 'done':
-        return 'Done';
-      case 'cancel':
-        return 'Cancelled';
-      default:
-        return state;
-    }
-  }
+  /// Odoo's label for the picking state. One source for the whole app, in
+  /// `models/delivery.dart`, so this screen and the list can never disagree.
+  String _getStateLabel(String state) => deliveryStateLabel(state);
 
   String _getPriorityLabel(String priority) {
     switch (priority) {
@@ -949,10 +934,7 @@ class _DeliveryDetailsScreenState extends State<DeliveryDetailsScreen> {
             // reaching this is a bug upstream; a message and a Retry are the
             // floor, so no path can leave the page blank. The path that gets
             // here has not been identified.
-            : SectionErrorState(
-                error: null,
-                onRetry: _fetchDeliveryDetails,
-              ),
+            : SectionErrorState(error: null, onRetry: _fetchDeliveryDetails),
         bottomNavigationBar: _isLoading || !_canShowValidate
             ? null
             : MoboBottomActionBar(child: _buildActionBar(isDark)),

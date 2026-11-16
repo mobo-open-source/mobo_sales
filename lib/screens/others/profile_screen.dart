@@ -1055,7 +1055,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       // Kept verbatim: ConnectionStatusWidget matches on the text to tell a
       // dead session from a socket failure from a 500, and a summarised
       // message would defeat that.
-      debugPrint('[profile] read failed: $e');
       if (mounted) {
         setState(() {
           _isLoading = false;
@@ -1366,7 +1365,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         ),
         content: Text(
-          'Are you sure you want to log out? Your session will be ended.',
+          'This signs you out of every account saved on this device. You will need to sign in again.',
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
             color: isDark
                 ? Colors.grey[300]

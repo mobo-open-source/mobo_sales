@@ -54,6 +54,7 @@ import 'package:open_file/open_file.dart';
 import 'package:mobo_sales/widgets/loading_skeletons.dart';
 import '../../services/data_change_bus.dart';
 import '../../utils/odoo_date.dart';
+import '../../utils/cancellation_token.dart';
 
 String _safeString(dynamic value) {
   if (value == null || value == false) return '';
@@ -165,11 +166,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
               onTap: () async {
                 Navigator.pop(bottomSheetContext);
                 await _generatePdfWithDialog(
-                  ({onBeforeOpen}) => PDFGenerator.generatePdfQuote(
-                    context,
-                    _localQuotation,
-                    onBeforeOpen: onBeforeOpen,
-                  ),
+                  ({onBeforeOpen, cancelToken}) =>
+                      PDFGenerator.generatePdfQuote(
+                        context,
+                        _localQuotation,
+                        onBeforeOpen: onBeforeOpen,
+                        cancelToken: cancelToken,
+                      ),
                 );
               },
             ),
@@ -188,11 +191,13 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
               onTap: () async {
                 Navigator.pop(bottomSheetContext);
                 await _generatePdfWithDialog(
-                  ({onBeforeOpen}) => PDFGenerator.generateAndSavePdf(
-                    context,
-                    _localQuotation,
-                    onBeforeOpen: onBeforeOpen,
-                  ),
+                  ({onBeforeOpen, cancelToken}) =>
+                      PDFGenerator.generateAndSavePdf(
+                        context,
+                        _localQuotation,
+                        onBeforeOpen: onBeforeOpen,
+                        cancelToken: cancelToken,
+                      ),
                 );
               },
             ),
@@ -203,41 +208,39 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
   }
 
   Future<void> _generatePdfWithDialog(
-    Future<void> Function({VoidCallback? onBeforeOpen}) pdfGenerator,
+    Future<void> Function({
+      VoidCallback? onBeforeOpen,
+      CancellationToken? cancelToken,
+    })
+    pdfGenerator,
   ) async {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return const LoadingDialog(
-          message: 'Generating PDF...',
-          subtitle: 'Please wait while we prepare your document',
-        );
-      },
+    // A report is several minutes of server time at worst, and the popup that
+    // covers this page cannot be dismissed on its own. Cancel is the way out:
+    // it closes the popup at once and tells the generator to stop trying.
+    final cancelToken = CancellationToken();
+    final loading = LoadingDialog.open(
+      context,
+      message: 'Generating PDF...',
+      subtitle: 'Please wait while we prepare your document',
+      onCancel: cancelToken.cancel,
     );
-
-    void dismissDialog() {
-      if (mounted) {
-        try {
-          final navigator = Navigator.of(context, rootNavigator: true);
-          if (navigator.canPop()) {
-            navigator.pop();
-          }
-        } catch (e) {}
-      }
-    }
+    cancelToken.addListener(loading.close);
 
     try {
-      await pdfGenerator(onBeforeOpen: dismissDialog);
+      await pdfGenerator(onBeforeOpen: loading.close, cancelToken: cancelToken);
     } catch (e) {
-      dismissDialog();
-      _showSnackSafe(
-        OdooErrorHandler.toSnackbarMessage(
-          e,
-          fallback: 'Could not create the PDF. Please try again.',
-        ),
-        error: true,
-      );
+      // Cancelling is not a failure: the user knows what they did.
+      if (!cancelToken.isCancelled) {
+        _showSnackSafe(
+          OdooErrorHandler.toSnackbarMessage(
+            e,
+            fallback: 'Could not create the PDF. Please try again.',
+          ),
+          error: true,
+        );
+      }
+    } finally {
+      loading.close();
     }
   }
 
@@ -1244,13 +1247,10 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
     // for that read. If the read fails the page falls back to the copy it was
     // given.
     _lastReloadStartedAt = DateTime.now();
-    final header = _refreshQuotationData().then<void>(
-      (_) {
-        _detailLoadError = null;
-        _hasLoadedDetails = true;
-      },
-      onError: (Object e) => _detailLoadError = e.toString(),
-    );
+    final header = _refreshQuotationData().then<void>((_) {
+      _detailLoadError = null;
+      _hasLoadedDetails = true;
+    }, onError: (Object e) => _detailLoadError = e.toString());
 
     try {
       await Future.wait([
@@ -4280,6 +4280,12 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                 final isDark = Theme.of(context).brightness == Brightness.dark;
                 final dialogContext = context;
 
+                // Only the WhatsApp path builds a report, and only that path
+                // can run long enough to need a way out. Sending a quotation
+                // is one Odoo call, and Print just opens a sheet.
+                final cancelToken = CancellationToken();
+                final canCancel = value == 'send_whatsapp';
+
                 showDialog(
                   context: dialogContext,
                   useRootNavigator: true,
@@ -4299,6 +4305,7 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                           : value == 'send_whatsapp'
                           ? 'Please wait while we prepare to share via WhatsApp'
                           : 'Please wait while we prepare your document',
+                      onCancel: canCancel ? cancelToken.cancel : null,
                     );
                   },
                 );
@@ -4323,6 +4330,10 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                   });
                 }
 
+                // Cancel takes the popup down straight away, without waiting
+                // for the work to notice.
+                cancelToken.addListener(closeDialogOnce);
+
                 try {
                   if (value == 'send_quotation') {
                     await QuotationService.sendQuotation(
@@ -4340,28 +4351,34 @@ class _QuotationDetailScreenState extends State<QuotationDetailScreen>
                       await PDFGenerator.sendQuotationViaWhatsApp(
                         context,
                         _localQuotation,
+                        cancelToken: cancelToken,
                       );
                     } catch (e) {
-                      _showSnackSafe(
-                        OdooErrorHandler.toSnackbarMessage(
-                          e,
-                          fallback:
-                              'Could not share via WhatsApp. Please try again.',
-                        ),
-                        error: true,
-                      );
+                      // Cancelling is the user's own doing, not a failure.
+                      if (!cancelToken.isCancelled) {
+                        _showSnackSafe(
+                          OdooErrorHandler.toSnackbarMessage(
+                            e,
+                            fallback:
+                                'Could not share via WhatsApp. Please try again.',
+                          ),
+                          error: true,
+                        );
+                      }
                     } finally {
                       closeDialogOnce();
                     }
                   }
                 } catch (e) {
-                  _showSnackSafe(
-                    OdooErrorHandler.toSnackbarMessage(
-                      e,
-                      fallback: 'Something went wrong. Please try again.',
-                    ),
-                    error: true,
-                  );
+                  if (!cancelToken.isCancelled) {
+                    _showSnackSafe(
+                      OdooErrorHandler.toSnackbarMessage(
+                        e,
+                        fallback: 'Something went wrong. Please try again.',
+                      ),
+                      error: true,
+                    );
+                  }
                 }
               } else {
                 _showSnackSafe(

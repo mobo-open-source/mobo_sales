@@ -49,14 +49,12 @@ class _DeliveryListScreenState extends State<DeliveryListScreen>
   final Map<String, bool> _expandedGroups = {};
   bool _allGroupsExpanded = false;
 
-  static const Map<String, String> _deliveryStatusFilters = {
-    'draft': 'Draft',
-    'waiting': 'Waiting',
-    'confirmed': 'Confirmed',
-    'assigned': 'Ready',
-    'done': 'Done',
-    'cancel': 'Cancelled',
-  };
+  /// The status filter chips, labelled exactly as Odoo labels the states they
+  /// filter on — see `kDeliveryStateLabels` in `models/delivery.dart`. Filtering
+  /// on a label the detail page does not use would send the user looking for a
+  /// status that is never shown.
+  static const Map<String, String> _deliveryStatusFilters =
+      kDeliveryStateLabels;
 
   static const Map<String, String> _groupByOptions = {
     'state': 'Status',
@@ -127,10 +125,18 @@ class _DeliveryListScreenState extends State<DeliveryListScreen>
       }
 
       if (_startDate != null) {
-        domain.add(['scheduled_date', '>=', OdooDate.formatDatetime(_startDate!)]);
+        domain.add([
+          'scheduled_date',
+          '>=',
+          OdooDate.formatDatetime(_startDate!),
+        ]);
       }
       if (_endDate != null) {
-        domain.add(['scheduled_date', '<=', OdooDate.formatDatetime(_endDate!)]);
+        domain.add([
+          'scheduled_date',
+          '<=',
+          OdooDate.formatDatetime(_endDate!),
+        ]);
       }
 
       final client = await OdooSessionManager.getClient();

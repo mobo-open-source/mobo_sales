@@ -47,6 +47,26 @@ class InvoiceService {
     'vat',
   ];
 
+  /// The send wizard behind [action], stepping past Odoo's document-layout
+  /// configurator when it is in the way.
+  ///
+  /// A company with no `external_report_layout_id` makes `action_invoice_sent`
+  /// answer with a `base.document.layout` configurator and park the real send
+  /// action under its context as `report_action`. Odoo 18 and 19 only do this
+  /// for an administrator; Odoo 20 does it for anyone in
+  /// `account.group_account_basic`, so it is the common case there, not an edge.
+  ///
+  /// Returns null when the layout step holds no action to go on with.
+  static Map? _sendWizardAction(Object? action) {
+    if (action is! Map) return null;
+    if (action['res_model'] != 'base.document.layout') return action;
+    final layoutContext = action['context'];
+    final reportAction = layoutContext is Map
+        ? layoutContext['report_action']
+        : null;
+    return reportAction is Map ? reportAction : null;
+  }
+
   /// Sends the invoice email for [moveId] and shows a confirmation dialog on success.
   ///
   /// [closeLoadingDialog] is called exactly once on every path that ends
@@ -88,26 +108,29 @@ class InvoiceService {
         'kwargs': {'context': contextParams},
       });
 
-      final wizardModel = wizardAction is Map
-          ? wizardAction['res_model']
-          : null;
-      if (wizardModel != 'account.move.send.wizard') {
-        // Another release asks for a different wizard (Odoo 17's is
-        // `account.move.send`), which this flow does not drive. Saying so is
-        // better than leaving the loading dialog up with nothing happening.
+      final sendAction = _sendWizardAction(wizardAction);
+      final wizardModel = sendAction?['res_model'];
+      final wizardValues = odooInvoiceSendWizardValues(wizardModel, moveId);
+      if (sendAction == null || wizardValues == null) {
         throw Exception(
-          'Sending invoices by email from the app is not supported by this '
-          'Odoo version. Send it from Odoo instead.',
+          'This Odoo server opened a send screen the app does not recognise. '
+          'Send the invoice from Odoo instead.',
         );
       }
 
+      // The layout step carries the defaults the send wizard expects, so the
+      // unwrapped action's own context has to go with it.
+      final wizardContext = Map<String, dynamic>.from(contextParams);
+      final actionContext = sendAction['context'];
+      if (actionContext is Map) {
+        wizardContext.addAll(Map<String, dynamic>.from(actionContext));
+      }
+
       final wizardCreateResult = await _callKw({
-        'model': 'account.move.send.wizard',
+        'model': wizardModel,
         'method': 'create',
-        'args': [
-          {'move_id': moveId},
-        ],
-        'kwargs': {'context': contextParams},
+        'args': [wizardValues],
+        'kwargs': {'context': wizardContext},
       });
 
       if (wizardCreateResult is! int) {
@@ -115,10 +138,10 @@ class InvoiceService {
       }
 
       await _callKw({
-        'model': 'account.move.send.wizard',
+        'model': wizardModel,
         'method': 'action_send_and_print',
         'args': [wizardCreateResult],
-        'kwargs': {'context': contextParams},
+        'kwargs': {'context': wizardContext},
       });
 
       // The invoice is sent (and its "sent" flag set) on the server from here.
@@ -141,16 +164,12 @@ class InvoiceService {
           ? verifyResult.first['name']?.toString() ?? 'Invoice'
           : 'Invoice';
 
-      if (context.mounted) {
-        closeDialogOnce();
-        if (isSent) {
-          showInvoiceSentConfettiDialog(context, invoiceName);
-        }
+      closeDialogOnce();
+      if (isSent && context.mounted) {
+        showInvoiceSentConfettiDialog(context, invoiceName);
       }
     } catch (e) {
-      if (context.mounted) {
-        closeDialogOnce();
-      }
+      closeDialogOnce();
       rethrow;
     }
   }

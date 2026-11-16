@@ -255,7 +255,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ),
         content: Text(
-          'Are you sure you want to log out? Your session will be ended.',
+          'This signs you out of every account saved on this device. You will need to sign in again.',
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
             color: isDark
                 ? Colors.grey[300]
