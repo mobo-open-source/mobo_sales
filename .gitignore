@@ -41,7 +41,6 @@ gen/
 .pub/
 /build/
 /coverage/
-pubspec.lock
 Dockerfile
 windows/
 
@@ -72,7 +71,12 @@ xcuserdata/
 *.xccheckout
 *.moved-aside
 *.swp
-*.lock
+# Lockfiles: pubspec.lock is tracked on purpose. It is what pins the plugin
+# versions a release was built from — an untracked one let two machines
+# resolve different androidx.datastore builds, and 1.1.12 shipped a native
+# library without 16 KB page alignment as a result.
+Podfile.lock
+*.podspec.lock
 *.dat
 
 # SonarQube

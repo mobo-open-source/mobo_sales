@@ -18,10 +18,14 @@ if (keystorePropertiesFile.exists()) {
 android {
     namespace = "com.cybrosys.mobo_sales"
     compileSdk = 36
+    // NDK r28: the first release that defaults to 16 KB-aligned output. The
+    // libraries Play flagged are prebuilt inside AARs, so this does not align
+    // them — the dependency versions do — but it keeps anything compiled here
+    // aligned.
     ndkVersion = "28.2.13676358"
-    
 
-    buildToolsVersion = "34.0.0"
+    // buildToolsVersion was pinned to 34.0.0 while compileSdk moved to 36.
+    // Unpinned, AGP picks the version that matches compileSdk.
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -57,8 +61,11 @@ android {
 
             signingConfig = signingConfigs.getByName("release")
 
+            // R8 shrinks and obfuscates the code; resource shrinking drops
+            // the drawables and layouts the shrunken code can no longer
+            // reach. Both are what Play measures under "DEX optimization".
             isMinifyEnabled = true
-            isShrinkResources = false
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
