@@ -8,9 +8,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:mobo_sales/screens/invoices/enhanced_payment_screen.dart';
 import 'package:mobo_sales/widgets/reconciliation_indicator.dart';
-import 'package:mobo_sales/widgets/reconciliation_status_bar.dart';
 import 'package:mobo_sales/models/invoice.dart';
-import 'package:mobo_sales/models/payment.dart';
 import 'package:mobo_sales/models/contact.dart';
 import 'package:mobo_sales/utils/app_theme.dart';
 import 'package:mobo_sales/utils/navigation_helper.dart';
@@ -33,6 +31,8 @@ import '../../services/payment_status_synchronizer.dart';
 import '../../services/session_service.dart';
 import '../../services/payment_service.dart';
 import '../../services/invoice_details_service.dart';
+import '../../services/invoice_payments_service.dart';
+import 'invoice_payments_sheet.dart';
 import '../../services/permission_service.dart';
 import '../../utils/invoice_payment_rules.dart';
 import '../../utils/odoo_version.dart';
@@ -94,7 +94,8 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
   DateTime? _lastRefreshTime;
   DateTime? _lastManualRefreshTime;
 
-  List<Payment> _invoicePayments = [];
+  /// This invoice's payments as Odoo shows them on the invoice form.
+  InvoicePaymentInfo _paymentInfo = InvoicePaymentInfo.empty;
 
   Map<String, dynamic> _additionalInfo = {};
   bool _isLoadingAdditionalInfo = false;
@@ -574,108 +575,35 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
     ]);
   }
 
+  /// Loads what Odoo shows about this invoice's payments: the "Paid on" lines
+  /// under the totals and the payments behind the Payments menu item.
+  ///
+  /// A failure keeps what was shown before instead of blanking it: the
+  /// Amount Due comes from the invoice itself and stays right either way.
   Future<void> _loadInvoicePayments() async {
     if (!mounted || _isLoadingPayments) return;
 
     final invoiceId = int.tryParse(widget.invoiceId);
     if (invoiceId == null) return;
 
-    if (mounted) {
-      setState(() {
-        _isLoadingPayments = true;
-      });
-    }
+    setState(() {
+      _isLoadingPayments = true;
+    });
 
     try {
-      final payments = await _getBasicInvoicePayments(invoiceId);
+      final info = await InvoicePaymentsService.fetch(invoiceId);
       if (mounted) {
         setState(() {
-          _invoicePayments = payments;
+          _paymentInfo = info;
           _isLoadingPayments = false;
         });
       }
     } catch (e) {
       if (mounted) {
         setState(() {
-          _invoicePayments = [];
           _isLoadingPayments = false;
         });
       }
-    }
-  }
-
-  Future<List<Payment>> _getBasicInvoicePayments(int invoiceId) async {
-    try {
-      final client = await OdooSessionManager.getClient();
-      if (client == null) {
-        return [];
-      }
-
-      final invoiceResult = await client
-          .callKw({
-            'model': 'account.move',
-            'method': 'search_read',
-            'args': [
-              [
-                ['id', '=', invoiceId],
-              ],
-              ['partner_id', 'name'],
-            ],
-            'kwargs': {},
-          })
-          .timeout(const Duration(seconds: 10));
-
-      if (invoiceResult.isEmpty) {
-        return [];
-      }
-
-      final partnerId = invoiceResult[0]['partner_id'] is List
-          ? invoiceResult[0]['partner_id'][0]
-          : invoiceResult[0]['partner_id'];
-
-      if (partnerId == null) {
-        return [];
-      }
-
-      final paymentResults = await client
-          .callKw({
-            'model': 'account.payment',
-            'method': 'search_read',
-            'args': [
-              [
-                ['partner_id', '=', partnerId],
-                ['state', 'in', Payment.confirmedStates],
-              ],
-              [
-                'id',
-                'name',
-                'amount',
-                'date',
-                'state',
-                'payment_type',
-                'partner_id',
-                'journal_id',
-                'currency_id',
-                'is_reconciled',
-                'is_matched',
-                'payment_method_id',
-              ],
-            ],
-            'kwargs': {'limit': 50, 'order': 'date desc, id desc'},
-          })
-          .timeout(const Duration(seconds: 10));
-
-      final List<Map<String, dynamic>> paymentsData = (paymentResults is List)
-          ? List<Map<String, dynamic>>.from(paymentResults)
-          : [];
-
-      final payments = paymentsData.map((paymentData) {
-        return Payment.fromJson(paymentData);
-      }).toList();
-
-      return payments;
-    } catch (e) {
-      return [];
     }
   }
 
@@ -875,7 +803,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
         if (mounted && !_isLoadingInvoiceData) {
           try {
             Theme.of(context);
-            _loadInvoiceData(forceRefresh: true);
+            _reloadInvoiceAndPayments();
           } catch (e) {}
         }
       });
@@ -925,31 +853,12 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
 
       final updatedData = provider.invoiceData;
       updatedData['payment_state'] = update.currentPaymentState;
-
-      double totalPaid = 0.0;
-      double totalPending = 0.0;
-
-      for (final payment in update.payments) {
-        if (payment.isFullyReconciled) {
-          totalPaid += payment.amount;
-        } else if (payment.isInPayment || payment.isPosted) {
-          totalPending += payment.amount;
-        }
-      }
-
-      final totalAmount = updatedData['amount_total'] as double? ?? 0.0;
-
-      if (update.currentPaymentState == 'paid') {
-        updatedData['amount_residual'] = 0.0;
-      } else if (update.currentPaymentState == 'partial') {
-        updatedData['amount_residual'] = totalAmount - totalPaid;
-      } else if (update.currentPaymentState == 'in_payment') {
-        updatedData['amount_residual'] = totalAmount - totalPaid - totalPending;
-      }
-
-      final amountResidual = updatedData['amount_residual'] as double? ?? 0.0;
-      if (amountResidual < 0) {
-        updatedData['amount_residual'] = 0.0;
+      // Odoo's Amount Due as the server reports it. The app used to compute
+      // its own from the payments it had found, subtracting payments still
+      // in progress that Odoo has not deducted, so the page briefly showed an
+      // amount Odoo never shows.
+      if (update.amountResidual != null) {
+        updatedData['amount_residual'] = update.amountResidual;
       }
 
       provider.updateInvoiceData(updatedData);
@@ -1031,382 +940,6 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
           _isRefreshingPaymentStatus = false;
         });
       }
-    }
-  }
-
-  void _showReconciliationGuidance() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: isDark ? Colors.grey[900] : Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          title: Row(
-            children: [
-              Text(
-                'Reconciliation Required',
-                style: TextStyle(
-                  color: isDark ? Colors.white : Colors.black87,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'This invoice has payments that are posted but need to be reconciled in Odoo to complete the payment process.',
-                style: TextStyle(
-                  color: isDark ? Colors.grey[300] : Colors.grey[700],
-                  height: 1.4,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.orange.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.orange.shade300),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.info_outline,
-                          color: Colors.orange.shade700,
-                          size: 16,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Next Steps:',
-                          style: TextStyle(
-                            color: Colors.orange.shade700,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '1. Access your Odoo backend\n'
-                      '2. Go to Accounting > Reconciliation\n'
-                      '3. Match the payments with this invoice\n'
-                      '4. Complete the reconciliation process',
-                      style: TextStyle(
-                        color: Colors.orange.shade800,
-                        height: 1.3,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: Text(
-                'Got it',
-                style: TextStyle(
-                  color: Theme.of(context).primaryColor,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildPaymentHistorySection(
-    InvoiceDetailsProvider provider,
-    bool isDark,
-  ) {
-    final invoice = provider.invoice;
-    if (invoice == null) return const SizedBox.shrink();
-
-    if (_invoicePayments.isEmpty &&
-        provider.paymentState == 'not_paid' &&
-        provider.invoiceState != 'paid') {
-      return const SizedBox.shrink();
-    }
-
-    return _buildSectionCard(
-      title: 'Payment Status & History',
-      icon: HugeIcons.strokeRoundedPayment02,
-      iconColor: isDark ? Colors.white70 : Colors.grey[800],
-      children: [
-        _buildPaymentSummaryCard(provider, isDark),
-
-        if (invoice.requiresReconciliation) ...[
-          const SizedBox(height: 16),
-          ReconciliationStatusBar(
-            payments: invoice.payments,
-            invoice: invoice,
-            showProgress: true,
-            onViewDetails: () => _showReconciliationGuidance(),
-          ),
-        ],
-
-        if (_invoicePayments.isNotEmpty) ...[
-          const SizedBox(height: 16),
-          _buildPaymentHistoryList(_invoicePayments, isDark),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildPaymentSummaryCard(
-    InvoiceDetailsProvider provider,
-    bool isDark,
-  ) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[850] : Colors.grey[50],
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: isDark ? Colors.grey[700]! : Colors.grey[200]!,
-        ),
-      ),
-      child: Column(
-        children: [
-          _buildPaymentSummaryRow(
-            'Total Amount',
-            provider.invoiceAmount,
-            provider.invoice?.currencyId,
-            isDark,
-            isTotal: true,
-          ),
-          const SizedBox(height: 8),
-          _buildPaymentSummaryRow(
-            'Amount Paid',
-            provider.invoiceAmount - provider.amountResidual,
-            provider.invoice?.currencyId,
-            isDark,
-            isPaid: true,
-          ),
-          const SizedBox(height: 8),
-          _buildPaymentSummaryRow(
-            'Amount Due',
-            provider.amountResidual,
-            provider.invoice?.currencyId,
-            isDark,
-            isDue: provider.amountResidual > 0,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPaymentSummaryRow(
-    String label,
-    double amount,
-    List<dynamic>? currencyId,
-    bool isDark, {
-    bool isTotal = false,
-    bool isPaid = false,
-    bool isDue = false,
-  }) {
-    Color textColor;
-    if (isPaid) {
-      textColor = Colors.green;
-    } else if (isDue) {
-      textColor = Colors.red;
-    } else if (isTotal) {
-      textColor = isDark ? Colors.white : Colors.black87;
-    } else {
-      textColor = isDark ? Colors.grey[300]! : Colors.grey[700]!;
-    }
-
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 14,
-            color: isDark ? Colors.grey[400] : Colors.grey[600],
-            fontWeight: isTotal ? FontWeight.w600 : FontWeight.normal,
-          ),
-        ),
-        Text(
-          context.read<CurrencyProvider>().formatAmount(
-            amount,
-            currency: currencyId != null && currencyId.length > 1
-                ? currencyId[1].toString()
-                : null,
-          ),
-          style: TextStyle(
-            fontSize: 14,
-            color: textColor,
-            fontWeight: isTotal || isPaid || isDue
-                ? FontWeight.w600
-                : FontWeight.normal,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPaymentHistoryList(List<Payment> payments, bool isDark) {
-    if (payments.isEmpty) {
-      return Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isDark ? Colors.grey[850] : Colors.grey[50],
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          children: [
-            Icon(
-              Icons.info_outline,
-              color: isDark ? Colors.grey[400] : Colors.grey[600],
-              size: 20,
-            ),
-            const SizedBox(width: 8),
-            Text(
-              'No payment history available',
-              style: TextStyle(
-                color: isDark ? Colors.grey[400] : Colors.grey[600],
-                fontSize: 14,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Payment History',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w600,
-            color: isDark ? Colors.white : Colors.black87,
-          ),
-        ),
-        const SizedBox(height: 8),
-        ...payments.map((payment) => _buildPaymentHistoryItem(payment, isDark)),
-      ],
-    );
-  }
-
-  Widget _buildPaymentHistoryItem(Payment payment, bool isDark) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[850] : Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: isDark ? Colors.grey[700]! : Colors.grey[200]!,
-        ),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: _getPaymentStatusColor(payment).withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(
-              _getPaymentStatusIcon(payment),
-              color: _getPaymentStatusColor(payment),
-              size: 20,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      payment.name,
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: isDark ? Colors.white : Colors.black87,
-                      ),
-                    ),
-                    Text(
-                      '\$${payment.amount.toStringAsFixed(2)}',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: _getPaymentStatusColor(payment),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      payment.statusDisplayText,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: _getPaymentStatusColor(payment),
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    if (payment.paymentDate != null)
-                      Text(
-                        DateFormat('MMM dd, yyyy').format(payment.paymentDate!),
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: isDark ? Colors.grey[400] : Colors.grey[600],
-                        ),
-                      ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Color _getPaymentStatusColor(Payment payment) {
-    if (payment.isFullyReconciled) {
-      return Colors.green;
-    } else if (payment.isInPayment) {
-      return Colors.blue;
-    } else if (payment.requiresReconciliation) {
-      return Colors.orange;
-    } else {
-      return Colors.grey;
-    }
-  }
-
-  IconData _getPaymentStatusIcon(Payment payment) {
-    if (payment.isFullyReconciled) {
-      return Icons.check_circle;
-    } else if (payment.isInPayment) {
-      return Icons.schedule;
-    } else if (payment.requiresReconciliation) {
-      return Icons.sync_problem;
-    } else {
-      return Icons.payment;
     }
   }
 
@@ -1780,253 +1313,6 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
         ),
       );
     }
-  }
-
-  Widget _buildPrimaryActionButtons(InvoiceDetailsProvider provider) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: _buildActionButton(
-                icon: HugeIcons.strokeRoundedFileDownload,
-                label: 'Print Invoice',
-                color: Color(0xFF1E88E5),
-                isPrimary: true,
-
-                onPressed: () async {
-                  // A report can take minutes of server time, so the wait has
-                  // to be escapable. Cancel closes the popup at once and tells
-                  // the generator to stop trying.
-                  final cancelToken = CancellationToken();
-                  final loading = LoadingDialog.open(
-                    context,
-                    message: 'Generating PDF...',
-                    subtitle: 'Please wait while we prepare your document',
-                    onCancel: cancelToken.cancel,
-                  );
-                  cancelToken.addListener(loading.close);
-
-                  try {
-                    await PDFGenerator.generateInvoicePdf(
-                      context,
-                      provider.invoice!,
-                      onBeforeOpen: loading.close,
-                      cancelToken: cancelToken,
-                    );
-                  } catch (e) {
-                    // Cancelling is not a failure, and the user knows they did
-                    // it: no error on top of their own decision.
-                    if (!cancelToken.isCancelled) {
-                      _showSafeSnackBar(
-                        describeActionFailure(e, 'PDF generation failed'),
-                        backgroundColor: Colors.red,
-                      );
-                    }
-                  } finally {
-                    loading.close();
-                  }
-                },
-              ),
-            ),
-            SizedBox(width: 8),
-            if (provider.invoiceState == 'draft')
-              Expanded(
-                child: _buildActionButton(
-                  icon: HugeIcons.strokeRoundedInvoice03,
-                  label: 'Confirm Invoice',
-                  color: Color(0xff000000),
-                  isPrimary: false,
-
-                  onPressed: !_canWriteAccountMove
-                      ? () {
-                          CustomSnackbar.showError(
-                            context,
-                            'Permission Denied: You do not have permission to post invoices (account.move write). Please contact your administrator.',
-                          );
-                        }
-                      : !_canPostInvoice
-                      ? () {
-                          CustomSnackbar.showError(
-                            context,
-                            kInvoicingGroupMissingMessage,
-                          );
-                        }
-                      : () async {
-                          final success = await runGuardedAction<bool>(
-                            context: context,
-                            message: 'Confirming Invoice...',
-                            subtitle:
-                                'Please wait while we validate your invoice',
-                            failurePrefix: 'Could not confirm the invoice',
-                            action: () =>
-                                provider.postInvoice(context, widget.invoiceId),
-                          );
-                          if (context.mounted) {
-                            if (success == true) {
-                              setState(() {
-                                _hasChanges = true;
-                              });
-                              _refreshAroundInvoice();
-                              CustomSnackbar.showSuccess(
-                                context,
-                                'Invoice validated successfully',
-                              );
-                              widget.onInvoiceUpdated?.call();
-                            } else if (success == false) {
-                              // null means the action threw or timed out and
-                              // [runGuardedAction] has already said so.
-                              CustomSnackbar.showError(
-                                context,
-                                provider.errorMessage,
-                              );
-                            }
-                          }
-                        },
-                ),
-              ),
-            if (_canRegisterPaymentOn(provider))
-              Expanded(
-                child: _buildActionButton(
-                  icon: HugeIcons.strokeRoundedPayment02,
-                  label: 'Record Payment',
-                  color: const Color(0xff000000),
-
-                  isPrimary: false,
-
-                  onPressed: !_canCreatePaymentRegister
-                      ? () {
-                          if (!_canCreatePaymentRegister) {
-                            CustomSnackbar.showError(
-                              context,
-                              'Permission Denied: You do not have permission to register payments (account.payment.register). Please contact your administrator.',
-                            );
-                          }
-                        }
-                      : () async {
-                          try {
-                            final invoice = provider.invoice;
-                            if (invoice == null) return;
-
-                            final result = await Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => EnhancedPaymentScreen(
-                                  invoice: invoice,
-                                  existingPayments: _invoicePayments,
-                                ),
-                              ),
-                            );
-
-                            if (result != null) {
-                              if (result is Map<String, dynamic>) {
-                                final success = result['success'] == true;
-                                final forceRefresh =
-                                    result['forceRefresh'] == true;
-
-                                if (success) {
-                                  _showSafeSnackBar(
-                                    'Payment recorded successfully!',
-                                    backgroundColor: Colors.green,
-                                  );
-
-                                  if (forceRefresh) {
-                                    final invoiceId = int.tryParse(
-                                      widget.invoiceId,
-                                    );
-                                    if (invoiceId != null) {
-                                      PaymentStatusSynchronizer.clearCache(
-                                        invoiceId,
-                                      );
-                                      OdooSessionManager.clearClientCache();
-                                      PaymentService.clearBehaviorCache();
-                                    }
-                                  }
-
-                                  setState(() {
-                                    _hasChanges = true;
-                                    _lastManualRefreshTime = DateTime.now();
-                                  });
-
-                                  await _reloadInvoiceAndPayments();
-                                }
-                              } else if (result is Invoice) {
-                                _showSafeSnackBar(
-                                  'Payment recorded successfully!',
-                                  backgroundColor: Colors.green,
-                                );
-
-                                final updatedData = {
-                                  'id': result.id,
-                                  'name': result.name,
-                                  'payment_state': result.paymentState,
-                                  'state': result.status,
-                                  'amount_residual': result.amountResidual,
-                                  'amount_total': result.total,
-                                  'amount_paid': result.amountPaid,
-                                };
-                                provider.updateInvoiceData(updatedData);
-
-                                setState(() {
-                                  _hasChanges = true;
-                                  _lastManualRefreshTime = DateTime.now();
-                                });
-
-                                await _reloadInvoiceAndPayments();
-                              } else if (result == true) {
-                                _showSafeSnackBar(
-                                  'Payment recorded successfully!',
-                                  backgroundColor: Colors.green,
-                                );
-
-                                if (mounted) {
-                                  setState(() {
-                                    _hasChanges = true;
-                                    _lastManualRefreshTime = DateTime.now();
-                                  });
-
-                                  final invoiceId = int.tryParse(
-                                    widget.invoiceId,
-                                  );
-                                  if (invoiceId != null) {
-                                    PaymentStatusSynchronizer.clearCache(
-                                      invoiceId,
-                                    );
-                                  }
-
-                                  await _reloadInvoiceAndPayments();
-                                }
-                              }
-
-                              widget.onInvoiceUpdated?.call();
-                            }
-                          } catch (e) {
-                            _showSafeSnackBar(
-                              'Error recording payment: $e',
-                              backgroundColor: Colors.red,
-                            );
-                          }
-                        },
-                ),
-              ),
-          ],
-        ),
-
-        if (provider.paymentState == 'in_payment')
-          _buildActionButton(
-            icon: HugeIcons.strokeRoundedRefresh,
-            label: 'Reconcile in Odoo',
-            color: const Color(0xFFFF9800),
-
-            isPrimary: false,
-
-            onPressed: () {
-              _showReconciliationGuidance();
-            },
-          ),
-      ],
-    );
   }
 
   Widget _buildSecondaryActionButtons(InvoiceDetailsProvider provider) {
@@ -3290,6 +2576,35 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                               ],
                             ),
                           ),
+                        // Odoo's Payments button (Odoo 18+), shown when the
+                        // invoice has payments; Odoo 17 has no such button.
+                        if (_paymentInfo.hasPaymentsButton &&
+                            _paymentInfo.payments.isNotEmpty)
+                          PopupMenuItem<String>(
+                            value: 'view_payments',
+                            child: Row(
+                              children: [
+                                Icon(
+                                  HugeIcons.strokeRoundedInvoice03,
+                                  color: isDark
+                                      ? Colors.grey[300]
+                                      : Colors.grey[800],
+                                  size: 20,
+                                ),
+                                const SizedBox(width: 12),
+                                Text(
+                                  'Payments (${_paymentInfo.payments.length})',
+                                  style: TextStyle(
+                                    color: isDark
+                                        ? Colors.white
+                                        : Colors.black87,
+                                    fontWeight: FontWeight.w500,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         PopupMenuItem<String>(
                           value: 'print_invoice',
                           child: Row(
@@ -3371,6 +2686,15 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                       ];
                     },
                     onSelected: (value) async {
+                      if (value == 'view_payments') {
+                        final invoiceId = int.tryParse(widget.invoiceId);
+                        if (invoiceId == null) return;
+                        await showInvoicePaymentsSheet(
+                          context,
+                          invoiceId: invoiceId,
+                        );
+                        return;
+                      }
                       if (!provider.isLoading &&
                           provider.invoiceNumber.isNotEmpty &&
                           provider.errorMessage.isEmpty) {
@@ -3641,6 +2965,15 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                             }
 
                             if (value == 'record_payment') {
+                              // Odoo needs create access on the Pay wizard;
+                              // say so instead of failing on the server.
+                              if (!_canCreatePaymentRegister) {
+                                CustomSnackbar.showError(
+                                  context,
+                                  'You do not have permission to register payments. Please contact your administrator.',
+                                );
+                                return;
+                              }
                               final invoice = Invoice(
                                 id: int.tryParse(widget.invoiceId),
                                 name: provider.invoiceNumber,
@@ -3659,16 +2992,13 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                 invoiceDate: provider.invoiceDate,
                                 dueDate: provider.dueDate,
                                 currencyId: provider.invoice?.currencyId,
-                                payments: _invoicePayments,
                               );
 
                               final result = await Navigator.push(
                                 context,
                                 MaterialPageRoute(
-                                  builder: (context) => EnhancedPaymentScreen(
-                                    invoice: invoice,
-                                    existingPayments: _invoicePayments,
-                                  ),
+                                  builder: (context) =>
+                                      EnhancedPaymentScreen(invoice: invoice),
                                 ),
                               );
 
@@ -3885,7 +3215,11 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                           ),
                         ),
 
-                        _buildStaticTotalSection(provider, isDark),
+                        _buildStaticTotalSection(
+                          provider,
+                          isDark,
+                          _paymentInfo.paidLines,
+                        ),
                       ],
                     ),
             ),
@@ -5631,7 +4965,14 @@ Widget _buildTopSection(
   );
 }
 
-Widget _buildStaticTotalSection(InvoiceDetailsProvider provider, bool isDark) {
+/// The totals at the foot of the invoice, laid out as Odoo's invoice form
+/// lays them out: Untaxed Amount, Tax, Total, then one "Paid on" line per
+/// payment matched with the invoice ([paidLines]) and the Amount Due.
+Widget _buildStaticTotalSection(
+  InvoiceDetailsProvider provider,
+  bool isDark,
+  List<InvoicePaidLine> paidLines,
+) {
   final currencyId = provider.invoice?.currencyId;
   final String? currencyCode = (currencyId is List && currencyId.length > 1)
       ? currencyId[1].toString()
@@ -5640,6 +4981,8 @@ Widget _buildStaticTotalSection(InvoiceDetailsProvider provider, bool isDark) {
   final untaxedAmount = provider.amountUntaxed;
   final taxAmount = provider.amountTax;
   final totalAmount = provider.invoiceAmount;
+  // Odoo hides the Amount Due on a draft (there is nothing to pay yet).
+  final showAmountDue = provider.invoiceState.toLowerCase() != 'draft';
 
   return Consumer<CurrencyProvider>(
     builder: (context, currencyProvider, _) {
@@ -5733,28 +5076,93 @@ Widget _buildStaticTotalSection(InvoiceDetailsProvider provider, bool isDark) {
                     bottom: 24,
                   ),
                   decoration: const BoxDecoration(color: Color(0xFFC03355)),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Text(
-                        'Total',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFFFFFFFF),
-                        ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Total',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFFFFFFFF),
+                            ),
+                          ),
+                          Text(
+                            currencyProvider.formatAmount(
+                              totalAmount,
+                              currency: currencyCode,
+                            ),
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFFFFFFFF),
+                            ),
+                          ),
+                        ],
                       ),
-                      Text(
-                        currencyProvider.formatAmount(
-                          totalAmount,
-                          currency: currencyCode,
+                      for (final line in paidLines)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  line.date != null
+                                      ? 'Paid on ${DateFormat('MMM dd, yyyy').format(line.date!)}'
+                                      : 'Paid',
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontStyle: FontStyle.italic,
+                                    color: Color(0xFFFFFFFF),
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                currencyProvider.formatAmount(
+                                  line.amount,
+                                  currency: currencyCode,
+                                ),
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontStyle: FontStyle.italic,
+                                  color: Color(0xFFFFFFFF),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFFFFFFFF),
+                      if (showAmountDue)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text(
+                                'Amount Due',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFFFFFFFF),
+                                ),
+                              ),
+                              Text(
+                                currencyProvider.formatAmount(
+                                  provider.amountResidual,
+                                  currency: currencyCode,
+                                ),
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFFFFFFFF),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
                     ],
                   ),
                 ),

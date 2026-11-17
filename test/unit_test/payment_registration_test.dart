@@ -33,6 +33,10 @@ class _FakeOdoo {
     List<Map<String, dynamic>>? journals,
     this.wizardJournal = 21,
     this.residualDrops = true,
+    this.keepsAmount = true,
+    this.wizardCurrency = 1,
+    this.odoo17 = false,
+    this.refusesToOpen = false,
   }) : journals =
            journals ??
            [
@@ -50,18 +54,40 @@ class _FakeOdoo {
   /// process"; set false to model that.
   final bool residualDrops;
 
+  /// False models a server that ignores the amount it is given.
+  final bool keepsAmount;
+
+  /// The currency the wizard pays in.
+  int wizardCurrency;
+
+  /// Odoo 17: the wizard has no `actionable_errors`.
+  final bool odoo17;
+
+  /// Odoo refuses to open the wizard (e.g. nothing left to pay).
+  final bool refusesToOpen;
+
+  /// Payments of this invoice still in progress, which Odoo 18+ warns about.
+  bool hasPaymentsInProgress = false;
+
   /// The customer's payments, oldest first.
   final List<Map<String, dynamic>> payments = [
     {'id': 5, 'amount': 50.0},
   ];
 
   final List<Map<String, dynamic>> calls = [];
+
+  /// The values the app set on the wizard that are still in effect. A key
+  /// that is missing holds Odoo's computed default (the amount: what is due).
   Map<String, dynamic> wizardValues = {};
   final List<Map<String, dynamic>> wizardWrites = [];
 
   Iterable<Map<String, dynamic>> called(String model, String method) => calls
       .where((c) => c['model'] == model && c['method'] == method)
       .cast<Map<String, dynamic>>();
+
+  /// What the wizard would pay now.
+  double get wizardAmount =>
+      (wizardValues['amount'] as num?)?.toDouble() ?? residual;
 
   int get paymentsCreated =>
       called('account.payment.register', 'action_create_payments').length;
@@ -90,7 +116,18 @@ class _FakeOdoo {
             if (fields.contains('id')) 'id': 7,
           },
         ];
+      case 'account.payment.register.fields_get':
+        return {
+          for (final f in args.first as List)
+            if (!(odoo17 && f == 'actionable_errors')) f: {'type': 'x'},
+        };
       case 'account.payment.register.create':
+        if (refusesToOpen) {
+          throw Exception(
+            'OdooException: odoo.exceptions.UserError: You can\'t register a '
+            'payment because there is nothing left to pay.',
+          );
+        }
         wizardValues = Map<String, dynamic>.from(args.first as Map);
         return 41;
       case 'account.payment.register.read':
@@ -101,6 +138,30 @@ class _FakeOdoo {
             'payment_method_line_id': [wizardJournal + 100, 'Manual'],
             'available_journal_ids': [for (final j in journals) j['id']],
             'available_payment_method_line_ids': [wizardJournal + 100],
+            'amount': wizardAmount,
+            'communication': wizardValues['communication'] ?? 'INV/7',
+            'payment_difference': residual - wizardAmount,
+            if (!odoo17)
+              'actionable_errors': hasPaymentsInProgress
+                  ? {
+                      'unpaid_matched_payments': {
+                        'message':
+                            "There are payments in progress. Make sure you "
+                            "don't pay twice.",
+                        'action_text': 'Check them',
+                        'level': 'danger',
+                      },
+                    }
+                  : {},
+            'currency_id': [
+              wizardCurrency,
+              wizardCurrency == 1 ? 'USD' : 'EUR',
+            ],
+            'payment_difference_handling':
+                wizardValues['payment_difference_handling'] ?? 'open',
+            'writeoff_account_id': wizardValues['writeoff_account_id'] is int
+                ? [wizardValues['writeoff_account_id'], 'Write-off']
+                : false,
           },
         ];
       case 'account.journal.search_read':
@@ -110,6 +171,26 @@ class _FakeOdoo {
         wizardWrites.add(values);
         if (values['journal_id'] is int) {
           wizardJournal = values['journal_id'] as int;
+          final journal = journals.firstWhere((j) => j['id'] == wizardJournal);
+          if (journal['currency_id'] is List) {
+            wizardCurrency = (journal['currency_id'] as List).first as int;
+          }
+          // As Odoo does: amount depends on currency_id, which depends on
+          // journal_id, and the difference handling (18+) on the amount. A
+          // field written in the same call is not recomputed.
+          if (!values.containsKey('amount')) wizardValues.remove('amount');
+          if (!values.containsKey('payment_difference_handling')) {
+            wizardValues.remove('payment_difference_handling');
+          }
+        }
+        if (values.containsKey('amount') &&
+            !values.containsKey('payment_difference_handling')) {
+          wizardValues.remove('payment_difference_handling');
+        }
+        for (final entry in values.entries) {
+          if (entry.key == 'journal_id') continue;
+          if (entry.key == 'amount' && !keepsAmount) continue;
+          wizardValues[entry.key] = entry.value;
         }
         return true;
       case 'account.payment.search_read':
@@ -131,7 +212,7 @@ class _FakeOdoo {
         return found;
       case 'account.payment.register.action_create_payments':
         void record() {
-          final amount = (wizardValues['amount'] as num).toDouble();
+          final amount = wizardAmount;
           if (residualDrops) residual -= amount;
           payments.add({'id': 60 + payments.length, 'amount': amount});
         }
@@ -182,6 +263,7 @@ void main() {
 
     PaymentService.bus = bus;
     PaymentService.clientProvider = () async => client;
+    PaymentService.clearBehaviorCache();
     when(() => client.callKw(any())).thenAnswer(
       (invocation) => odoo.handle(invocation.positionalArguments.first as Map),
     );
@@ -373,7 +455,10 @@ void main() {
         'type', () async {
       odoo = _FakeOdoo(wizardJournal: 21);
       await pay(method: 'bank');
-      expect(odoo.wizardWrites, isEmpty);
+      expect(
+        odoo.wizardWrites.where((w) => w.containsKey('journal_id')),
+        isEmpty,
+      );
     });
 
     test('cash picks a cash journal the wizard offers', () async {
@@ -401,7 +486,10 @@ void main() {
     test('a preferred cash journal is kept when cash was chosen', () async {
       odoo = _FakeOdoo(wizardJournal: 22);
       await pay(method: 'cash');
-      expect(odoo.wizardWrites, isEmpty);
+      expect(
+        odoo.wizardWrites.where((w) => w.containsKey('journal_id')),
+        isEmpty,
+      );
     });
 
     test('asking for a type the company has no journal of is an error, not a '
@@ -425,6 +513,166 @@ void main() {
     });
   });
 
+  group('the amount paid is the amount entered', () {
+    test('cash on a wizard that opened on a bank journal records 350, not '
+        'the whole amount due', () async {
+      // The reported case: 350 typed, cash chosen, 750 recorded. Changing
+      // the journal makes Odoo recompute the amount, so it is written after.
+      odoo = _FakeOdoo(wizardJournal: 21);
+      odoo.residual = 750;
+      final result = await pay(amount: 350, method: 'cash');
+      expect(result.success, isTrue);
+      expect(odoo.paymentsCreated, 1);
+      expect(odoo.payments.last['amount'], 350);
+      expect(odoo.residual, 400);
+    });
+
+    test('the journal is settled before the amount is written', () async {
+      odoo = _FakeOdoo(wizardJournal: 21);
+      await pay(amount: 300, method: 'cash');
+      final journalWrite = odoo.wizardWrites.indexWhere(
+        (w) => w.containsKey('journal_id'),
+      );
+      final amountWrite = odoo.wizardWrites.indexWhere(
+        (w) => w.containsKey('amount'),
+      );
+      expect(journalWrite, isNonNegative);
+      expect(amountWrite, greaterThan(journalWrite));
+      final create = odoo.called('account.payment.register', 'create').single;
+      expect((create['args'] as List).first, isNot(contains('amount')));
+    });
+
+    test('a write-off survives the switch to a cash journal', () async {
+      odoo = _FakeOdoo(wizardJournal: 21);
+      await pay(
+        amount: 990,
+        method: 'cash',
+        handling: PaymentDifferenceHandling.writeOff,
+        writeOff: WriteOffConfig(accountId: 55, label: 'Rounding'),
+      );
+      expect(odoo.paymentsCreated, 1);
+      expect(odoo.wizardValues['payment_difference_handling'], 'reconcile');
+      expect(odoo.payments.last['amount'], 990);
+    });
+
+    test(
+      'a server that does not keep the amount gets no payment at all',
+      () async {
+        odoo = _FakeOdoo(keepsAmount: false);
+        await expectLater(
+          pay(amount: 350),
+          throwsA(
+            isA<PaymentError>().having(
+              (e) => e.message,
+              'message',
+              contains('did not keep the amount'),
+            ),
+          ),
+        );
+        expect(odoo.paymentsCreated, 0);
+      },
+    );
+
+    test('a cash journal in the invoice\'s currency is preferred over one '
+        'in another currency', () async {
+      odoo = _FakeOdoo(
+        wizardJournal: 21,
+        journals: [
+          {'id': 21, 'name': 'Bank', 'type': 'bank', 'currency_id': false},
+          {
+            'id': 31,
+            'name': 'Cash EUR',
+            'type': 'cash',
+            'currency_id': [2, 'EUR'],
+          },
+          {'id': 22, 'name': 'Cash', 'type': 'cash', 'currency_id': false},
+        ],
+      );
+      final result = await pay(amount: 300, method: 'cash');
+      expect(result.success, isTrue);
+      expect(odoo.wizardWrites.first, {'journal_id': 22});
+    });
+
+    test('the only cash journal paying in another currency is refused, not '
+        'paid in the wrong currency', () async {
+      odoo = _FakeOdoo(
+        wizardJournal: 21,
+        journals: [
+          {'id': 21, 'name': 'Bank', 'type': 'bank', 'currency_id': false},
+          {
+            'id': 31,
+            'name': 'Cash EUR',
+            'type': 'cash',
+            'currency_id': [2, 'EUR'],
+          },
+        ],
+      );
+      await expectLater(
+        pay(amount: 300, method: 'cash'),
+        throwsA(
+          isA<PaymentError>().having(
+            (e) => e.message,
+            'message',
+            contains('EUR'),
+          ),
+        ),
+      );
+      expect(odoo.paymentsCreated, 0);
+    });
+  });
+
+  group('what Odoo proposes, read without paying', () {
+    test('a payment in progress: Odoo still proposes the whole amount due, '
+        'and warns instead', () async {
+      odoo = _FakeOdoo(residualDrops: false);
+      odoo.residual = 750;
+      odoo.hasPaymentsInProgress = true;
+
+      final preview = await PaymentService.previewPayment(7);
+
+      expect(preview.amount, 750);
+      expect(preview.memo, 'INV/7');
+      expect(preview.alerts.single.isPaymentsInProgress, isTrue);
+      expect(preview.alerts.single.level, 'danger');
+      expect(preview.alerts.single.message, contains("don't pay twice"));
+      expect(preview.alerts.single.actionText, 'Check them');
+      expect(odoo.paymentsCreated, 0, reason: 'a preview never pays');
+    });
+
+    test('nothing in progress: no alert', () async {
+      final preview = await PaymentService.previewPayment(7);
+      expect(preview.alerts, isEmpty);
+    });
+
+    test('Odoo 17 has no alerts field, and it is not asked for', () async {
+      odoo = _FakeOdoo(odoo17: true);
+      final preview = await PaymentService.previewPayment(7);
+      expect(preview.alerts, isEmpty);
+      final read = odoo.called('account.payment.register', 'read').single;
+      expect(
+        ((read['args'] as List)[1] as List),
+        isNot(contains('actionable_errors')),
+      );
+    });
+
+    test('the difference for a typed amount is Odoo\'s own', () async {
+      odoo.residual = 750;
+      final preview = await PaymentService.previewPayment(7);
+      expect(preview.difference, 0);
+      expect(await PaymentService.previewDifference(preview, 350), 400);
+      expect(await PaymentService.previewDifference(preview, 800), -50);
+      expect(odoo.paymentsCreated, 0);
+    });
+
+    test('Odoo refusing to open the wizard is reported in its words', () async {
+      odoo = _FakeOdoo(refusesToOpen: true);
+      await expectLater(
+        PaymentService.previewPayment(7),
+        throwsA(predicate((e) => e.toString().contains('nothing left to pay'))),
+      );
+    });
+  });
+
   group('currency decimals', () {
     test('are read from the currency, and cached', () async {
       expect(await PaymentService.currencyDecimals(1), 3);
@@ -434,6 +682,56 @@ void main() {
 
     test('are two when there is no currency', () async {
       expect(await PaymentService.currencyDecimals(null), 2);
+    });
+  });
+
+  group("the Pay wizard's payments-in-progress alert", () {
+    /// `actionable_errors` as Odoo sends it, keyed the way [generation]
+    /// keys it.
+    Map<String, dynamic> actionableErrors(String key) => {
+      key: {
+        'message':
+            "There are payments in progress. Make sure you don't pay "
+            'twice.',
+        'level': 'danger',
+        'action_text': 'Check them',
+      },
+    };
+
+    test('is recognised under the key each release uses', () {
+      // 18 and 19 call it `unpaid_matched_payments`; 20 renamed it to
+      // `unreconciled_matched_payments`. Matching only the first left the
+      // alert on screen with no way to act on it on Odoo 20.
+      for (final key in const [
+        'unpaid_matched_payments',
+        'unreconciled_matched_payments',
+      ]) {
+        final alert = PaymentAlert.fromActionableErrors(
+          actionableErrors(key),
+        ).single;
+        expect(alert.isPaymentsInProgress, isTrue, reason: key);
+        expect(alert.level, 'danger');
+        expect(alert.actionText, 'Check them');
+      }
+    });
+
+    test('another alert is not mistaken for it', () {
+      final alert = PaymentAlert.fromActionableErrors(
+        actionableErrors('some_other_problem'),
+      ).single;
+      expect(alert.isPaymentsInProgress, isFalse);
+      expect(alert.message, contains("don't pay"));
+    });
+
+    test('an entry with no message is dropped', () {
+      expect(
+        PaymentAlert.fromActionableErrors({
+          'x': {'level': 'danger'},
+          'y': 'not a map',
+        }),
+        isEmpty,
+      );
+      expect(PaymentAlert.fromActionableErrors(false), isEmpty);
     });
   });
 }

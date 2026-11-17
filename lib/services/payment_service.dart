@@ -9,6 +9,7 @@ import 'odoo_error_classifier.dart';
 import 'odoo_error_handler.dart';
 import 'odoo_session_manager.dart';
 import 'permission_service.dart';
+import '../utils/invoice_payment_rules.dart';
 import '../utils/odoo_date.dart';
 
 class PaymentMethodData {
@@ -79,6 +80,86 @@ class PaymentResult {
 enum PaymentErrorType { network, validation, sync, reconciliation, unknown }
 
 enum PaymentErrorAction { retry, correct, refresh, contact }
+
+/// One alert of Odoo's Pay wizard (`account.payment.register
+/// .actionable_errors`, Odoo 18+), such as "There are payments in progress.
+/// Make sure you don't pay twice."
+class PaymentAlert {
+  /// Odoo's key for it, e.g. `unpaid_matched_payments`.
+  final String key;
+  final String message;
+
+  /// Odoo's level: `danger`, `warning` or `info`.
+  final String level;
+
+  /// The label of the link Odoo shows with it ("Check them"), if any.
+  final String? actionText;
+
+  const PaymentAlert({
+    required this.key,
+    required this.message,
+    required this.level,
+    this.actionText,
+  });
+
+  /// Odoo 18 and 19 key this alert `unpaid_matched_payments`; 20 renamed it
+  /// to `unreconciled_matched_payments` when it renamed the payment states.
+  /// Checking only the old key left the alert on screen with no way to act
+  /// on it on Odoo 20.
+  bool get isPaymentsInProgress =>
+      key == 'unpaid_matched_payments' ||
+      key == 'unreconciled_matched_payments';
+
+  static List<PaymentAlert> fromActionableErrors(Object? raw) {
+    if (raw is! Map) return const [];
+    final alerts = <PaymentAlert>[];
+    raw.forEach((key, value) {
+      if (value is! Map) return;
+      final message = value['message'];
+      if (message is! String || message.isEmpty) return;
+      final actionText = value['action_text'];
+      alerts.add(
+        PaymentAlert(
+          key: key.toString(),
+          message: message,
+          level: value['level'] is String
+              ? value['level'] as String
+              : 'warning',
+          actionText: actionText is String && actionText.isNotEmpty
+              ? actionText
+              : null,
+        ),
+      );
+    });
+    return alerts;
+  }
+}
+
+/// What Odoo's Pay wizard proposes for an invoice, read without paying.
+class PaymentPreview {
+  final int? wizardId;
+  final Map<String, dynamic> context;
+  final List<String> fields;
+
+  /// The amount Odoo proposes (its `amount_by_default`: the amount due, or
+  /// the installment due, less an early payment discount).
+  final double? amount;
+  final String? memo;
+
+  /// Odoo's payment difference for [amount].
+  final double? difference;
+  final List<PaymentAlert> alerts;
+
+  const PaymentPreview({
+    required this.wizardId,
+    required this.context,
+    required this.fields,
+    this.amount,
+    this.memo,
+    this.difference,
+    this.alerts = const [],
+  });
+}
 
 class OdooPaymentBehavior {
   final bool marksAsPaidDirectly;
@@ -285,8 +366,11 @@ class PaymentService {
     );
   }
 
+  /// Forgets what was learned about the server: its payment behaviour and
+  /// its currencies' decimal places (currency ids are per database).
   static void clearBehaviorCache() {
     _odooBehaviorCache = null;
+    _decimalsCache.clear();
   }
 
   /// The domain for the accounts offered as the write-off of a payment
@@ -578,6 +662,16 @@ class PaymentService {
   /// what the user chose is sent: the amount, the date, the memo, how a
   /// difference is handled, and the journal type (bank or cash) if the
   /// wizard's own journal is of another kind.
+  ///
+  /// Order matters. The wizard's `amount` is computed from its currency, which
+  /// is computed from its journal, so changing the journal makes Odoo put the
+  /// full amount due back in (and, on 18+, reset the difference handling). The
+  /// amount used to be sent first and the journal changed after it, which
+  /// recorded 750 for a payment of 350 whenever cash was chosen. So the
+  /// journal is settled first, the user's figures are written last in one
+  /// write (Odoo does not recompute fields written together), and the wizard
+  /// is read back: it is only run when it holds exactly what the user
+  /// confirmed.
   static Future<({int? paymentId, int companyId})> _registerPayment(
     dynamic client, {
     required int invoiceId,
@@ -626,18 +720,26 @@ class PaymentService {
       'allowed_company_ids': [companyId],
     };
 
+    final invoiceCurrencyId = _idOf(invoice['currency_id']);
+
     final wizardData = <String, dynamic>{
-      'amount': amount,
       'payment_date': DateFormat('yyyy-MM-dd').format(paymentDate),
       // Odoo's field for the memo. Left out when the user typed none, so Odoo
       // fills in its own (the invoice number).
       if (memo != null && memo.trim().isNotEmpty) 'communication': memo.trim(),
     };
-    if (differenceHandling == 'reconcile' && writeoffAccountId != null) {
-      wizardData['payment_difference_handling'] = 'reconcile';
-      wizardData['writeoff_account_id'] = writeoffAccountId;
-      wizardData['writeoff_label'] = writeoffLabel ?? 'Payment Difference';
-    }
+
+    // What the user chose, written after the journal so nothing resets it.
+    final writeOff =
+        differenceHandling == 'reconcile' && writeoffAccountId != null;
+    final userValues = <String, dynamic>{
+      'amount': amount,
+      if (writeOff) ...{
+        'payment_difference_handling': 'reconcile',
+        'writeoff_account_id': writeoffAccountId,
+        'writeoff_label': writeoffLabel ?? 'Payment Difference',
+      },
+    };
 
     final wizardId = await client
         .callKw({
@@ -648,7 +750,35 @@ class PaymentService {
         })
         .timeout(_defaultTimeout);
 
-    await _chooseJournal(client, wizardId, journalType, context);
+    await _chooseJournal(
+      client,
+      wizardId,
+      journalType,
+      context,
+      currencyId: invoiceCurrencyId,
+    );
+
+    await client
+        .callKw({
+          'model': 'account.payment.register',
+          'method': 'write',
+          'args': [
+            [wizardId],
+            userValues,
+          ],
+          'kwargs': {'context': context},
+        })
+        .timeout(_defaultTimeout);
+
+    await _checkWizardBeforeRunning(
+      client,
+      wizardId,
+      context,
+      amount: amount,
+      currencyId: invoiceCurrencyId,
+      writeOff: writeOff,
+      writeoffAccountId: writeoffAccountId,
+    );
 
     // From here on the payment may exist on the server.
     progress.sent = true;
@@ -682,8 +812,9 @@ class PaymentService {
     dynamic client,
     dynamic wizardId,
     String journalType,
-    Map<String, dynamic> context,
-  ) async {
+    Map<String, dynamic> context, {
+    int? currencyId,
+  }) async {
     final wanted = journalType.toLowerCase() == 'cash' ? 'cash' : 'bank';
 
     Future<Map<String, dynamic>?> readWizard() async {
@@ -723,12 +854,21 @@ class PaymentService {
             [
               ['id', 'in', available],
             ],
-            ['id', 'name', 'type'],
+            ['id', 'name', 'type', 'currency_id'],
           ],
           'kwargs': {'context': context},
         })
         .timeout(_defaultTimeout);
     if (journals is! List) return;
+
+    // A journal with no currency of its own pays in the invoice's currency;
+    // one in another currency would turn the amount typed into a different
+    // sum, so it is only used when it is the sole journal of the type (and
+    // then the check before running refuses it rather than pay wrongly).
+    bool sameCurrency(Map j) {
+      final own = _idOf(j['currency_id']);
+      return own == null || currencyId == null || own == currencyId;
+    }
 
     final currentId = _idOf(wizard['journal_id']);
     for (final j in journals) {
@@ -737,9 +877,17 @@ class PaymentService {
 
     Map? match;
     for (final j in journals) {
-      if (j is Map && j['type'] == wanted) {
+      if (j is Map && j['type'] == wanted && sameCurrency(j)) {
         match = j;
         break;
+      }
+    }
+    if (match == null) {
+      for (final j in journals) {
+        if (j is Map && j['type'] == wanted) {
+          match = j;
+          break;
+        }
       }
     }
     if (match == null) {
@@ -779,6 +927,209 @@ class PaymentService {
             })
             .timeout(_defaultTimeout);
       }
+    }
+  }
+
+  /// Fields of Odoo's Pay wizard the preview reads; each is read only when the
+  /// server has it (`actionable_errors` is Odoo 18+).
+  static const _previewFields = [
+    'amount',
+    'communication',
+    'currency_id',
+    'payment_difference',
+    'actionable_errors',
+  ];
+
+  /// Opens Odoo's Pay wizard for [invoiceId] without paying, the way the
+  /// Pay button does, and reports what Odoo proposes: the amount, the memo
+  /// and its alerts. Nothing is recorded; Odoo discards the wizard itself.
+  ///
+  /// Throws what Odoo throws when it refuses to open it (nothing left to
+  /// pay, no access), so the screen can say so in Odoo's words.
+  static Future<PaymentPreview> previewPayment(int invoiceId) async {
+    final client = await clientProvider();
+    if (client == null) {
+      throw PaymentError.network(
+        message: 'No active Odoo session. Please log in again.',
+        action: PaymentErrorAction.retry,
+      );
+    }
+    final invoice = await _getInvoiceDetails(client, invoiceId);
+    final context = {
+      'active_model': 'account.move',
+      'active_ids': [invoiceId],
+      'allowed_company_ids': [_idOf(invoice['company_id']) ?? 1],
+    };
+
+    final available = await client
+        .callKw({
+          'model': 'account.payment.register',
+          'method': 'fields_get',
+          'args': [_previewFields],
+          'kwargs': {
+            'attributes': ['type'],
+          },
+        })
+        .timeout(_defaultTimeout);
+    final fields = _previewFields
+        .where((f) => available is Map && available.containsKey(f))
+        .toList();
+
+    final wizardId = await client
+        .callKw({
+          'model': 'account.payment.register',
+          'method': 'create',
+          'args': [<String, dynamic>{}],
+          'kwargs': {'context': context},
+        })
+        .timeout(_defaultTimeout);
+
+    final values = await _readWizard(client, wizardId, fields, context);
+    return PaymentPreview(
+      wizardId: wizardId is int ? wizardId : null,
+      context: context,
+      fields: fields,
+      amount: (values['amount'] as num?)?.toDouble(),
+      memo: values['communication'] is String
+          ? values['communication'] as String
+          : null,
+      difference: (values['payment_difference'] as num?)?.toDouble(),
+      alerts: PaymentAlert.fromActionableErrors(values['actionable_errors']),
+    );
+  }
+
+  /// Odoo's payment difference for [amount] on a previewed wizard: what is
+  /// left to pay (positive) or paid too much (negative), with Odoo's own
+  /// installment and early-payment-discount rules. Null when the server has
+  /// no such field or the preview is gone.
+  static Future<double?> previewDifference(
+    PaymentPreview preview,
+    double amount,
+  ) async {
+    if (preview.wizardId == null ||
+        !preview.fields.contains('payment_difference')) {
+      return null;
+    }
+    final client = await clientProvider();
+    if (client == null) return null;
+    await client
+        .callKw({
+          'model': 'account.payment.register',
+          'method': 'write',
+          'args': [
+            [preview.wizardId],
+            {'amount': amount},
+          ],
+          'kwargs': {'context': preview.context},
+        })
+        .timeout(_defaultTimeout);
+    final values = await _readWizard(client, preview.wizardId, [
+      'payment_difference',
+    ], preview.context);
+    return (values['payment_difference'] as num?)?.toDouble();
+  }
+
+  static Future<Map<String, dynamic>> _readWizard(
+    dynamic client,
+    dynamic wizardId,
+    List<String> fields,
+    Map<String, dynamic> context,
+  ) async {
+    if (fields.isEmpty) return {};
+    final rows = await client
+        .callKw({
+          'model': 'account.payment.register',
+          'method': 'read',
+          'args': [
+            [wizardId],
+            fields,
+          ],
+          'kwargs': {'context': context},
+        })
+        .timeout(_defaultTimeout);
+    if (rows is List && rows.isNotEmpty && rows.first is Map) {
+      return Map<String, dynamic>.from(rows.first as Map);
+    }
+    return {};
+  }
+
+  /// Reads the wizard back and refuses to run it unless it holds what the
+  /// user confirmed: the amount (to the currency's precision), in the
+  /// invoice's currency, with the chosen difference handling. Throws a
+  /// [PaymentError] before anything is created otherwise.
+  static Future<void> _checkWizardBeforeRunning(
+    dynamic client,
+    dynamic wizardId,
+    Map<String, dynamic> context, {
+    required double amount,
+    required int? currencyId,
+    required bool writeOff,
+    int? writeoffAccountId,
+  }) async {
+    final rows = await client
+        .callKw({
+          'model': 'account.payment.register',
+          'method': 'read',
+          'args': [
+            [wizardId],
+            [
+              'amount',
+              'currency_id',
+              'payment_difference_handling',
+              'writeoff_account_id',
+            ],
+          ],
+          'kwargs': {'context': context},
+        })
+        .timeout(_defaultTimeout);
+    if (rows is! List || rows.isEmpty || rows.first is! Map) {
+      throw PaymentError.validation(
+        message:
+            'Could not confirm the payment details with Odoo. Nothing was '
+            'recorded; please try again.',
+        action: PaymentErrorAction.retry,
+      );
+    }
+    final wizard = Map<String, dynamic>.from(rows.first as Map);
+
+    final wizardCurrency = _idOf(wizard['currency_id']);
+    if (currencyId != null &&
+        wizardCurrency != null &&
+        wizardCurrency != currencyId) {
+      final name =
+          wizard['currency_id'] is List &&
+              (wizard['currency_id'] as List).length > 1
+          ? (wizard['currency_id'] as List)[1].toString()
+          : 'another currency';
+      throw PaymentError.validation(
+        message:
+            'The journal for this payment pays in $name, not in the '
+            'invoice\'s currency. Nothing was recorded.',
+        action: PaymentErrorAction.correct,
+      );
+    }
+
+    final decimals = await currencyDecimals(wizardCurrency ?? currencyId);
+    final held = (wizard['amount'] as num?)?.toDouble();
+    if (held == null || isPaymentDifference(held - amount, decimals)) {
+      throw PaymentError.validation(
+        message:
+            'Odoo did not keep the amount entered '
+            '(${amount.toStringAsFixed(decimals)}). Nothing was recorded; '
+            'please try again.',
+        action: PaymentErrorAction.retry,
+      );
+    }
+
+    if (writeOff &&
+        (wizard['payment_difference_handling'] != 'reconcile' ||
+            _idOf(wizard['writeoff_account_id']) != writeoffAccountId)) {
+      throw PaymentError.validation(
+        message:
+            'Odoo did not keep the write-off for the payment difference. '
+            'Nothing was recorded; please try again.',
+        action: PaymentErrorAction.retry,
+      );
     }
   }
 

@@ -315,6 +315,51 @@ class Payment {
   static bool isPostedState(Object? state) =>
       state is String && parseOdooState(state) == OdooPaymentState.posted;
 
+  /// Odoo's own label for a raw `account.payment.state`, in every release.
+  ///
+  /// 17 reads the state off the journal entry (`draft`, `posted`, `cancel`);
+  /// 18 and 19 use `draft`, `in_process`, `paid`, `canceled`, `rejected`; 20
+  /// keeps the shape but renames the settled pair to `paid` and
+  /// `reconciled`. One table, so a value this app has not met shows Odoo's
+  /// own word rather than a raw technical string.
+  static String stateLabel(String state) => switch (state) {
+    'draft' => 'Draft',
+    'posted' => 'Posted',
+    'in_process' => 'In Process',
+    'paid' => 'Paid',
+    'reconciled' => 'Reconciled',
+    'sent' => 'Sent',
+    'canceled' => 'Canceled',
+    'cancel' => 'Cancelled',
+    'rejected' => 'Rejected',
+    _ => state,
+  };
+
+  /// The `account.payment.state` that means "registered, not matched with
+  /// the bank yet" on [generation] — the payments Odoo's Pay wizard warns
+  /// about — or null when the release has no state of its own for it.
+  ///
+  /// Odoo 20 renamed the pair without changing the logic. `_compute_state`
+  /// is the same code in both: 18 and 19 promote `in_process --> paid`, 20
+  /// promotes `paid --> reconciled`, each when the liquidity line's residual
+  /// reaches zero. So 20's `paid` is 18/19's `in_process`, and 20's
+  /// `reconciled` is 18/19's `paid`. Reading `paid` the same way on both
+  /// would call a settled payment unsettled on one release and the reverse
+  /// on the other. 17 has only `posted` for both and tells them apart with
+  /// `is_matched`, so it has no state to name here.
+  static String? unmatchedState(int generation) {
+    if (generation >= 20) return 'paid';
+    if (generation >= 18) return 'in_process';
+    return null;
+  }
+
+  /// Whether [state] is the settled end of the pair on [generation]:
+  /// `reconciled` on 20, `paid` on 18 and 19, `posted` on 17.
+  static bool isSettledState(String state, int generation) {
+    if (state == Payment.unmatchedState(generation)) return false;
+    return state == 'paid' || state == 'reconciled' || state == 'posted';
+  }
+
   /// Returns the [OdooPaymentState] corresponding to the [state] string.
   ///
   /// `in_process` (18, 19) and `paid` (18, 19, 20) are payments that have been

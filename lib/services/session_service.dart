@@ -28,6 +28,7 @@ import '../screens/others/dashboard_screen.dart';
 import '../screens/invoices/invoice_list_screen.dart';
 import '../screens/products/product_list_screen.dart';
 import '../services/payment_status_synchronizer.dart';
+import '../services/payment_service.dart';
 import '../home_scaffold.dart';
 
 import '../widgets/custom_snackbar.dart';
@@ -1233,6 +1234,12 @@ class SessionService extends ChangeNotifier {
 
     try {
       PaymentStatusSynchronizer.clearAllCaches();
+    } catch (e) {}
+
+    // Currency ids differ from one database to the next, so decimals cached
+    // for id 1 on one server say nothing about id 1 on another.
+    try {
+      PaymentService.clearBehaviorCache();
     } catch (e) {}
 
     try {

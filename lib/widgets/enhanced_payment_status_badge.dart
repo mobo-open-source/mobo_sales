@@ -160,7 +160,8 @@ class EnhancedPaymentStatusBadge extends StatelessWidget {
           case 'reversed':
             return Colors.purple;
           case 'in_payment':
-            return Colors.green;
+            // As on the invoice page and its list.
+            return const Color(0xFF007BFF);
           case 'blocked':
             return Colors.grey;
           case 'invoicing_legacy':

@@ -1,14 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'package:hugeicons/hugeicons.dart';
-import 'package:shimmer/shimmer.dart';
 import '../../models/invoice.dart';
-import '../../models/payment.dart';
 import '../../providers/currency_provider.dart';
 import '../../services/payment_service.dart';
+import '../../services/odoo_error_handler.dart';
 import '../../services/odoo_session_manager.dart';
+import 'invoice_payments_sheet.dart';
 import '../../widgets/custom_date_picker.dart';
 import '../../shared/widgets/mobo/mobo_bottom_action_bar.dart';
 import '../../shared/widgets/mobo/mobo_dialog_buttons.dart';
@@ -19,17 +21,11 @@ import '../../widgets/custom_snackbar.dart';
 import '../../widgets/loading_dialog.dart';
 import '../../utils/date_picker_utils.dart';
 import '../../utils/invoice_payment_rules.dart';
-import '../../utils/odoo_date.dart';
 
 class EnhancedPaymentScreen extends StatefulWidget {
   final Invoice invoice;
-  final List<Payment>? existingPayments;
 
-  const EnhancedPaymentScreen({
-    super.key,
-    required this.invoice,
-    this.existingPayments,
-  });
+  const EnhancedPaymentScreen({super.key, required this.invoice});
 
   @override
   State<EnhancedPaymentScreen> createState() => _EnhancedPaymentScreenState();
@@ -52,27 +48,18 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
   bool _showPaymentDifference = false;
   double _differenceAmount = 0.0;
   bool _isOverpayment = false;
-  List<Payment> _existingPayments = [];
-  bool _isLoadingExistingPayments = true;
 
-  static final Map<int, List<Payment>> _paymentCache = {};
-  static final Map<int, DateTime> _cacheTimestamps = {};
-  static const Duration _cacheValidDuration = Duration(minutes: 2);
+  /// What Odoo's own Pay wizard proposes for this invoice: the amount, the
+  /// memo, its alerts ("There are payments in progress...") and, as the
+  /// amount changes, the payment difference. Null until it has loaded.
+  PaymentPreview? _preview;
 
-  static void clearAllPaymentCaches() {
-    _paymentCache.clear();
-    _cacheTimestamps.clear();
-  }
+  /// Why the preview could not be loaded (in Odoo's words when Odoo refused).
+  String? _previewError;
+  Future<void>? _previewLoad;
 
-  static void clearPaymentCache(int invoiceId) {
-    _paymentCache.remove(invoiceId);
-    _cacheTimestamps.remove(invoiceId);
-  }
-
-  static void clearAllPaymentCache() {
-    _paymentCache.clear();
-    _cacheTimestamps.clear();
-  }
+  Timer? _differenceDebounce;
+  int _differenceRequest = 0;
 
   Future<void> _detectOdooEdition() async {
     try {
@@ -208,14 +195,7 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
     _initializeControllers();
     _setupAnimations();
 
-    if (widget.existingPayments != null) {
-      _existingPayments = widget.existingPayments!;
-      _isLoadingExistingPayments = false;
-    } else {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _loadExistingPayments();
-      });
-    }
+    _previewLoad = _loadPreview();
 
     _detectOdooEdition();
     _loadCurrencyDecimals();
@@ -280,163 +260,112 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
     });
   }
 
-  Future<void> _loadExistingPayments() async {
-    if (widget.invoice.id == null) {
-      if (mounted) {
-        setState(() {
-          _isLoadingExistingPayments = false;
-        });
-      }
-      return;
-    }
+  /// Opens Odoo's Pay wizard for this invoice without paying, as Odoo's Pay
+  /// button does, and takes what Odoo proposes: the amount (Odoo does not
+  /// take payments in progress off it, it warns about them instead), the
+  /// memo, and the alerts. Fields the user already changed are left alone.
+  Future<void> _loadPreview() async {
+    final invoiceId = widget.invoice.id;
+    if (invoiceId == null) return;
+    if (mounted && !_isDisposed) setState(() => _previewError = null);
 
-    final invoiceId = widget.invoice.id!;
-
+    final amountBefore = _amountController.text;
+    final memoBefore = _memoController.text;
     try {
-      final cachedPayments = _paymentCache[invoiceId];
-      final cacheTime = _cacheTimestamps[invoiceId];
-
-      if (cachedPayments != null &&
-          cacheTime != null &&
-          DateTime.now().difference(cacheTime) < _cacheValidDuration) {
-        if (mounted) {
-          setState(() {
-            _existingPayments = cachedPayments;
-            _isLoadingExistingPayments = false;
-          });
-        }
-        return;
+      final preview = await PaymentService.previewPayment(invoiceId);
+      if (!mounted || _isDisposed) return;
+      final decimals = await PaymentService.currencyDecimals(
+        _invoiceCurrencyId,
+      );
+      if (!mounted || _isDisposed) return;
+      setState(() {
+        _preview = preview;
+        _currencyDecimals = decimals;
+      });
+      // Untouched: as it was, or still the amount due in other formatting
+      // (the currency's decimals may have arrived in the meantime).
+      final typed = double.tryParse(_amountController.text);
+      final amountUntouched =
+          _amountController.text == amountBefore ||
+          (typed != null &&
+              !isPaymentDifference(
+                typed - widget.invoice.amountResidual,
+                decimals,
+              ));
+      if (preview.amount != null && amountUntouched) {
+        _amountController.text = preview.amount!.toStringAsFixed(decimals);
       }
-
-      final payments = await _getBasicInvoicePayments(invoiceId);
-
-      _paymentCache[invoiceId] = payments;
-      _cacheTimestamps[invoiceId] = DateTime.now();
-
-      if (mounted) {
-        setState(() {
-          _existingPayments = payments;
-          _isLoadingExistingPayments = false;
-        });
+      if (preview.memo != null &&
+          preview.memo!.trim().isNotEmpty &&
+          (_memoController.text == memoBefore ||
+              _memoController.text == widget.invoice.name)) {
+        _memoController.text = preview.memo!;
       }
+      await _refreshDifference();
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoadingExistingPayments = false;
-        });
-      }
+      if (!mounted || _isDisposed) return;
+      setState(() {
+        _preview = null;
+        _previewError = OdooErrorHandler.toUserMessage(e);
+      });
     }
   }
 
-  Future<List<Payment>> _getBasicInvoicePayments(int invoiceId) async {
-    try {
-      final client = await OdooSessionManager.getClient();
-      if (client == null) {
-        return [];
-      }
-
-      final invoiceResult = await client
-          .callKw({
-            'model': 'account.move',
-            'method': 'search_read',
-            'args': [
-              [
-                ['id', '=', invoiceId],
-              ],
-              ['partner_id', 'name'],
-            ],
-            'kwargs': {},
-          })
-          .timeout(const Duration(seconds: 10));
-
-      if (invoiceResult.isEmpty) {
-        return [];
-      }
-
-      final partnerId = invoiceResult[0]['partner_id'] is List
-          ? invoiceResult[0]['partner_id'][0]
-          : invoiceResult[0]['partner_id'];
-      final invoiceName = invoiceResult[0]['name'] ?? '';
-
-      if (partnerId == null) {
-        return [];
-      }
-
-      final paymentResults = await client
-          .callKw({
-            'model': 'account.payment',
-            'method': 'search_read',
-            'args': [
-              [
-                ['partner_id', '=', partnerId],
-                ['state', 'in', Payment.confirmedStates],
-                ['payment_type', '=', 'inbound'],
-              ],
-              [
-                'id',
-                'name',
-                'amount',
-                'state',
-                'date',
-                'payment_method_line_id',
-                'journal_id',
-                'is_reconciled',
-                'create_date',
-              ],
-            ],
-            'kwargs': {'order': 'create_date desc', 'limit': 10},
-          })
-          .timeout(const Duration(seconds: 10));
-
-      List<Payment> payments = [];
-      final now = DateTime.now();
-
-      for (var paymentData in paymentResults) {
-        try {
-          final createDate =
-              OdooDate.parseDatetime(paymentData['create_date']) ?? now;
-
-          final daysDiff = now.difference(createDate).inDays;
-          final paymentName = paymentData['name']?.toString() ?? '';
-
-          if (daysDiff <= 30 ||
-              paymentName.contains(invoiceName) ||
-              paymentName.contains(invoiceId.toString())) {
-            paymentData['reconciliation_lines'] = [];
-            paymentData['reconciliation_status'] =
-                paymentData['is_reconciled'] == true ? 'complete' : 'pending';
-            paymentData['requires_manual_reconciliation'] =
-                Payment.isPostedState(paymentData['state']) &&
-                paymentData['is_reconciled'] != true;
-            paymentData['reconciled_amount'] =
-                paymentData['is_reconciled'] == true
-                ? paymentData['amount']
-                : 0.0;
-
-            final payment = Payment.fromJson(paymentData);
-            payments.add(payment);
-          }
-        } catch (e) {}
-      }
-
-      return payments;
-    } catch (e) {
-      return [];
-    }
+  int? get _invoiceCurrencyId {
+    final currency = widget.invoice.currencyId;
+    return currency != null && currency.isNotEmpty && currency.first is int
+        ? currency.first as int
+        : null;
   }
 
+  /// Called on every change of the amount: shows the difference at once
+  /// from what is known, then asks Odoo for its own figure.
   void _checkPaymentDifference() {
     final paymentAmount = double.tryParse(_amountController.text) ?? 0.0;
-    final remainingBalance = widget.invoice.amountResidual;
-    final difference = paymentAmount - remainingBalance;
+    // Until Odoo answers: the amount due less the amount, as Odoo computes
+    // it when there are no installments or early payment discount.
+    _applyDifference(
+      paymentAmount,
+      widget.invoice.amountResidual - paymentAmount,
+    );
 
+    _differenceDebounce?.cancel();
+    if (_preview == null) return;
+    _differenceDebounce = Timer(const Duration(milliseconds: 400), () {
+      _refreshDifference();
+    });
+  }
+
+  /// Asks Odoo's wizard for the payment difference of the current amount.
+  Future<void> _refreshDifference() async {
+    final preview = _preview;
+    if (preview == null) return;
+    final paymentAmount = double.tryParse(_amountController.text) ?? 0.0;
+    if (paymentAmount <= 0) return;
+    final request = ++_differenceRequest;
+    try {
+      final difference = await PaymentService.previewDifference(
+        preview,
+        paymentAmount,
+      );
+      if (!mounted || _isDisposed || request != _differenceRequest) return;
+      if (difference != null) _applyDifference(paymentAmount, difference);
+    } catch (_) {
+      // The figure shown so far stays; the payment itself is checked by Odoo
+      // when it is recorded.
+    }
+  }
+
+  /// [difference] as Odoo states it: still to pay when positive, paid too
+  /// much when negative.
+  void _applyDifference(double paymentAmount, double difference) {
+    if (!mounted || _isDisposed) return;
     setState(() {
       if (paymentAmount > 0 &&
           isPaymentDifference(difference, _currencyDecimals)) {
         _differenceAmount = difference.abs();
         _showPaymentDifference = true;
-
-        _isOverpayment = difference > 0;
+        _isOverpayment = difference < 0;
       } else {
         _showPaymentDifference = false;
         _paymentDifferenceHandling = 'open';
@@ -474,6 +403,13 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
       return;
     }
 
+    // Odoo's alerts (payments in progress) and its difference for this
+    // amount have to be on screen before the payment is confirmed.
+    await _previewLoad;
+    _differenceDebounce?.cancel();
+    await _refreshDifference();
+    if (!mounted || _isDisposed) return;
+
     final confirmed = await _showPaymentConfirmationDialog(
       context: context,
       paymentAmount: paymentAmount,
@@ -484,7 +420,7 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
       isOverpayment: _isOverpayment,
     );
 
-    if (!confirmed) return;
+    if (!confirmed || !mounted || _isDisposed) return;
 
     if (_isLoading) return;
     _isLoading = true;
@@ -559,11 +495,6 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
           HapticFeedback.lightImpact();
 
           if (result.success) {
-            if (widget.invoice.id != null) {
-              _paymentCache.remove(widget.invoice.id!);
-              _cacheTimestamps.remove(widget.invoice.id!);
-            }
-
             if (mounted && !_isDisposed) {
               Navigator.pop(context, {
                 'success': true,
@@ -681,6 +612,7 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
   @override
   void dispose() {
     _isDisposed = true;
+    _differenceDebounce?.cancel();
     _amountController.removeListener(_checkPaymentDifference);
     _amountController.dispose();
     _memoController.dispose();
@@ -706,7 +638,10 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
         elevation: 0,
         title: Text(
           'Record Payment',
-          style: TextStyle(color: isDark ? Colors.white : Colors.black),
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: isDark ? Colors.white : Colors.black,
+          ),
         ),
         leading: IconButton(
           onPressed: () => Navigator.pop(context),
@@ -729,16 +664,17 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  for (final alert
+                      in _preview?.alerts ?? const <PaymentAlert>[]) ...[
+                    _buildOdooAlert(alert, isDark),
+                    const SizedBox(height: 16),
+                  ],
+                  if (_previewError != null) ...[
+                    _buildPreviewFailed(isDark),
+                    const SizedBox(height: 16),
+                  ],
                   _buildInvoiceInfoCard(isDark),
                   const SizedBox(height: 20),
-
-                  if (_isLoadingExistingPayments) ...[
-                    _buildExistingPaymentsShimmer(isDark),
-                    const SizedBox(height: 20),
-                  ] else if (_existingPayments.isNotEmpty) ...[
-                    _buildExistingPaymentsCard(isDark),
-                    const SizedBox(height: 20),
-                  ],
 
                   _buildPaymentDetailsCard(isDark),
                   const SizedBox(height: 20),
@@ -813,6 +749,7 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
               EnhancedPaymentStatusBadge(
                 invoice: widget.invoice,
                 showIcon: true,
+                showReconciliationIndicator: false,
               ),
             ],
           ),
@@ -823,211 +760,118 @@ class _EnhancedPaymentScreenState extends State<EnhancedPaymentScreen>
     );
   }
 
-  Widget _buildExistingPaymentsShimmer(bool isDark) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: isDark ? Colors.black26 : Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.green.withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  HugeIcons.strokeRoundedPayment01,
-                  color: Colors.green,
-                  size: 20,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                'Existing Payments',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
-                  color: isDark ? Colors.white : Colors.black87,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-
-          _buildPaymentItemShimmer(isDark),
-        ],
+  /// One of Odoo's Pay wizard alerts, in Odoo's words and level. The
+  /// payments-in-progress alert keeps Odoo's "Check them" link, which lists
+  /// those payments.
+  Widget _buildOdooAlert(PaymentAlert alert, bool isDark) {
+    final MaterialColor color = switch (alert.level) {
+      'danger' => Colors.red,
+      'info' => Colors.blue,
+      _ => Colors.orange,
+    };
+    final invoiceId = widget.invoice.id;
+    return _buildNotice(
+      isDark: isDark,
+      color: color,
+      message: alert.message,
+      actionLabel: alert.isPaymentsInProgress && invoiceId != null
+          ? (alert.actionText ?? 'Check them')
+          : null,
+      onAction: () => showInvoicePaymentsSheet(
+        context,
+        invoiceId: invoiceId!,
+        inProgressOnly: true,
       ),
     );
   }
 
-  Widget _buildPaymentItemShimmer(bool isDark) {
+  /// Shown when Odoo's Pay wizard could not be opened: either Odoo refused
+  /// (its reason is shown) or it could not be reached. Its alerts, such as
+  /// payments in progress, are then unknown, and the notice says so.
+  Widget _buildPreviewFailed(bool isDark) {
+    return _buildNotice(
+      isDark: isDark,
+      color: Colors.orange,
+      message: _previewError ?? 'Could not load the payment details.',
+      detail:
+          "Odoo's checks for this invoice, such as payments already in "
+          "progress, could not be shown.",
+      actionLabel: 'Retry',
+      onAction: () => setState(() => _previewLoad = _loadPreview()),
+    );
+  }
+
+  /// The app's notice style (as on the quotation and delivery pages): a
+  /// tinted box with an icon, a short message and an optional link.
+  Widget _buildNotice({
+    required bool isDark,
+    required MaterialColor color,
+    required String message,
+    String? detail,
+    String? actionLabel,
+    VoidCallback? onAction,
+  }) {
+    final textColor = isDark ? color[200] : color[900];
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: isDark ? Colors.grey[850] : Colors.grey[50],
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Shimmer.fromColors(
-        baseColor: isDark ? Colors.grey[800]! : Colors.grey[300]!,
-        highlightColor: isDark ? Colors.grey[700]! : Colors.grey[100]!,
-        child: Row(
-          children: [
-            Container(
-              width: 16,
-              height: 16,
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: double.infinity,
-                    height: 14,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Container(
-                    width: 100,
-                    height: 12,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Container(
-              width: 60,
-              height: 14,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ),
-          ],
+        color: isDark ? color.withValues(alpha: 0.1) : color[50],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isDark ? color[200]!.withValues(alpha: 0.3) : color[200]!,
         ),
       ),
-    );
-  }
-
-  Widget _buildExistingPaymentsCard(bool isDark) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: isDark ? Colors.black26 : Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.green.withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  HugeIcons.strokeRoundedPayment01,
-                  color: Colors.green,
-                  size: 20,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                'Existing Payments',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
-                  color: isDark ? Colors.white : Colors.black87,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          ..._existingPayments.map(
-            (payment) => _buildPaymentItem(payment, isDark),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPaymentItem(Payment payment, bool isDark) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: isDark ? Colors.grey[850] : Colors.grey[50],
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            payment.isInPayment
-                ? HugeIcons.strokeRoundedLoading03
-                : HugeIcons.strokeRoundedCheckmarkCircle02,
-            color: payment.isInPayment ? Colors.blue : Colors.green,
-            size: 16,
-          ),
-          const SizedBox(width: 8),
+          Icon(HugeIcons.strokeRoundedAlert02, color: color[700], size: 20),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  payment.name,
+                  message,
                   style: TextStyle(
-                    fontWeight: FontWeight.w500,
-                    color: isDark ? Colors.white : Colors.black87,
+                    color: textColor,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    height: 1.4,
                   ),
                 ),
-                Text(
-                  payment.statusDisplay,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: isDark ? Colors.grey[400] : Colors.grey[600],
+                if (detail != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    detail,
+                    style: TextStyle(
+                      color: textColor,
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
                   ),
-                ),
+                ],
+                if (actionLabel != null && onAction != null) ...[
+                  const SizedBox(height: 8),
+                  InkWell(
+                    onTap: onAction,
+                    borderRadius: BorderRadius.circular(4),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text(
+                        actionLabel,
+                        style: TextStyle(
+                          color: isDark ? color[200] : color[800],
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          decoration: TextDecoration.underline,
+                          decorationColor: isDark ? color[200] : color[800],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ],
-            ),
-          ),
-          Text(
-            payment.amount.toStringAsFixed(2),
-            style: TextStyle(
-              fontWeight: FontWeight.w600,
-              color: isDark ? Colors.white : Colors.black87,
             ),
           ),
         ],

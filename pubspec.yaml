@@ -2,7 +2,7 @@ name: mobo_sales
 description: "A new Flutter project."
 publish_to: 'none'
 
-version: 1.1.13+63
+version: 1.1.13+64
 
 environment:
   sdk: ^3.9.0
@@ -80,7 +80,7 @@ dependencies:
   local_auth: ^2.3.0
 
   # AI and OCR
-  google_mlkit_text_recognition: ^0.15.0
+  google_mlkit_text_recognition: ^0.17.0
 
   # Other Widgets
   carousel_slider: ^5.0.0

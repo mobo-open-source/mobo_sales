@@ -25,6 +25,13 @@ end
 
 require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
 
+# Lets the ML Kit pods (which ship no arm64-simulator slice) build for Apple
+# Silicon simulators; see google_mlkit_commons README, iOS section.
+require File.expand_path(
+  '.symlinks/plugins/google_mlkit_commons/ios/scripts/apple_silicon_simulator',
+  __dir__,
+)
+
 flutter_ios_podfile_setup
 
 target 'Runner' do
@@ -51,9 +58,8 @@ post_install do |installer|
         'PERMISSION_LOCATION=1',
         'PERMISSION_SPEECH_RECOGNITION=1'
       ]
-      # Exclude arm64 for simulator to avoid ML Kit issues
-      config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64'
     end
   end
-  
+
+  mlkit_apple_silicon_simulator_patch(installer)
 end

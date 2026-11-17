@@ -12,6 +12,12 @@ class PaymentStatusUpdate {
   final DateTime timestamp;
   final bool requiresReconciliation;
 
+  /// Odoo's own `amount_residual` of the invoice at the time of the update,
+  /// or null when the server sent none. This is the Amount Due; the app does
+  /// not work it out from payments, which Odoo does not count until they are
+  /// matched with the invoice.
+  final double? amountResidual;
+
   PaymentStatusUpdate({
     required this.invoiceId,
     required this.previousPaymentState,
@@ -19,6 +25,7 @@ class PaymentStatusUpdate {
     required this.payments,
     required this.timestamp,
     required this.requiresReconciliation,
+    this.amountResidual,
   });
 }
 
@@ -122,6 +129,7 @@ class PaymentStatusSynchronizer {
         payments: payments,
         timestamp: DateTime.now(),
         requiresReconciliation: requiresReconciliation,
+        amountResidual: (invoiceData['amount_residual'] as num?)?.toDouble(),
       );
 
       _notifyWatchers(invoiceId, update);
@@ -225,6 +233,8 @@ class PaymentStatusSynchronizer {
             payments: payments,
             timestamp: DateTime.now(),
             requiresReconciliation: requiresReconciliation,
+            amountResidual: (invoiceData['amount_residual'] as num?)
+                ?.toDouble(),
           );
 
           updates.add(update);

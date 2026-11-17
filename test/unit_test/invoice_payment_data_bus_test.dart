@@ -608,6 +608,7 @@ void main() {
     late MockPermissionService permissions;
     late List<String> methods;
     var failStatusRead = false;
+    var wizard = <String, dynamic>{};
 
     setUp(() {
       client = MockOdooClient();
@@ -658,7 +659,25 @@ void main() {
               {'id': 31, 'name': 'Manual'},
             ];
           case 'account.payment.register.create':
+            wizard = {'amount': 0.0, 'currency_id': false};
             return 41;
+          case 'account.payment.register.write':
+            wizard.addAll(
+              Map<String, dynamic>.from((payload['args'] as List)[1] as Map),
+            );
+            return true;
+          case 'account.payment.register.read':
+            // Odoo's wizard, read back before it is run.
+            return [
+              {
+                'id': 41,
+                'journal_id': [21, 'Bank'],
+                'payment_method_line_id': [31, 'Manual'],
+                'available_journal_ids': [21],
+                'available_payment_method_line_ids': [31],
+                ...wizard,
+              },
+            ];
           case 'account.payment.register.action_create_payments':
             return {'res_id': 77};
         }
@@ -721,6 +740,13 @@ void main() {
         if (payload['model'] == 'account.payment.register' &&
             payload['method'] == 'action_create_payments') {
           throw Exception('The payment amount exceeds the balance');
+        }
+        if (payload['model'] == 'account.payment.register' &&
+            payload['method'] == 'read') {
+          // The wizard holds what was asked; the refusal comes when it runs.
+          return [
+            {'id': 41, 'amount': 100.0, 'currency_id': false},
+          ];
         }
         if (payload['model'] == 'account.payment.register') return 41;
         if (payload['model'] == 'account.journal') {

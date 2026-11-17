@@ -63,9 +63,9 @@ class PluginSpeechEngine implements SpeechEngine {
     return _speech.listen(
       onResult: (result) =>
           onResult(result.recognizedWords, result.finalResult),
+      listenFor: const Duration(seconds: 30),
+      pauseFor: const Duration(seconds: 3),
       listenOptions: stt.SpeechListenOptions(
-        listenFor: const Duration(seconds: 30),
-        pauseFor: const Duration(seconds: 3),
         partialResults: true,
         cancelOnError: false,
         listenMode: stt.ListenMode.dictation,
