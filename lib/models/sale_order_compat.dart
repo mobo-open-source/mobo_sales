@@ -77,6 +77,17 @@ List<List<dynamic>> saleOrderLineCommands(
   return commands;
 }
 
+/// Whether Odoo's own sale order form limits a line's product to the order's
+/// company.
+///
+/// Odoo 19 and 20 mark `sale.order.line.product_id` `check_company`: the form
+/// offers only products of the order's company or of none, and saving another
+/// company's product fails with "company inconsistencies". 17 and 18 do
+/// neither — the field has only `sale_ok` in its domain, and another company's
+/// product the user can read is accepted. An unknown generation (0) keeps the
+/// list unfiltered, as the app always did.
+bool saleLineProductIsCompanyChecked(int generation) => generation >= 19;
+
 // ---------------------------------------------------------------------------
 // Fiscal positions
 // ---------------------------------------------------------------------------

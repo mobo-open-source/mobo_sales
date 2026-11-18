@@ -12,12 +12,14 @@ import '../../services/session_service.dart';
 import '../../widgets/connection_status_widget.dart';
 import '../../widgets/custom_snackbar.dart';
 import '../../widgets/loading_dialog.dart';
+import '../../models/company_scope.dart';
 import '../../models/contact.dart';
 import '../../models/sale_order_compat.dart';
 import '../../providers/contact_provider.dart';
 import '../../providers/currency_provider.dart';
 import '../../services/odoo_session_manager.dart';
 import '../../services/odoo_error_handler.dart';
+import '../../services/odoo_form_defaults.dart';
 import '../../utils/quantity_format.dart';
 import '../../widgets/quantity_stepper.dart';
 import '../../widgets/unit_price_field.dart';
@@ -588,6 +590,24 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
 
   Future<_QuoteCompany>? _companyFuture;
 
+  /// The customers this quotation can be saved with, as Odoo's own form limits
+  /// its customer field: the quotation's company or none. `partner_id` is
+  /// `check_company` on every Odoo the app supports, so another company's
+  /// customer would be refused on save. Lists that are not this form are
+  /// unaffected.
+  Future<List<dynamic>> _customerScope() async =>
+      (await _quoteCompany()).domain;
+
+  /// The products this quotation can be saved with. Odoo 19 and 20 limit a
+  /// line's product to the order's company (see
+  /// [saleLineProductIsCompanyChecked]); 17 and 18 do not, and accept any
+  /// product the user can read, so the list is left as it was there.
+  Future<List<dynamic>> _productScope() async {
+    final generation = await OdooSessionManager.serverGeneration();
+    if (!saleLineProductIsCompanyChecked(generation)) return const [];
+    return (await _quoteCompany()).domain;
+  }
+
   /// The company this quotation belongs to, and the scope its lists are cached
   /// under: a quotation being edited keeps the company it was made in, a new
   /// one takes the company selected in the app, as Odoo's own form does.
@@ -779,7 +799,11 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
       if (mounted) {
         CustomSnackbar.showError(
           context,
-          'Failed to load customer defaults: $e',
+          OdooErrorHandler.toSnackbarMessage(
+            e,
+            fallback:
+                "Could not load the customer's payment terms and pricelist.",
+          ),
         );
       }
     } finally {
@@ -1632,12 +1656,11 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                 )) {
               errorMessage =
                   'Cannot modify confirmed order lines. You can only update quantities, not add/remove products.';
-            } else if (writeError.toString().contains('UserError')) {
-              final regex = RegExp(r'message: ([^,}]+)');
-              final match = regex.firstMatch(writeError.toString());
-              if (match != null) {
-                errorMessage = match.group(1)?.trim() ?? errorMessage;
-              }
+            } else {
+              errorMessage = OdooErrorHandler.toSnackbarMessage(
+                writeError,
+                fallback: errorMessage,
+              );
             }
 
             if (mounted && context.mounted) {
@@ -1696,6 +1719,16 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
         if (_selectedPricelist != null) {
           quoteData['pricelist_id'] = _selectedPricelist!['id'];
         }
+
+        quoteData.addAll(
+          await OdooFormDefaults.missingMany2oneValues(
+            callKw: client.callKw,
+            model: 'sale.order',
+            values: Map<String, dynamic>.of(quoteData)..remove('order_line'),
+            accountKey: company.scope,
+            context: company.context,
+          ),
+        );
 
         int? quoteId;
         try {
@@ -2839,6 +2872,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                           CustomerTypeAhead(
                             labelText: 'Customer',
                             isRequired: true,
+                            extraDomain: _customerScope,
                             selectedCustomer: _selectedCustomer,
                             allowClear: false,
                             enabled:
@@ -3003,6 +3037,7 @@ class _CreateQuoteScreenState extends State<CreateQuoteScreen>
                           ProductTypeAhead(
                             labelText: 'Search Product to Add',
                             isRequired: true,
+                            extraDomain: _productScope,
                             onProductSelected: (product) {
                               setState(() {
                                 _isAddingLine = true;
@@ -4068,13 +4103,7 @@ class _QuoteCompany {
   /// The domain of Odoo's own form field: records with no company, or this
   /// one's. With no company known, all of the user's companies are left
   /// alone, as before.
-  List<dynamic> get domain => id == null
-      ? const []
-      : [
-          '|',
-          ['company_id', '=', false],
-          ['company_id', '=', id],
-        ];
+  List<dynamic> get domain => companyCheckDomain(id);
 
   /// Makes the server answer as if this company were the one selected.
   Map<String, dynamic> get context => id == null

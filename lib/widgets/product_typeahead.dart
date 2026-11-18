@@ -24,12 +24,19 @@ class ProductTypeAhead extends StatefulWidget {
   final ValueChanged<Product> onProductSelected;
   final String? Function(Product?)? validator;
 
+  /// A further condition every product offered must meet, asked for on each
+  /// search: a create form returns the company scope Odoo's own form gives its
+  /// product field, so only products the record can be saved with are
+  /// offered. Null, or an empty domain, searches as before.
+  final Future<List<dynamic>> Function()? extraDomain;
+
   const ProductTypeAhead({
     required this.labelText,
     this.isRequired = false,
     required this.onProductSelected,
     this.hintText,
     this.validator,
+    this.extraDomain,
     super.key,
   });
 
@@ -177,6 +184,7 @@ class _ProductTypeAheadState extends State<ProductTypeAhead> {
       final client = await OdooSessionManager.getClient();
       if (client == null) return null;
       final fields = await _fieldsToRead();
+      final extra = await widget.extraDomain?.call() ?? const [];
 
       // Use safeCallKw (not the raw client) so the request carries the
       // active company context and refreshes an expired session, instead
@@ -193,6 +201,7 @@ class _ProductTypeAheadState extends State<ProductTypeAhead> {
               ['name', 'ilike', pattern],
               ['default_code', 'ilike', pattern],
             ],
+            ...extra,
           ],
         ],
         'kwargs': {

@@ -2336,6 +2336,7 @@ class _InvoiceDetailsPageState extends State<InvoiceDetailsPage>
                                           'narration',
                                           'currency_id',
                                           'invoice_line_ids',
+                                          'company_id',
                                         ],
                                       },
                                     });

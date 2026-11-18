@@ -18,6 +18,7 @@ import '../../shared/widgets/mobo/mobo_select_field.dart';
 import '../../widgets/custom_snackbar.dart';
 import '../../widgets/loading_dialog.dart';
 import '../../widgets/connection_status_widget.dart';
+import '../../models/company_scope.dart';
 import '../../models/contact.dart';
 import '../../providers/currency_provider.dart';
 import '../../providers/invoice_creation_provider.dart';
@@ -671,10 +672,40 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
     );
   }
 
+  /// The company this invoice is saved in, or null when it cannot be told.
+  ///
+  /// An invoice being edited keeps its own company. A new one is created in
+  /// the company selected in the app: every request goes out with that company
+  /// first, and Odoo puts a new invoice in the first one. An edit that arrived
+  /// without its company gives null, which leaves the lists as they were
+  /// rather than guess.
+  Future<int?> _invoiceCompanyId() async {
+    final edited = widget.invoiceToEdit;
+    if (edited != null) {
+      final own = edited['company_id'];
+      if (own is List && own.isNotEmpty && own.first is int) {
+        return own.first as int;
+      }
+      if (own is int && own > 0) return own;
+      return null;
+    }
+    final session = await OdooSessionManager.getCurrentSession();
+    final selected = session?.selectedCompanyId;
+    return (selected == null || selected <= 0) ? null : selected;
+  }
+
+  /// The customers and products this invoice can be saved with, as Odoo's own
+  /// invoice form limits both: `partner_id` and the line's `product_id` are
+  /// `check_company` on every Odoo the app supports, so another company's
+  /// record would be refused on save.
+  Future<List<dynamic>> _invoiceCompanyScope() async =>
+      companyCheckDomain(await _invoiceCompanyId());
+
   Widget _buildCustomerDropdown(CreateInvoiceProvider invoiceProvider) {
     return CustomerTypeAhead(
       labelText: 'Customer',
       isRequired: true,
+      extraDomain: _invoiceCompanyScope,
       onCustomerSelected: invoiceProvider.setSelectedCustomer,
       onClear: () => invoiceProvider.setSelectedCustomer(null),
       validator: (value) => invoiceProvider.selectedCustomer == null
@@ -1091,6 +1122,7 @@ class _CreateInvoiceScreenState extends State<CreateInvoiceScreen>
                 ProductTypeAhead(
                   labelText: 'Search Product to Add',
                   isRequired: true,
+                  extraDomain: _invoiceCompanyScope,
                   onProductSelected: (product) {
                     invoiceProvider.addInvoiceLine(
                       product,

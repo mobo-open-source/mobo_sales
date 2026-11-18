@@ -43,6 +43,43 @@ class OdooErrorHandler {
   static bool isNothingToInvoice(String message) =>
       message.contains(nothingToInvoiceMessage);
 
+  /// A literal empty value — Python's `False` or `None`, JSON's `false` — on
+  /// its own or wrapped in quotes or brackets (`“False”`, `'None'`, `(False)`).
+  static final RegExp _quotedLiteral = RegExp(
+    r'''[“"'‘(\[]\s*(?:False|None|false)\s*[”"'’)\]]''',
+  );
+
+  /// The same values as bare words. `None of …` is English and is kept.
+  static final RegExp _bareLiteral = RegExp(
+    r'\b(?:False|false)\b|\bNone\b(?!\s+of\b)',
+  );
+
+  /// [text] without the empty values Odoo writes into its messages.
+  ///
+  /// Odoo fills a message with whatever a field holds, and an empty field is
+  /// Python's `False` or `None`: "The warehouse False is not one of the
+  /// warehouses of the branch X." Those words mean nothing to the person
+  /// holding the phone, so they are taken out and the sentence is closed up
+  /// around the gap: "The warehouse is not one of the warehouses of the branch
+  /// X." Lines that hold no such value are returned exactly as they were, so a
+  /// multi-line message keeps its indentation.
+  static String withoutPythonLiterals(String text) {
+    if (!text.contains('alse') && !text.contains('None')) return text;
+    return text
+        .split('\n')
+        .map((line) {
+          final cleaned = line
+              .replaceAll(_quotedLiteral, '')
+              .replaceAll(_bareLiteral, '');
+          if (cleaned == line) return line;
+          return cleaned
+              .replaceAll(RegExp(r'[ \t]{2,}'), ' ')
+              .replaceAllMapped(RegExp(r'\s+([.,;:!?)])'), (m) => m[1]!)
+              .trim();
+        })
+        .join('\n');
+  }
+
   static String toSnackbarMessage(dynamic e, {String? fallback}) {
     final generic = fallback ?? 'Something went wrong. Please try again.';
     final raw = e.toString();
@@ -88,7 +125,7 @@ class OdooErrorHandler {
     }
 
     var text = _serverSentence(raw);
-    text = _tidy(text);
+    text = withoutPythonLiterals(_tidy(text));
     // The last gate before a person reads this. Anything still carrying a
     // stack frame, a parser's complaint or a Dart type name is the app's
     // internals leaking into the UI, and a generic sentence is better than
@@ -274,8 +311,17 @@ class OdooErrorHandler {
     return out.length > 400 ? '${out.substring(0, 397)}...' : out;
   }
 
-  /// Converts [e] to a user-readable error message, with an optional [defaultMessage] fallback.
-  static String toUserMessage(dynamic e, {String? defaultMessage}) {
+  /// Converts [e] to a user-readable error message, with an optional
+  /// [defaultMessage] fallback.
+  ///
+  /// Whatever it comes to, Odoo's empty values are never part of it (see
+  /// [withoutPythonLiterals]).
+  static String toUserMessage(dynamic e, {String? defaultMessage}) =>
+      withoutPythonLiterals(
+        _composeUserMessage(e, defaultMessage: defaultMessage),
+      );
+
+  static String _composeUserMessage(dynamic e, {String? defaultMessage}) {
     final errorString = e.toString();
     final s = errorString.toLowerCase();
 
@@ -471,7 +517,9 @@ Please contact your system administrator for assistance.''';
     // Every name below is in `odoo/exceptions.py`; 19 and 20 add `LockError`,
     // so asking for a name an older release never raises never matches.
     if (_namesOdooBusinessError(s)) {
-      final sentence = _tidy(_serverSentence(errorString));
+      final sentence = withoutPythonLiterals(
+        _tidy(_serverSentence(errorString)),
+      );
       if (sentence.isNotEmpty && !_looksTechnical(sentence)) {
         return '⚠️ Could Not Complete\n\n$sentence';
       }

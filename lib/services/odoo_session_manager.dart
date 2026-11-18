@@ -41,6 +41,12 @@ class OdooSessionModel {
     this.serverVersion,
   });
 
+  /// Whether this session knows its user and its Odoo version — everything
+  /// the app needs to tell whose session it is and which Odoo it talks to.
+  /// Every sign-in sets both; a session missing either was stored incompletely.
+  bool get isComplete =>
+      userId != null && serverVersion != null && serverVersion!.isNotEmpty;
+
   OdooSession get odooSession {
     return OdooSession(
       id: sessionId,
@@ -111,6 +117,11 @@ class OdooSessionModel {
   }
 
   /// Persists this session to `SharedPreferences`.
+  ///
+  /// A session without its user never overwrites the stored user id: such an
+  /// object can only have been read back while another save was half-way
+  /// through, and writing it would delete the id that save had just stored.
+  /// Signing out removes the id (see [OdooSessionManager.logout]).
   Future<void> saveToPrefs() async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -123,8 +134,6 @@ class OdooSessionModel {
     await prefs.setString('serverUrl', serverUrl);
     if (userId != null) {
       await prefs.setInt('userId', userId!);
-    } else {
-      await prefs.remove('userId');
     }
     if (userName != null) {
       await prefs.setString('userName', userName!);
@@ -369,11 +378,96 @@ class OdooSessionManager {
   /// synchronously and can fall back gracefully.
   static OdooSessionModel? get cachedSession => _cachedSession;
 
+  /// Bumped whenever the session in memory is replaced or dropped, so a load
+  /// from storage that started earlier cannot put an older session back.
+  static int _sessionEpoch = 0;
+
+  /// Makes [session] the one in memory before it is written anywhere.
+  ///
+  /// A session is saved one preference at a time. Anything that read storage
+  /// part-way through a save found the new session id but none of the user,
+  /// company or version, kept that, and later saved it over the complete one.
+  /// With the complete session in memory first, nothing reads storage while
+  /// it is being written.
+  static void _adopt(OdooSessionModel session) {
+    _sessionEpoch++;
+    _cachedSession = session;
+  }
+
   /// Returns the current session from cache or `SharedPreferences`.
   static Future<OdooSessionModel?> getCurrentSession() async {
-    if (_cachedSession != null) return _cachedSession;
-    _cachedSession = await OdooSessionModel.fromPrefs();
-    return _cachedSession;
+    final cached = _cachedSession;
+    if (cached != null) return cached;
+    return _loadSession();
+  }
+
+  /// The session stored on the device.
+  ///
+  /// One stored without its user or version — by an older version of the app,
+  /// or by a save interrupted as described at [_adopt] — is completed from the
+  /// server with the session it already holds: no password, no second factor.
+  /// When the server cannot say, it is used as stored. A load that finishes
+  /// after a sign-in, sign-out or switch returns what is in memory instead of
+  /// putting the older session back.
+  static Future<OdooSessionModel?> _loadSession() async {
+    final epoch = _sessionEpoch;
+    var session = await OdooSessionModel.fromPrefs();
+
+    OdooSessionModel? completed;
+    if (session != null && !session.isComplete) {
+      completed = await _completeFromServer(session);
+      if (completed != null) session = completed;
+    }
+
+    if (epoch != _sessionEpoch) return _cachedSession ?? session;
+
+    _cachedSession = session;
+    if (completed != null) {
+      try {
+        await completed.saveToPrefs();
+      } catch (_) {}
+    }
+    return session;
+  }
+
+  /// [stored] with its user, name and Odoo version read from the server, or
+  /// null when the server cannot say (offline, or the session has ended).
+  static Future<OdooSessionModel?> _completeFromServer(
+    OdooSessionModel stored,
+  ) async {
+    try {
+      final info = await getSessionInfo(stored.serverUrl, stored.sessionId);
+      final uid = info['uid'];
+      if (uid is! int || uid <= 0) return null;
+
+      final version = info['server_version'];
+      final name = info['name'];
+      int? companyId = stored.selectedCompanyId;
+      final companies = info['user_companies'];
+      if (companyId == null && companies is Map) {
+        final current = companies['current_company'];
+        if (current is int) companyId = current;
+      }
+
+      return OdooSessionModel(
+        sessionId: stored.sessionId,
+        userLogin: stored.userLogin,
+        password: stored.password,
+        serverUrl: stored.serverUrl,
+        database: stored.database,
+        userId: uid,
+        userName: stored.userName ?? (name is String ? name : null),
+        expiresAt:
+            stored.expiresAt ?? DateTime.now().add(const Duration(hours: 24)),
+        selectedCompanyId: companyId,
+        allowedCompanyIds: stored.allowedCompanyIds,
+        serverVersion: version is String && version.isNotEmpty
+            ? version
+            : stored.serverVersion,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   /// The Odoo generation of the connected server (see [odooGeneration]), or 0
@@ -485,8 +579,8 @@ class OdooSessionManager {
         return false;
       }
 
+      _adopt(sessionModel);
       await sessionModel.saveToPrefs();
-      _cachedSession = sessionModel;
 
       if (_onSessionUpdated != null) {
         _onSessionUpdated!(sessionModel);
@@ -553,21 +647,25 @@ class OdooSessionManager {
     }
   }
 
-  /// Invalidates the in-memory client and session cache.
+  /// Invalidates the in-memory client and session cache, so that a load from
+  /// storage already under way does not bring the session back.
   static void clearClientCache() {
     _cachedClient = null;
     _lastAuthTime = null;
     _cachedSession = null;
+    _sessionEpoch++;
   }
 
   /// Saves [sessionModel] to preferences and resets the client cache.
+  ///
+  /// The session is in memory before it is written, so nothing reads storage
+  /// part-way through the save.
   static Future<void> updateSession(OdooSessionModel sessionModel) async {
     try {
-      await sessionModel.saveToPrefs();
-
-      _cachedSession = sessionModel;
-
       clearClientCache();
+      _adopt(sessionModel);
+
+      await sessionModel.saveToPrefs();
 
       if (_onSessionUpdated != null) {
         _onSessionUpdated!(sessionModel);
@@ -675,10 +773,10 @@ class OdooSessionManager {
         serverVersion: serverVersion,
       );
 
-      await sessionModel.saveToPrefs();
-      _cachedSession = sessionModel;
+      _adopt(sessionModel);
       _cachedClient = client;
       _lastAuthTime = DateTime.now();
+      await sessionModel.saveToPrefs();
 
       _onSessionUpdated?.call(sessionModel);
 
@@ -1492,8 +1590,8 @@ class OdooSessionManager {
       allowedCompanyIds: allowedCompanyIds,
     );
 
+    _adopt(updatedSession);
     await updatedSession.saveToPrefs();
-    _cachedSession = updatedSession;
     _onSessionUpdated?.call(updatedSession);
   }
 
@@ -1660,8 +1758,8 @@ class OdooSessionManager {
             selectedCompanyId: session.selectedCompanyId,
           );
         }
+        _adopt(updatedSession);
         await updatedSession.saveToPrefs();
-        _cachedSession = updatedSession;
         _onSessionUpdated?.call(updatedSession);
 
         _refreshCompleter?.complete(true);

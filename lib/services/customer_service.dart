@@ -390,9 +390,16 @@ class CustomerService {
     }
   }
 
+  /// The active customers, optionally only those matching [searchQuery].
+  ///
+  /// [extraDomain] is a further condition every result must meet, joined to
+  /// the rest with AND — a create form passes the company scope Odoo's own
+  /// form gives its customer field (see `companyCheckDomain`). Left null or
+  /// empty, the search is the one the customer list has always made.
   Future<List<Contact>> fetchAllCustomers({
     String? searchQuery,
     int? limit,
+    List<dynamic>? extraDomain,
   }) async {
     try {
       final client = await OdooSessionManager.getClient();
@@ -411,6 +418,8 @@ class CustomerService {
         domain.add(['email', 'ilike', searchQuery]);
         domain.add(['phone', 'ilike', searchQuery]);
       }
+
+      if (extraDomain != null) domain.addAll(extraDomain);
 
       final generation = await OdooSessionManager.serverGeneration();
       final result =

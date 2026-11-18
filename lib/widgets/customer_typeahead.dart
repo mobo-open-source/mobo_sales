@@ -43,6 +43,13 @@ class CustomerTypeAhead extends StatefulWidget {
   /// A test hands in its own.
   final Future<List<Contact>> Function(String? query, int limit)? search;
 
+  /// A further condition every customer offered must meet, asked for on each
+  /// search: a create form returns the company scope Odoo's own form gives its
+  /// customer field, so only customers the record can be saved with are
+  /// offered. Null, or an empty domain, searches as before. Not used when
+  /// [search] is given.
+  final Future<List<dynamic>> Function()? extraDomain;
+
   const CustomerTypeAhead({
     required this.labelText,
     this.isRequired = false,
@@ -54,6 +61,7 @@ class CustomerTypeAhead extends StatefulWidget {
     this.allowClear = true,
     this.enabled = true,
     this.search,
+    this.extraDomain,
     super.key,
   });
 
@@ -135,12 +143,14 @@ class _CustomerTypeAheadState extends State<CustomerTypeAhead> {
       final query = pattern.trim();
       final q = query.isEmpty ? null : query;
       final limit = query.isEmpty ? 20 : 100;
-      final results =
-          await (widget.search?.call(q, limit) ??
-              CustomerService.instance.fetchAllCustomers(
-                searchQuery: q,
-                limit: limit,
-              ));
+      final search = widget.search;
+      final results = search != null
+          ? await search(q, limit)
+          : await CustomerService.instance.fetchAllCustomers(
+              searchQuery: q,
+              limit: limit,
+              extraDomain: await widget.extraDomain?.call(),
+            );
       if (!mounted || seq != _requestSeq) return;
       setState(() {
         _results = results;

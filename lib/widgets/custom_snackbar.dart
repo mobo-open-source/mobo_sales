@@ -25,6 +25,10 @@ enum SnackbarType { info, success, warning, error }
 /// Only one is on screen at a time; a new message replaces the old one.
 class CustomSnackbar {
   /// Shows a custom snackbar with the specified [title], [message], and [type].
+  ///
+  /// The message never shows Odoo's empty values (`False`, `None`): a caller
+  /// that passes a server sentence straight through still gets a readable one
+  /// (see [OdooErrorHandler.withoutPythonLiterals]).
   static void show({
     required BuildContext context,
     required String title,
@@ -32,7 +36,13 @@ class CustomSnackbar {
     SnackbarType type = SnackbarType.info,
     Duration duration = const Duration(seconds: 3),
   }) {
-    _showOverlaySnackbar(context, title, message, type, duration);
+    _showOverlaySnackbar(
+      context,
+      title,
+      OdooErrorHandler.withoutPythonLiterals(message),
+      type,
+      duration,
+    );
   }
 
   static OverlayEntry? _current;
